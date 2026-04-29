@@ -40,6 +40,8 @@ def _cache_key(params: dict) -> tuple:
         int(params["high_lookback"]),
         round(float(params["rsi_min"]), 3),
         round(float(params["rsi_max"]), 3),
+        round(float(params["rsi9_dev_min_pct"]), 3),
+        round(float(params["rsi9_dev_max_pct"]), 3),
         int(params["rvol_lookback"]),
         round(float(params["rvol_min"]), 3),
     )
@@ -50,6 +52,8 @@ def _parse_params() -> dict:
         "high_lookback": int(request.args.get("high_lookback", 30)),
         "rsi_min": float(request.args.get("rsi_min", 45)),
         "rsi_max": float(request.args.get("rsi_max", 50)),
+        "rsi9_dev_min_pct": float(request.args.get("rsi9_dev_min_pct", -5)),
+        "rsi9_dev_max_pct": float(request.args.get("rsi9_dev_max_pct", 10)),
         "rvol_lookback": int(request.args.get("rvol_lookback", 10)),
         "rvol_min": float(request.args.get("rvol_min", 0.5)),
     }
@@ -111,6 +115,8 @@ def api_screen():
         high_lookback=params["high_lookback"],
         rsi_min=params["rsi_min"],
         rsi_max=params["rsi_max"],
+        rsi9_dev_min_pct=params["rsi9_dev_min_pct"],
+        rsi9_dev_max_pct=params["rsi9_dev_max_pct"],
         rvol_lookback=params["rvol_lookback"],
         rvol_min=params["rvol_min"],
     )
@@ -125,6 +131,7 @@ def api_screen():
     # daily snapshots stable instead of being overwritten by ad-hoc tweaks.
     if key == _cache_key({
         "high_lookback": 30, "rsi_min": 45, "rsi_max": 50,
+        "rsi9_dev_min_pct": -5, "rsi9_dev_max_pct": 10,
         "rvol_lookback": 10, "rvol_min": 0.5,
     }):
         try:

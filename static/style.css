@@ -187,6 +187,7 @@ tr:hover td { background: rgba(88, 166, 255, 0.06); }
 .dot-ema21 { background: #d2a8ff; }
 .dot-ema50 { background: #ffa657; }
 .dot-rsi { background: #58a6ff; }
+.dot-rsi9 { background: #f0883e; }
 
 .chart { width: 100%; }
 .chart.price { height: 420px; }

@@ -36,6 +36,8 @@ class ScreenHit:
     pct_change: float
     high_lookback: float
     rsi: float
+    rsi9: float
+    rsi9_dev_pct: float
     rel_volume: float
     avg_volume: float
     volume: float
@@ -113,6 +115,9 @@ def evaluate_ticker(
     rsi_period: int = 14,
     rsi_min: float = 45.0,
     rsi_max: float = 50.0,
+    rsi9_period: int = 9,
+    rsi9_dev_min_pct: float = -5.0,
+    rsi9_dev_max_pct: float = 10.0,
     rvol_lookback: int = 10,
     rvol_min: float = 0.5,
 ) -> ScreenHit | None:
@@ -137,12 +142,21 @@ def evaluate_ticker(
     if prev_close < lookback_high:
         return None
 
-    # RSI on closes through the latest bar
+    # RSI(14) on closes through the latest bar
     rsi_series = rsi_wilder(closes, period=rsi_period)
     rsi_val = rsi_series.iloc[-1]
     if not np.isfinite(rsi_val):
         return None
     if not (rsi_min <= rsi_val <= rsi_max):
+        return None
+
+    # RSI(9) and its deviation vs RSI(14): (rsi9 - rsi14) / rsi14, in percent.
+    rsi9_series = rsi_wilder(closes, period=rsi9_period)
+    rsi9_val = rsi9_series.iloc[-1]
+    if not np.isfinite(rsi9_val) or rsi_val == 0:
+        return None
+    rsi9_dev_pct = (float(rsi9_val) - float(rsi_val)) / float(rsi_val) * 100.0
+    if not (rsi9_dev_min_pct <= rsi9_dev_pct <= rsi9_dev_max_pct):
         return None
 
     # Relative volume: last bar volume / mean of prior N bars
@@ -167,6 +181,8 @@ def evaluate_ticker(
         pct_change=round(pct_change, 2),
         high_lookback=round(lookback_high, 4),
         rsi=round(float(rsi_val), 2),
+        rsi9=round(float(rsi9_val), 2),
+        rsi9_dev_pct=round(rsi9_dev_pct, 2),
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
@@ -178,6 +194,8 @@ def run_screen(
     high_lookback: int = 30,
     rsi_min: float = 45.0,
     rsi_max: float = 50.0,
+    rsi9_dev_min_pct: float = -5.0,
+    rsi9_dev_max_pct: float = 10.0,
     rvol_lookback: int = 10,
     rvol_min: float = 0.5,
     universe: Iterable[str] | None = None,
@@ -193,6 +211,8 @@ def run_screen(
                 high_lookback=high_lookback,
                 rsi_min=rsi_min,
                 rsi_max=rsi_max,
+                rsi9_dev_min_pct=rsi9_dev_min_pct,
+                rsi9_dev_max_pct=rsi9_dev_max_pct,
                 rvol_lookback=rvol_lookback,
                 rvol_min=rvol_min,
             )
@@ -222,6 +242,7 @@ def chart_payload(ticker: str, period: str = "1y") -> dict | None:
     df["EMA21"] = ema(df["Close"], 21)
     df["EMA50"] = ema(df["Close"], 50)
     df["RSI"] = rsi_wilder(df["Close"], 14)
+    df["RSI9"] = rsi_wilder(df["Close"], 9)
 
     def _row(idx, r):
         ts = idx.strftime("%Y-%m-%d")
@@ -235,6 +256,7 @@ def chart_payload(ticker: str, period: str = "1y") -> dict | None:
             "ema21": _safe(r["EMA21"]),
             "ema50": _safe(r["EMA50"]),
             "rsi": _safe(r["RSI"]),
+            "rsi9": _safe(r["RSI9"]),
         }
 
     rows = [_row(idx, r) for idx, r in df.iterrows()]

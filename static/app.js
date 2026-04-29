@@ -18,6 +18,8 @@ const inputs = {
   high_lookback: $('#high_lookback'),
   rsi_min: $('#rsi_min'),
   rsi_max: $('#rsi_max'),
+  rsi9_dev_min_pct: $('#rsi9_dev_min_pct'),
+  rsi9_dev_max_pct: $('#rsi9_dev_max_pct'),
   rvol_lookback: $('#rvol_lookback'),
   rvol_min: $('#rvol_min'),
 };
@@ -47,7 +49,7 @@ function buildQuery() {
 async function runScreen() {
   setStatus('running…');
   els.runBtn.disabled = true;
-  els.body.innerHTML = '<tr class="empty"><td colspan="10">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
+  els.body.innerHTML = '<tr class="empty"><td colspan="12">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
   els.matchCount.textContent = '';
   try {
     const res = await fetch('/api/screen?' + buildQuery());
@@ -59,7 +61,7 @@ async function runScreen() {
   } catch (err) {
     console.error(err);
     setStatus('error');
-    els.body.innerHTML = `<tr class="empty"><td colspan="10">Error: ${err.message}</td></tr>`;
+    els.body.innerHTML = `<tr class="empty"><td colspan="12">Error: ${err.message}</td></tr>`;
   } finally {
     els.runBtn.disabled = false;
   }
@@ -68,13 +70,14 @@ async function runScreen() {
 function renderResults(results) {
   els.matchCount.textContent = `(${results.length})`;
   if (!results.length) {
-    els.body.innerHTML = '<tr class="empty"><td colspan="10">No matches with these filters.</td></tr>';
+    els.body.innerHTML = '<tr class="empty"><td colspan="12">No matches with these filters.</td></tr>';
     return;
   }
   els.body.innerHTML = '';
   for (const r of results) {
     const tr = document.createElement('tr');
     const pctClass = r.pct_change >= 0 ? 'pos' : 'neg';
+    const devClass = r.rsi9_dev_pct >= 0 ? 'pos' : 'neg';
     tr.innerHTML = `
       <td><strong>${r.ticker}</strong></td>
       <td>${escapeHtml(r.name || '')}</td>
@@ -83,6 +86,8 @@ function renderResults(results) {
       <td class="num ${pctClass}">${r.pct_change >= 0 ? '+' : ''}${fmtNum(r.pct_change)}%</td>
       <td class="num">${fmtNum(r.high_lookback)}</td>
       <td class="num">${fmtNum(r.rsi)}</td>
+      <td class="num">${fmtNum(r.rsi9)}</td>
+      <td class="num ${devClass}">${r.rsi9_dev_pct >= 0 ? '+' : ''}${fmtNum(r.rsi9_dev_pct)}%</td>
       <td class="num">${fmtNum(r.rel_volume)}×</td>
       <td class="num">${fmtVol(r.volume)}</td>
       <td><button class="link" data-ticker="${escapeHtml(r.ticker)}">view</button></td>
@@ -114,7 +119,11 @@ function renderHistory(records) {
     const div = document.createElement('div');
     div.className = 'history-day';
     const items = (rec.top || [])
-      .map((t) => `<li><strong>${escapeHtml(t.ticker)}</strong> — ${escapeHtml(t.name || '')} <span class="muted">RSI ${fmtNum(t.rsi)}, RVol ${fmtNum(t.rel_volume)}×</span></li>`)
+      .map((t) => {
+        const dev = t.rsi9_dev_pct;
+        const devTxt = dev === undefined || dev === null ? '' : `, Δ9 ${dev >= 0 ? '+' : ''}${fmtNum(dev)}%`;
+        return `<li><strong>${escapeHtml(t.ticker)}</strong> — ${escapeHtml(t.name || '')} <span class="muted">RSI ${fmtNum(t.rsi)}${devTxt}, RVol ${fmtNum(t.rel_volume)}×</span></li>`;
+      })
       .join('');
     div.innerHTML = `
       <h3><span>${rec.date}</span><span class="muted">${rec.top.length} stk</span></h3>
@@ -125,11 +134,11 @@ function renderHistory(records) {
 
 // --- chart modal -----------------------------------------------------------
 
-let priceChart, rsiChart, candleSeries, ema21Series, ema50Series, rsiSeries, volSeries;
+let priceChart, rsiChart, candleSeries, ema21Series, ema50Series, rsiSeries, rsi9Series, volSeries;
 
 function disposeCharts() {
   [priceChart, rsiChart].forEach((c) => c && c.remove && c.remove());
-  priceChart = rsiChart = candleSeries = ema21Series = ema50Series = rsiSeries = volSeries = null;
+  priceChart = rsiChart = candleSeries = ema21Series = ema50Series = rsiSeries = rsi9Series = volSeries = null;
   els.priceChart.innerHTML = '';
   els.rsiChart.innerHTML = '';
 }
@@ -203,8 +212,10 @@ function drawChart(data) {
     width: els.rsiChart.clientWidth,
     height: els.rsiChart.clientHeight,
   });
-  rsiSeries = rsiChart.addLineSeries({ color: '#58a6ff', lineWidth: 2 });
+  rsiSeries = rsiChart.addLineSeries({ color: '#58a6ff', lineWidth: 2, title: 'RSI(14)' });
   rsiSeries.setData(rows.filter((r) => r.rsi !== null).map((r) => ({ time: r.time, value: r.rsi })));
+  rsi9Series = rsiChart.addLineSeries({ color: '#f0883e', lineWidth: 1, title: 'RSI(9)' });
+  rsi9Series.setData(rows.filter((r) => r.rsi9 !== null && r.rsi9 !== undefined).map((r) => ({ time: r.time, value: r.rsi9 })));
   rsiSeries.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '70' });
   rsiSeries.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '30' });
   rsiSeries.createPriceLine({ price: 50, color: '#8b949e', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '50' });

@@ -30,6 +30,14 @@
       <input id="rsi_max" type="number" step="0.1" min="0" max="100" value="50" />
     </div>
     <div class="filter">
+      <label>RSI9 dev min (%)</label>
+      <input id="rsi9_dev_min_pct" type="number" step="0.5" value="-5" />
+    </div>
+    <div class="filter">
+      <label>RSI9 dev max (%)</label>
+      <input id="rsi9_dev_max_pct" type="number" step="0.5" value="10" />
+    </div>
+    <div class="filter">
       <label>RVol lookback (days)</label>
       <input id="rvol_lookback" type="number" min="2" max="60" value="10" />
     </div>
@@ -55,14 +63,16 @@
               <th class="num">Prev close</th>
               <th class="num">% chg</th>
               <th class="num">30d high</th>
-              <th class="num">RSI</th>
+              <th class="num">RSI(14)</th>
+              <th class="num">RSI(9)</th>
+              <th class="num">RSI9 dev</th>
               <th class="num">RVol</th>
               <th class="num">Volume</th>
               <th>Chart</th>
             </tr>
           </thead>
           <tbody id="results-body">
-            <tr class="empty"><td colspan="10">Click "Run screen" to start.</td></tr>
+            <tr class="empty"><td colspan="12">Click "Run screen" to start.</td></tr>
           </tbody>
         </table>
       </div>
@@ -86,6 +96,7 @@
             <span class="dot dot-ema21"></span> EMA 21
             <span class="dot dot-ema50"></span> EMA 50
             <span class="dot dot-rsi"></span> RSI(14)
+            <span class="dot dot-rsi9"></span> RSI(9)
           </div>
         </div>
         <button id="chart-close" class="icon-btn">×</button>

@@ -6,15 +6,17 @@ and the 21/50 EMA.
 
 ## Default screen
 
-A ticker passes when **all three** are true on the most recent daily close:
+A ticker passes when **all four** are true on the most recent daily close:
 
 1. **30-day high** — previous close ≥ the highest close in the prior 30 days.
 2. **RSI(14) ∈ [45, 50]** — Wilder smoothing.
-3. **10-day relative volume > 0.5** — yesterday's volume / mean of the prior
+3. **RSI(9) deviation vs RSI(14) ∈ [-5%, +10%]** —
+   `(RSI9 − RSI14) / RSI14`.
+4. **10-day relative volume > 0.5** — yesterday's volume / mean of the prior
    10 days.
 
-Each filter (lookback windows, RSI band, RVol threshold) is adjustable from
-the UI.
+Each filter (lookback windows, RSI band, RSI(9) deviation band, RVol
+threshold) is adjustable from the UI.
 
 Data source: Yahoo Finance via [`yfinance`](https://pypi.org/project/yfinance/).
 Canadian tickers use the `.TO` suffix.
@@ -33,7 +35,7 @@ each name; subsequent runs are cached for 30 minutes.
 ## Endpoints
 
 - `GET /` — single page UI
-- `GET /api/screen?high_lookback=30&rsi_min=45&rsi_max=50&rvol_lookback=10&rvol_min=0.5`
+- `GET /api/screen?high_lookback=30&rsi_min=45&rsi_max=50&rsi9_dev_min_pct=-5&rsi9_dev_max_pct=10&rvol_lookback=10&rvol_min=0.5`
 - `GET /api/chart/<ticker>` — OHLCV + EMA21 + EMA50 + RSI(14)
 - `GET /api/history` — top-5 hits per day from `history.json`
 
