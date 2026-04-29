@@ -17,36 +17,65 @@
   </header>
 
   <section class="filters">
-    <div class="filter">
-      <label>N-day high lookback</label>
-      <input id="high_lookback" type="number" min="2" max="252" value="30" />
+    <div class="filter-group scope">
+      <label class="group-label">List</label>
+      <div class="filter">
+        <select id="list_filter">
+          <option value="">Any (S&amp;P 500 + Dow + Nasdaq 100 + TSX)</option>
+          <option value="sp500">S&amp;P 500</option>
+          <option value="dow">Dow 30</option>
+          <option value="nasdaq100">Nasdaq 100</option>
+          <option value="tsx">TSX (Canada)</option>
+        </select>
+      </div>
     </div>
-    <div class="filter">
-      <label>RSI min</label>
-      <input id="rsi_min" type="number" step="0.1" min="0" max="100" value="45" />
+
+    <div class="filter-group" data-group="high">
+      <label class="group-toggle"><input type="checkbox" id="apply_high" checked /> N-day high</label>
+      <div class="filter">
+        <label>Lookback (days)</label>
+        <input id="high_lookback" type="number" min="2" max="252" value="30" />
+      </div>
     </div>
-    <div class="filter">
-      <label>RSI max</label>
-      <input id="rsi_max" type="number" step="0.1" min="0" max="100" value="50" />
+
+    <div class="filter-group" data-group="rsi">
+      <label class="group-toggle"><input type="checkbox" id="apply_rsi" checked /> RSI(14) band</label>
+      <div class="filter">
+        <label>min</label>
+        <input id="rsi_min" type="number" step="0.1" min="0" max="100" value="45" />
+      </div>
+      <div class="filter">
+        <label>max</label>
+        <input id="rsi_max" type="number" step="0.1" min="0" max="100" value="50" />
+      </div>
     </div>
-    <div class="filter">
-      <label>RSI9 dev min (%)</label>
-      <input id="rsi9_dev_min_pct" type="number" step="0.5" value="-5" />
+
+    <div class="filter-group" data-group="rsi9">
+      <label class="group-toggle"><input type="checkbox" id="apply_rsi9" checked /> RSI(9) dev vs RSI(14)</label>
+      <div class="filter">
+        <label>min (%)</label>
+        <input id="rsi9_dev_min_pct" type="number" step="0.5" value="-5" />
+      </div>
+      <div class="filter">
+        <label>max (%)</label>
+        <input id="rsi9_dev_max_pct" type="number" step="0.5" value="10" />
+      </div>
     </div>
-    <div class="filter">
-      <label>RSI9 dev max (%)</label>
-      <input id="rsi9_dev_max_pct" type="number" step="0.5" value="10" />
+
+    <div class="filter-group" data-group="rvol">
+      <label class="group-toggle"><input type="checkbox" id="apply_rvol" checked /> Relative volume</label>
+      <div class="filter">
+        <label>lookback (days)</label>
+        <input id="rvol_lookback" type="number" min="2" max="60" value="10" />
+      </div>
+      <div class="filter">
+        <label>min (×)</label>
+        <input id="rvol_min" type="number" step="0.05" min="0" value="0.5" />
+      </div>
     </div>
-    <div class="filter">
-      <label>RVol lookback (days)</label>
-      <input id="rvol_lookback" type="number" min="2" max="60" value="10" />
-    </div>
-    <div class="filter">
-      <label>RVol min (×)</label>
-      <input id="rvol_min" type="number" step="0.05" min="0" value="0.5" />
-    </div>
-    <div class="filter notes">
-      <span>US (S&amp;P 500) + Canada (TSX). Daily bars. Source: Yahoo Finance.</span>
+
+    <div class="filter-notes">
+      Daily bars based on previous close. Source: Yahoo Finance. Uncheck a group to ignore that filter.
     </div>
   </section>
 
@@ -60,6 +89,7 @@
               <th>Ticker</th>
               <th>Name</th>
               <th>Ex.</th>
+              <th>Lists</th>
               <th class="num">Prev close</th>
               <th class="num">% chg</th>
               <th class="num">30d high</th>
@@ -72,7 +102,7 @@
             </tr>
           </thead>
           <tbody id="results-body">
-            <tr class="empty"><td colspan="12">Click "Run screen" to start.</td></tr>
+            <tr class="empty"><td colspan="13">Click "Run screen" to start.</td></tr>
           </tbody>
         </table>
       </div>

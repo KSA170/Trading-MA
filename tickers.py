@@ -1,13 +1,21 @@
 """
 Universe of US and Canadian stock tickers used by the screener.
 
-The lists below cover the S&P 500 (US) and the most actively traded TSX
-constituents (Canada). yfinance expects Canadian tickers with a `.TO`
-suffix.
+Tickers are organized into named *lists*:
+  - SP500   — S&P 500 (curated, mostly stable)
+  - DOW30   — Dow Jones Industrial Average (30 names)
+  - NDX100  — Nasdaq-100
+  - TSX     — Active TSX listings (yfinance suffix `.TO`)
+
+A ticker may appear in several lists (e.g. AAPL is in S&P 500, Dow 30,
+and Nasdaq-100). Membership is exposed via :func:`lists_for` so the UI can
+display chips and so the screener can filter by list.
 """
 
-# S&P 500 components (curated, may drift slightly over time).
-US_TICKERS = [
+from __future__ import annotations
+
+# --- S&P 500 components (curated; small drift over time) --------------------
+SP500: list[str] = [
     "MMM", "AOS", "ABT", "ABBV", "ACN", "ADBE", "AMD", "AES", "AFL", "A",
     "APD", "ABNB", "AKAM", "ALB", "ARE", "ALGN", "ALLE", "LNT", "ALL", "GOOGL",
     "GOOG", "MO", "AMZN", "AMCR", "AEE", "AEP", "AXP", "AIG", "AMT", "AWK",
@@ -60,8 +68,31 @@ US_TICKERS = [
     "WYNN", "XEL", "XYL", "YUM", "ZBRA", "ZBH", "ZTS",
 ]
 
-# Most-traded TSX listings (large-cap & active mid-cap). yfinance suffix `.TO`.
-CA_TICKERS_BASE = [
+# --- Dow Jones Industrial Average (30 components) ---------------------------
+DOW30: list[str] = [
+    "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
+    "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
+    "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT",
+]
+
+# --- Nasdaq-100 (curated; ~100 names, may drift) ----------------------------
+NDX100: list[str] = [
+    "AAPL", "ABNB", "ADBE", "ADI", "ADP", "ADSK", "AEP", "AMAT", "AMD",
+    "AMGN", "AMZN", "ANSS", "ARM", "ASML", "AVGO", "AZN", "BIIB", "BKNG",
+    "BKR", "CCEP", "CDNS", "CDW", "CEG", "CHTR", "CMCSA", "COST", "CPRT",
+    "CRWD", "CSCO", "CSGP", "CSX", "CTAS", "CTSH", "DASH", "DDOG", "DLTR",
+    "DXCM", "EA", "EXC", "FANG", "FAST", "FTNT", "GEHC", "GFS", "GILD",
+    "GOOG", "GOOGL", "HON", "IDXX", "ILMN", "INTC", "INTU", "ISRG", "KDP",
+    "KHC", "KLAC", "LIN", "LRCX", "LULU", "MAR", "MCHP", "MDB", "MDLZ",
+    "MELI", "META", "MNST", "MRNA", "MRVL", "MSFT", "MU", "NFLX", "NVDA",
+    "NXPI", "ODFL", "ON", "ORLY", "PANW", "PAYX", "PCAR", "PDD", "PEP",
+    "PYPL", "QCOM", "REGN", "ROP", "ROST", "SBUX", "SNPS", "TEAM", "TMUS",
+    "TSLA", "TTD", "TTWO", "TXN", "VRSK", "VRTX", "WBA", "WBD", "WDAY",
+    "XEL", "ZS",
+]
+
+# --- TSX (Canada) - active large/mid caps -----------------------------------
+_TSX_BASE: list[str] = [
     "RY", "TD", "BNS", "BMO", "CM", "NA", "ENB", "TRP", "CNQ", "SU",
     "CVE", "IMO", "CPG", "ARX", "TOU", "MEG", "VET", "WCP", "BTE", "CNR",
     "CP", "BCE", "T", "RCI-B", "QBR-B", "SJR-B", "ATD", "L", "WN", "MRU",
@@ -80,19 +111,64 @@ CA_TICKERS_BASE = [
     "PKI", "PSI", "PXT", "RBA", "SAP", "SES", "SIA", "SII", "SMU-UN", "TPZ",
     "TVE", "TSU",
 ]
+TSX: list[str] = [t + ".TO" for t in _TSX_BASE]
 
-CA_TICKERS = [t + ".TO" for t in CA_TICKERS_BASE]
+# --- list registry ----------------------------------------------------------
+LISTS: dict[str, list[str]] = {
+    "sp500": SP500,
+    "dow": DOW30,
+    "nasdaq100": NDX100,
+    "tsx": TSX,
+}
+
+LIST_LABELS: dict[str, str] = {
+    "sp500": "S&P 500",
+    "dow": "Dow 30",
+    "nasdaq100": "Nasdaq 100",
+    "tsx": "TSX",
+}
 
 
-def all_tickers():
-    """Return the combined US + Canadian universe."""
-    seen = set()
-    out = []
-    for t in US_TICKERS + CA_TICKERS:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
+def _membership_index() -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+    for key, members in LISTS.items():
+        for sym in members:
+            out.setdefault(sym, set()).add(key)
     return out
+
+
+_MEMBERSHIP = _membership_index()
+
+
+def lists_for(ticker: str) -> list[str]:
+    """Return list-keys that this ticker belongs to (e.g. ['sp500','dow'])."""
+    return sorted(_MEMBERSHIP.get(ticker, set()))
+
+
+def list_labels(keys: list[str]) -> list[str]:
+    return [LIST_LABELS[k] for k in keys if k in LIST_LABELS]
+
+
+def universe(selected: list[str] | None = None) -> list[str]:
+    """Tickers belonging to any of `selected` lists (de-duplicated, ordered).
+
+    Pass `None` or an empty list to get the union of every known list.
+    """
+    if not selected:
+        selected = list(LISTS.keys())
+    seen: set[str] = set()
+    out: list[str] = []
+    for key in selected:
+        for sym in LISTS.get(key, []):
+            if sym not in seen:
+                seen.add(sym)
+                out.append(sym)
+    return out
+
+
+def all_tickers() -> list[str]:
+    """Backwards-compatible: union of all lists."""
+    return universe(None)
 
 
 def display_symbol(ticker: str) -> str:

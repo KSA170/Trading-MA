@@ -24,6 +24,22 @@ const inputs = {
   rvol_min: $('#rvol_min'),
 };
 
+const toggles = {
+  apply_high: $('#apply_high'),
+  apply_rsi: $('#apply_rsi'),
+  apply_rsi9: $('#apply_rsi9'),
+  apply_rvol: $('#apply_rvol'),
+};
+
+const listFilter = $('#list_filter');
+
+const LIST_LABELS = {
+  sp500: 'S&P 500',
+  dow: 'Dow 30',
+  nasdaq100: 'Nasdaq 100',
+  tsx: 'TSX',
+};
+
 function setStatus(text) { els.status.textContent = text; }
 
 function fmtNum(n, digits = 2) {
@@ -43,13 +59,34 @@ function buildQuery() {
   for (const [k, el] of Object.entries(inputs)) {
     params.set(k, el.value);
   }
+  for (const [k, el] of Object.entries(toggles)) {
+    params.set(k, el.checked ? '1' : '0');
+  }
+  if (listFilter && listFilter.value) {
+    params.set('lists', listFilter.value);
+  }
   return params.toString();
+}
+
+function syncDisabledStates() {
+  const map = {
+    apply_high: 'high',
+    apply_rsi: 'rsi',
+    apply_rsi9: 'rsi9',
+    apply_rvol: 'rvol',
+  };
+  for (const [toggleId, groupKey] of Object.entries(map)) {
+    const t = toggles[toggleId];
+    const group = document.querySelector(`.filter-group[data-group="${groupKey}"]`);
+    if (!t || !group) continue;
+    group.classList.toggle('disabled', !t.checked);
+  }
 }
 
 async function runScreen() {
   setStatus('running…');
   els.runBtn.disabled = true;
-  els.body.innerHTML = '<tr class="empty"><td colspan="12">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
+  els.body.innerHTML = '<tr class="empty"><td colspan="13">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
   els.matchCount.textContent = '';
   try {
     const res = await fetch('/api/screen?' + buildQuery());
@@ -61,7 +98,7 @@ async function runScreen() {
   } catch (err) {
     console.error(err);
     setStatus('error');
-    els.body.innerHTML = `<tr class="empty"><td colspan="12">Error: ${err.message}</td></tr>`;
+    els.body.innerHTML = `<tr class="empty"><td colspan="13">Error: ${err.message}</td></tr>`;
   } finally {
     els.runBtn.disabled = false;
   }
@@ -70,7 +107,7 @@ async function runScreen() {
 function renderResults(results) {
   els.matchCount.textContent = `(${results.length})`;
   if (!results.length) {
-    els.body.innerHTML = '<tr class="empty"><td colspan="12">No matches with these filters.</td></tr>';
+    els.body.innerHTML = '<tr class="empty"><td colspan="13">No matches with these filters.</td></tr>';
     return;
   }
   els.body.innerHTML = '';
@@ -78,10 +115,12 @@ function renderResults(results) {
     const tr = document.createElement('tr');
     const pctClass = r.pct_change >= 0 ? 'pos' : 'neg';
     const devClass = r.rsi9_dev_pct >= 0 ? 'pos' : 'neg';
+    const lists = (r.lists || []).map((k) => `<span class="chip list-${k}">${LIST_LABELS[k] || k}</span>`).join('');
     tr.innerHTML = `
       <td><strong>${r.ticker}</strong></td>
       <td>${escapeHtml(r.name || '')}</td>
       <td><span class="chip">${r.exchange}</span></td>
+      <td>${lists || '<span class="muted">—</span>'}</td>
       <td class="num">${fmtNum(r.close)}</td>
       <td class="num ${pctClass}">${r.pct_change >= 0 ? '+' : ''}${fmtNum(r.pct_change)}%</td>
       <td class="num">${fmtNum(r.high_lookback)}</td>
@@ -248,5 +287,8 @@ els.runBtn.addEventListener('click', runScreen);
 els.modalClose.addEventListener('click', closeChart);
 els.modal.addEventListener('click', (e) => { if (e.target === els.modal) closeChart(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeChart(); });
+
+Object.values(toggles).forEach((t) => t && t.addEventListener('change', syncDisabledStates));
+syncDisabledStates();
 
 loadHistory();

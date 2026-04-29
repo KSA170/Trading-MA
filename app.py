@@ -19,6 +19,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request
 
 import screener
+from tickers import LIST_LABELS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("app")
@@ -35,19 +36,51 @@ _screen_lock = threading.Lock()
 _SCREEN_TTL_SEC = 60 * 30  # 30 minutes
 
 
+_VALID_LISTS = set(LIST_LABELS.keys())
+
+DEFAULT_PARAMS: dict = {
+    "high_lookback": 30,
+    "rsi_min": 45.0,
+    "rsi_max": 50.0,
+    "rsi9_dev_min_pct": -5.0,
+    "rsi9_dev_max_pct": 10.0,
+    "rvol_lookback": 10,
+    "rvol_min": 0.5,
+    "apply_high": True,
+    "apply_rsi": True,
+    "apply_rsi9": True,
+    "apply_rvol": True,
+    "lists": tuple(sorted(_VALID_LISTS)),
+}
+
+
 def _cache_key(params: dict) -> tuple:
-    return (
-        int(params["high_lookback"]),
-        round(float(params["rsi_min"]), 3),
-        round(float(params["rsi_max"]), 3),
-        round(float(params["rsi9_dev_min_pct"]), 3),
-        round(float(params["rsi9_dev_max_pct"]), 3),
-        int(params["rvol_lookback"]),
-        round(float(params["rvol_min"]), 3),
-    )
+    # When a filter is disabled, its threshold values don't matter — collapse
+    # them to a sentinel so the cache hits regardless of slider position.
+    high = (int(params["high_lookback"]),) if params["apply_high"] else ("off",)
+    rsi = (round(float(params["rsi_min"]), 3), round(float(params["rsi_max"]), 3)) if params["apply_rsi"] else ("off",)
+    rsi9 = (round(float(params["rsi9_dev_min_pct"]), 3), round(float(params["rsi9_dev_max_pct"]), 3)) if params["apply_rsi9"] else ("off",)
+    rvol = (int(params["rvol_lookback"]), round(float(params["rvol_min"]), 3)) if params["apply_rvol"] else ("off",)
+    lists = tuple(sorted(params["lists"]))
+    return ("v2", high, rsi, rsi9, rvol, lists)
+
+
+def _parse_bool(name: str, default: bool) -> bool:
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _parse_params() -> dict:
+    raw_lists = request.args.get("lists", "")
+    if raw_lists.strip():
+        wanted = [s.strip() for s in raw_lists.split(",") if s.strip()]
+        wanted = [s for s in wanted if s in _VALID_LISTS]
+    else:
+        wanted = sorted(_VALID_LISTS)
+    if not wanted:
+        wanted = sorted(_VALID_LISTS)
     return {
         "high_lookback": int(request.args.get("high_lookback", 30)),
         "rsi_min": float(request.args.get("rsi_min", 45)),
@@ -56,6 +89,11 @@ def _parse_params() -> dict:
         "rsi9_dev_max_pct": float(request.args.get("rsi9_dev_max_pct", 10)),
         "rvol_lookback": int(request.args.get("rvol_lookback", 10)),
         "rvol_min": float(request.args.get("rvol_min", 0.5)),
+        "apply_high": _parse_bool("apply_high", True),
+        "apply_rsi": _parse_bool("apply_rsi", True),
+        "apply_rsi9": _parse_bool("apply_rsi9", True),
+        "apply_rvol": _parse_bool("apply_rvol", True),
+        "lists": tuple(wanted),
     }
 
 
@@ -108,7 +146,11 @@ def api_screen():
     with _screen_lock:
         cached = _screen_cache.get(key)
         if cached and now - cached[0] < _SCREEN_TTL_SEC:
-            return jsonify({"results": cached[1], "cached": True, "params": params})
+            return jsonify({
+                "results": cached[1],
+                "cached": True,
+                "params": {**params, "lists": list(params["lists"])},
+            })
 
     started = time.time()
     hits = screener.run_screen(
@@ -119,6 +161,11 @@ def api_screen():
         rsi9_dev_max_pct=params["rsi9_dev_max_pct"],
         rvol_lookback=params["rvol_lookback"],
         rvol_min=params["rvol_min"],
+        apply_high=params["apply_high"],
+        apply_rsi=params["apply_rsi"],
+        apply_rsi9=params["apply_rsi9"],
+        apply_rvol=params["apply_rvol"],
+        lists=list(params["lists"]),
     )
     payload = [h.to_dict() for h in hits]
     elapsed = time.time() - started
@@ -129,17 +176,14 @@ def api_screen():
 
     # Only the default-parameter run drives the public history. That keeps
     # daily snapshots stable instead of being overwritten by ad-hoc tweaks.
-    if key == _cache_key({
-        "high_lookback": 30, "rsi_min": 45, "rsi_max": 50,
-        "rsi9_dev_min_pct": -5, "rsi9_dev_max_pct": 10,
-        "rvol_lookback": 10, "rvol_min": 0.5,
-    }):
+    if key == _cache_key(DEFAULT_PARAMS):
         try:
             _record_history(payload)
         except Exception as exc:
             log.warning("history record failed: %s", exc)
 
-    return jsonify({"results": payload, "cached": False, "params": params, "elapsed_sec": round(elapsed, 1)})
+    serializable_params = {**params, "lists": list(params["lists"])}
+    return jsonify({"results": payload, "cached": False, "params": serializable_params, "elapsed_sec": round(elapsed, 1)})
 
 
 @app.route("/api/chart/<path:ticker>")
@@ -155,6 +199,13 @@ def api_chart(ticker: str):
 @app.route("/api/history")
 def api_history():
     return jsonify({"records": _load_history()})
+
+
+@app.route("/api/lists")
+def api_lists():
+    return jsonify({
+        "lists": [{"key": k, "label": v} for k, v in LIST_LABELS.items()],
+    })
 
 
 if __name__ == "__main__":

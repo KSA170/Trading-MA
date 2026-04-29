@@ -1,9 +1,16 @@
 """
-Screener for US/Canadian stocks meeting all of:
+Screener for US/Canadian stocks. Each filter is independently toggleable;
+when disabled the criterion is skipped but the value is still reported.
+
+Default filters (all enabled):
   - Previous close set a new N-day high (default 30)
   - Daily RSI(14) inside [rsi_min, rsi_max] (default 45-50)
+  - RSI(9) deviation vs RSI(14) within [rsi9_dev_min, rsi9_dev_max]%
+    (default -5%..+10%)
   - Relative volume over the trailing N days greater than threshold
     (default 10-day, > 0.5)
+
+Universe is selected via list keys: 'sp500', 'dow', 'nasdaq100', 'tsx'.
 
 Data source: yfinance (Yahoo Finance public endpoints).
 """
@@ -14,14 +21,14 @@ import logging
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from tickers import all_tickers, display_symbol
+from tickers import all_tickers, display_symbol, lists_for, list_labels, universe as build_universe
 
 log = logging.getLogger("screener")
 
@@ -31,6 +38,8 @@ class ScreenHit:
     ticker: str
     name: str
     exchange: str
+    lists: list[str]
+    list_labels: list[str]
     close: float
     prev_close: float
     pct_change: float
@@ -120,6 +129,10 @@ def evaluate_ticker(
     rsi9_dev_max_pct: float = 10.0,
     rvol_lookback: int = 10,
     rvol_min: float = 0.5,
+    apply_high: bool = True,
+    apply_rsi: bool = True,
+    apply_rsi9: bool = True,
+    apply_rvol: bool = True,
 ) -> ScreenHit | None:
     df = _cached_history(ticker, period="6mo")
     if df is None or len(df) < max(high_lookback + 2, rsi_period + 5, rvol_lookback + 2):
@@ -133,30 +146,30 @@ def evaluate_ticker(
     prior_close = float(closes.iloc[-2])
     volume = float(volumes.iloc[-1])
 
-    # 30-day high lookup uses the *previous* `high_lookback` closes
-    # (i.e. closes excluding the current bar). prev_close must be >= that max.
+    # N-day high lookup uses the prior `high_lookback` closes (excluding the
+    # current bar). When the high filter is enabled, prev_close must be >= max.
     window = closes.iloc[-(high_lookback + 1):-1]
     if window.empty:
         return None
     lookback_high = float(window.max())
-    if prev_close < lookback_high:
+    if apply_high and prev_close < lookback_high:
         return None
 
-    # RSI(14) on closes through the latest bar
+    # RSI(14)
     rsi_series = rsi_wilder(closes, period=rsi_period)
     rsi_val = rsi_series.iloc[-1]
     if not np.isfinite(rsi_val):
         return None
-    if not (rsi_min <= rsi_val <= rsi_max):
+    if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
         return None
 
-    # RSI(9) and its deviation vs RSI(14): (rsi9 - rsi14) / rsi14, in percent.
+    # RSI(9) and deviation vs RSI(14)
     rsi9_series = rsi_wilder(closes, period=rsi9_period)
     rsi9_val = rsi9_series.iloc[-1]
     if not np.isfinite(rsi9_val) or rsi_val == 0:
         return None
     rsi9_dev_pct = (float(rsi9_val) - float(rsi_val)) / float(rsi_val) * 100.0
-    if not (rsi9_dev_min_pct <= rsi9_dev_pct <= rsi9_dev_max_pct):
+    if apply_rsi9 and not (rsi9_dev_min_pct <= rsi9_dev_pct <= rsi9_dev_max_pct):
         return None
 
     # Relative volume: last bar volume / mean of prior N bars
@@ -165,17 +178,21 @@ def evaluate_ticker(
         return None
     avg_volume = float(vol_window.mean())
     rel_vol = volume / avg_volume
-    if rel_vol <= rvol_min:
+    if apply_rvol and rel_vol <= rvol_min:
         return None
 
     pct_change = (prev_close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
-    score = rel_vol * (1 + max(0.0, prev_close - lookback_high) / lookback_high)
+    breakout = max(0.0, prev_close - lookback_high) / lookback_high if lookback_high else 0.0
+    score = max(rel_vol, 0.01) * (1 + breakout)
 
+    membership = lists_for(ticker)
     return ScreenHit(
         ticker=display_symbol(ticker),
         name=_company_name(ticker),
         exchange=exchange,
+        lists=membership,
+        list_labels=list_labels(membership),
         close=round(prev_close, 4),
         prev_close=round(prior_close, 4),
         pct_change=round(pct_change, 2),
@@ -198,10 +215,20 @@ def run_screen(
     rsi9_dev_max_pct: float = 10.0,
     rvol_lookback: int = 10,
     rvol_min: float = 0.5,
+    apply_high: bool = True,
+    apply_rsi: bool = True,
+    apply_rsi9: bool = True,
+    apply_rvol: bool = True,
+    lists: list[str] | None = None,
     universe: Iterable[str] | None = None,
     max_workers: int = 16,
 ) -> list[ScreenHit]:
-    tickers = list(universe) if universe is not None else all_tickers()
+    if universe is not None:
+        tickers = list(universe)
+    elif lists:
+        tickers = build_universe(lists)
+    else:
+        tickers = all_tickers()
     hits: list[ScreenHit] = []
 
     def _eval(t: str) -> ScreenHit | None:
@@ -215,6 +242,10 @@ def run_screen(
                 rsi9_dev_max_pct=rsi9_dev_max_pct,
                 rvol_lookback=rvol_lookback,
                 rvol_min=rvol_min,
+                apply_high=apply_high,
+                apply_rsi=apply_rsi,
+                apply_rsi9=apply_rsi9,
+                apply_rvol=apply_rvol,
             )
         except Exception as exc:
             log.warning("evaluate failed for %s: %s", t, exc)

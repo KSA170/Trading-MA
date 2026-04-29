@@ -74,12 +74,54 @@ button.icon-btn {
   padding: 14px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
-  align-items: flex-end;
+  align-items: flex-start;
 }
-.filter { display: flex; flex-direction: column; gap: 4px; min-width: 130px; }
-.filter label { color: var(--muted); font-size: 12px; }
-.filter input {
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   background: var(--panel-2);
+}
+.filter-group .group-label,
+.filter-group .group-toggle {
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.filter-group .group-toggle input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+.filter-group .group-toggle { cursor: pointer; }
+.filter-group.scope { min-width: 280px; }
+
+.filter-group .filters-inner,
+.filter-group .filter-row {
+  display: flex;
+  gap: 10px;
+}
+
+/* group-children layout: side-by-side filters under the toggle */
+.filter-group > .filter { width: 110px; }
+.filter-group { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
+.filter-group > .group-label,
+.filter-group > .group-toggle { width: 100%; }
+
+.filter { display: flex; flex-direction: column; gap: 4px; min-width: 110px; }
+.filter label { color: var(--muted); font-size: 12px; }
+.filter input,
+.filter select {
+  background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 6px;
@@ -87,8 +129,18 @@ button.icon-btn {
   font-size: 13px;
   width: 100%;
 }
-.filter input:focus { outline: none; border-color: var(--accent); }
-.filter.notes { color: var(--muted); font-size: 12px; min-width: 280px; flex: 1; padding-bottom: 4px; }
+.filter input:focus,
+.filter select:focus { outline: none; border-color: var(--accent); }
+
+.filter-group.disabled { opacity: 0.5; }
+.filter-group.disabled .filter input { pointer-events: none; }
+
+.filter-notes {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  padding-top: 4px;
+}
 
 .content {
   display: grid;
@@ -141,7 +193,12 @@ tr:hover td { background: rgba(88, 166, 255, 0.06); }
   background: var(--panel-2);
   border: 1px solid var(--border);
   color: var(--muted);
+  margin-right: 3px;
 }
+.chip.list-sp500 { color: #79c0ff; border-color: #1f6feb55; }
+.chip.list-dow { color: #ffa657; border-color: #d2992255; }
+.chip.list-nasdaq100 { color: #d2a8ff; border-color: #9b6dff55; }
+.chip.list-tsx { color: #56d364; border-color: #3fb95055; }
 
 .history-body { display: flex; flex-direction: column; gap: 12px; max-height: 70vh; overflow-y: auto; }
 .history-day {
