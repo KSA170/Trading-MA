@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Trading MA — Breakout Screener</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Trading MA <span class="muted">— Breakout Screener</span></h1>
+    <div class="status">
+      <span id="status-text">idle</span>
+      <button id="run-btn" class="primary">Run screen</button>
+    </div>
+  </header>
+
+  <section class="filters">
+    <div class="filter">
+      <label>N-day high lookback</label>
+      <input id="high_lookback" type="number" min="2" max="252" value="30" />
+    </div>
+    <div class="filter">
+      <label>RSI min</label>
+      <input id="rsi_min" type="number" step="0.1" min="0" max="100" value="45" />
+    </div>
+    <div class="filter">
+      <label>RSI max</label>
+      <input id="rsi_max" type="number" step="0.1" min="0" max="100" value="50" />
+    </div>
+    <div class="filter">
+      <label>RVol lookback (days)</label>
+      <input id="rvol_lookback" type="number" min="2" max="60" value="10" />
+    </div>
+    <div class="filter">
+      <label>RVol min (×)</label>
+      <input id="rvol_min" type="number" step="0.05" min="0" value="0.5" />
+    </div>
+    <div class="filter notes">
+      <span>US (S&amp;P 500) + Canada (TSX). Daily bars. Source: Yahoo Finance.</span>
+    </div>
+  </section>
+
+  <main class="content">
+    <section class="results">
+      <h2>Matches <span id="match-count" class="muted"></span></h2>
+      <div class="table-wrap">
+        <table id="results-table">
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Name</th>
+              <th>Ex.</th>
+              <th class="num">Prev close</th>
+              <th class="num">% chg</th>
+              <th class="num">30d high</th>
+              <th class="num">RSI</th>
+              <th class="num">RVol</th>
+              <th class="num">Volume</th>
+              <th>Chart</th>
+            </tr>
+          </thead>
+          <tbody id="results-body">
+            <tr class="empty"><td colspan="10">Click "Run screen" to start.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="history">
+      <h2>History — top 5 / day</h2>
+      <div id="history-body" class="history-body">
+        <p class="muted">No history yet. Run the screener to start logging.</p>
+      </div>
+    </aside>
+  </main>
+
+  <div id="chart-modal" class="modal hidden">
+    <div class="modal-card">
+      <header class="modal-header">
+        <div>
+          <h3 id="chart-title">Chart</h3>
+          <div class="legend">
+            <span class="dot dot-close"></span> Close
+            <span class="dot dot-ema21"></span> EMA 21
+            <span class="dot dot-ema50"></span> EMA 50
+            <span class="dot dot-rsi"></span> RSI(14)
+          </div>
+        </div>
+        <button id="chart-close" class="icon-btn">×</button>
+      </header>
+      <div id="price-chart" class="chart price"></div>
+      <div id="rsi-chart" class="chart rsi"></div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
