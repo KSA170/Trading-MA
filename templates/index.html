@@ -107,27 +107,25 @@
         <span id="as-of-label" class="as-of-label muted"></span>
       </h2>
       <div class="table-wrap">
-        <table id="results-table">
+        <table id="results-table" class="sortable">
           <thead>
             <tr>
-              <th>Ticker</th>
-              <th>Name</th>
-              <th>Ex.</th>
-              <th>Lists</th>
-              <th>As-of</th>
-              <th class="num">Prev close</th>
-              <th class="num">% chg</th>
-              <th class="num">30d high</th>
-              <th class="num">RSI(14)</th>
-              <th class="num">9d SMA</th>
-              <th class="num">RSI dev</th>
-              <th class="num">RVol</th>
-              <th class="num">Volume</th>
+              <th data-sort="ticker" data-type="text">Ticker</th>
+              <th data-sort="name" data-type="text">Name</th>
+              <th data-sort="exchange" data-type="text">Ex.</th>
+              <th class="num" data-sort="close" data-type="num">Prev close</th>
+              <th class="num" data-sort="pct_change" data-type="num">% chg</th>
+              <th class="num" data-sort="high_lookback" data-type="num" id="th-high">30d high</th>
+              <th class="num" data-sort="rsi" data-type="num">RSI(14)</th>
+              <th class="num" data-sort="rsi_sma9" data-type="num">9d SMA</th>
+              <th class="num" data-sort="rsi_dev_pct" data-type="num">RSI dev</th>
+              <th class="num" data-sort="rel_volume" data-type="num">RVol</th>
+              <th class="num" data-sort="volume" data-type="num">Volume</th>
               <th>Chart</th>
             </tr>
           </thead>
           <tbody id="results-body">
-            <tr class="empty"><td colspan="14">Click "Run screen" to start.</td></tr>
+            <tr class="empty"><td colspan="12">Click "Run screen" to start.</td></tr>
           </tbody>
         </table>
       </div>
@@ -152,6 +150,9 @@
             <span class="dot dot-ema50"></span> EMA 50
             <span class="dot dot-rsi"></span> RSI(14)
             <span class="dot dot-rsi9"></span> 9d SMA of RSI
+            <span class="dot dot-macd"></span> MACD(12, 26)
+            <span class="dot dot-macd-signal"></span> Signal(9)
+            <span class="dot dot-macd-hist"></span> Histogram
           </div>
         </div>
         <button id="chart-close" class="icon-btn">×</button>

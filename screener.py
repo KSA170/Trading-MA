@@ -309,6 +309,13 @@ def chart_payload(ticker: str, period: str = "1y") -> dict | None:
     df["RSI"] = rsi_wilder(df["Close"], 14)
     df["RSI_SMA9"] = df["RSI"].rolling(window=9, min_periods=9).mean()
 
+    # MACD(12, 26, 9): macd line, 9d EMA signal, histogram = macd - signal
+    ema12 = ema(df["Close"], 12)
+    ema26 = ema(df["Close"], 26)
+    df["MACD"] = ema12 - ema26
+    df["MACD_SIGNAL"] = ema(df["MACD"], 9)
+    df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
+
     def _row(idx, r):
         ts = idx.strftime("%Y-%m-%d")
         return {
@@ -322,6 +329,9 @@ def chart_payload(ticker: str, period: str = "1y") -> dict | None:
             "ema50": _safe(r["EMA50"]),
             "rsi": _safe(r["RSI"]),
             "rsi_sma9": _safe(r["RSI_SMA9"]),
+            "macd": _safe(r["MACD"]),
+            "macd_signal": _safe(r["MACD_SIGNAL"]),
+            "macd_hist": _safe(r["MACD_HIST"]),
         }
 
     rows = [_row(idx, r) for idx, r in df.iterrows()]

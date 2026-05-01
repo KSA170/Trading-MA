@@ -7,12 +7,17 @@ const els = {
   matchCount: $('#match-count'),
   asOfLabel: $('#as-of-label'),
   body: $('#results-body'),
+  thead: document.querySelector('#results-table thead'),
+  thHigh: $('#th-high'),
   historyBody: $('#history-body'),
   modal: $('#chart-modal'),
   modalClose: $('#chart-close'),
   chartTitle: $('#chart-title'),
   chartContainer: $('#chart-container'),
 };
+
+let lastResults = [];
+let sortState = { key: null, dir: null }; // dir: 'asc' | 'desc'
 
 const inputs = {
   high_lookback: $('#high_lookback'),
@@ -113,14 +118,16 @@ async function loadDates() {
 async function runScreen() {
   setStatus('running…');
   els.runBtn.disabled = true;
-  els.body.innerHTML = '<tr class="empty"><td colspan="14">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
+  els.body.innerHTML = '<tr class="empty"><td colspan="12">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
   els.matchCount.textContent = '';
   if (els.asOfLabel) els.asOfLabel.textContent = '';
+  updateHighHeader();
   try {
     const res = await fetch('/api/screen?' + buildQuery());
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    renderResults(data.results || []);
+    lastResults = data.results || [];
+    renderTable();
     if (els.asOfLabel) {
       const d = data.as_of_date || (asOfSelect && asOfSelect.options[asOfSelect.selectedIndex]?.text) || '';
       els.asOfLabel.textContent = d ? `as of ${d}` : '';
@@ -130,16 +137,50 @@ async function runScreen() {
   } catch (err) {
     console.error(err);
     setStatus('error');
-    els.body.innerHTML = `<tr class="empty"><td colspan="14">Error: ${err.message}</td></tr>`;
+    els.body.innerHTML = `<tr class="empty"><td colspan="12">Error: ${err.message}</td></tr>`;
   } finally {
     els.runBtn.disabled = false;
   }
 }
 
+function updateHighHeader() {
+  if (!els.thHigh) return;
+  const n = parseInt(inputs.high_lookback.value, 10);
+  els.thHigh.textContent = (Number.isFinite(n) && n > 0) ? `${n}d high` : 'High';
+}
+
+function applySortIndicators() {
+  if (!els.thead) return;
+  els.thead.querySelectorAll('th[data-sort]').forEach((th) => {
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (sortState.key && th.dataset.sort === sortState.key) {
+      th.classList.add(sortState.dir === 'asc' ? 'sort-asc' : 'sort-desc');
+    }
+  });
+}
+
+function sortedResults() {
+  if (!sortState.key) return lastResults;
+  const th = els.thead && els.thead.querySelector(`th[data-sort="${sortState.key}"]`);
+  const type = th ? th.dataset.type : 'text';
+  const sign = sortState.dir === 'asc' ? 1 : -1;
+  const out = lastResults.slice();
+  out.sort((a, b) => {
+    const va = a[sortState.key];
+    const vb = b[sortState.key];
+    if (va === vb) return 0;
+    if (va === null || va === undefined) return 1;
+    if (vb === null || vb === undefined) return -1;
+    if (type === 'num') return (Number(va) - Number(vb)) * sign;
+    return String(va).localeCompare(String(vb)) * sign;
+  });
+  return out;
+}
+
 function renderResults(results) {
   els.matchCount.textContent = `(${results.length})`;
   if (!results.length) {
-    els.body.innerHTML = '<tr class="empty"><td colspan="14">No matches with these filters.</td></tr>';
+    els.body.innerHTML = '<tr class="empty"><td colspan="12">No matches with these filters.</td></tr>';
     return;
   }
   els.body.innerHTML = '';
@@ -147,13 +188,13 @@ function renderResults(results) {
     const tr = document.createElement('tr');
     const pctClass = r.pct_change >= 0 ? 'pos' : 'neg';
     const devClass = r.rsi_dev_pct >= 0 ? 'pos' : 'neg';
-    const lists = (r.lists || []).map((k) => `<span class="chip list-${k}">${LIST_LABELS[k] || k}</span>`).join('');
+    if (r.rsi !== null && r.rsi_sma9 !== null && r.rsi !== undefined && r.rsi_sma9 !== undefined && r.rsi === r.rsi_sma9) {
+      tr.classList.add('row-equal');
+    }
     tr.innerHTML = `
       <td><strong>${r.ticker}</strong></td>
       <td>${escapeHtml(r.name || '')}</td>
       <td><span class="chip">${r.exchange}</span></td>
-      <td>${lists || '<span class="muted">—</span>'}</td>
-      <td class="muted">${escapeHtml(r.as_of_date || '')}</td>
       <td class="num">${fmtNum(r.close)}</td>
       <td class="num ${pctClass}">${r.pct_change >= 0 ? '+' : ''}${fmtNum(r.pct_change)}%</td>
       <td class="num">${fmtNum(r.high_lookback)}</td>
@@ -169,6 +210,23 @@ function renderResults(results) {
   els.body.querySelectorAll('button.link').forEach((b) => {
     b.addEventListener('click', () => openChart(b.dataset.ticker));
   });
+}
+
+function renderTable() {
+  applySortIndicators();
+  renderResults(sortedResults());
+}
+
+function onSortHeaderClick(ev) {
+  const th = ev.target.closest('th[data-sort]');
+  if (!th) return;
+  const key = th.dataset.sort;
+  if (sortState.key === key) {
+    sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortState = { key, dir: 'asc' };
+  }
+  renderTable();
 }
 
 async function loadHistory() {
@@ -248,13 +306,18 @@ function drawChart(data) {
   els.chartTitle.textContent = `${data.ticker} ${data.name ? '— ' + data.name : ''} (daily)`;
 
   // Single chart with two panes (price on top, RSI below). Because both panes
-  // share the same chart instance, they share one time axis — every price bar
-  // is drawn at exactly the same X coordinate as its RSI value, all the way
-  // across.
+  // share the same chart instance, they share one bar grid and one time axis.
+  // The right price scale must also have the *same width* in every pane,
+  // otherwise the pane with the wider scale loses drawing-area width and its
+  // bars drift leftward relative to the price pane. We enforce this by
+  // (a) keeping series labels off the price scale and (b) pinning a minimum
+  // width on every pane's right scale after creation.
+  const SCALE_MIN_WIDTH = 80;
+
   chart = LightweightCharts.createChart(els.chartContainer, {
     layout: { background: { color: '#161b22' }, textColor: '#c9d1d9' },
     grid: { vertLines: { color: '#22272e' }, horzLines: { color: '#22272e' } },
-    rightPriceScale: { borderColor: '#2a313c', minimumWidth: 64 },
+    rightPriceScale: { borderColor: '#2a313c', minimumWidth: SCALE_MIN_WIDTH },
     leftPriceScale: { visible: false },
     timeScale: { borderColor: '#2a313c', rightOffset: 4, barSpacing: 6 },
     crosshair: { mode: 1 },
@@ -277,6 +340,8 @@ function drawChart(data) {
     priceFormat: { type: 'volume' },
     priceScaleId: '',
     color: '#30363d',
+    lastValueVisible: false,
+    priceLineVisible: false,
   }, 0);
   volSeries.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
 
@@ -291,13 +356,17 @@ function drawChart(data) {
   })));
 
   // --- Pane 1: RSI(14) + 9d SMA of RSI ---
+  // No `title` on these series — series titles render as labels on the price
+  // scale and would widen this pane's right scale, mis-aligning its bars
+  // with the price pane above. The HTML legend already identifies the lines.
   const rsiSeries = chart.addSeries(LightweightCharts.LineSeries, {
-    color: '#58a6ff', lineWidth: 2, title: 'RSI(14)',
+    color: '#58a6ff', lineWidth: 2,
     priceLineVisible: false,
   }, 1);
   const rsiSmaSeries = chart.addSeries(LightweightCharts.LineSeries, {
-    color: '#f0883e', lineWidth: 1, title: '9d SMA of RSI',
+    color: '#f0883e', lineWidth: 1,
     priceLineVisible: false,
+    lastValueVisible: false,
   }, 1);
   rsiSeries.setData(rows.filter((r) => r.rsi !== null).map((r) => ({ time: r.time, value: r.rsi })));
   rsiSmaSeries.setData(rows.filter((r) => r.rsi_sma9 !== null && r.rsi_sma9 !== undefined).map((r) => ({ time: r.time, value: r.rsi_sma9 })));
@@ -305,11 +374,50 @@ function drawChart(data) {
   rsiSeries.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '30' });
   rsiSeries.createPriceLine({ price: 50, color: '#8b949e', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '50' });
 
-  // Roughly 75% / 25% split between the price pane and the RSI pane.
+  // --- Pane 2: MACD(12, 26, 9) ---
+  // Histogram drawn first so the MACD/signal lines render on top of the bars.
+  const macdHistSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
+    priceFormat: { type: 'price', precision: 4, minMove: 0.0001 },
+    priceLineVisible: false,
+    lastValueVisible: false,
+  }, 2);
+  const macdSeries = chart.addSeries(LightweightCharts.LineSeries, {
+    color: '#58a6ff', lineWidth: 2,
+    priceLineVisible: false,
+  }, 2);
+  const macdSignalSeries = chart.addSeries(LightweightCharts.LineSeries, {
+    color: '#f0883e', lineWidth: 1,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  }, 2);
+  const macdRows = rows.filter((r) => r.macd !== null && r.macd !== undefined);
+  macdHistSeries.setData(macdRows
+    .filter((r) => r.macd_hist !== null && r.macd_hist !== undefined)
+    .map((r) => ({
+      time: r.time,
+      value: r.macd_hist,
+      color: r.macd_hist >= 0 ? 'rgba(63,185,80,0.55)' : 'rgba(248,81,73,0.55)',
+    })));
+  macdSeries.setData(macdRows.map((r) => ({ time: r.time, value: r.macd })));
+  macdSignalSeries.setData(rows
+    .filter((r) => r.macd_signal !== null && r.macd_signal !== undefined)
+    .map((r) => ({ time: r.time, value: r.macd_signal })));
+  macdSeries.createPriceLine({ price: 0, color: '#8b949e', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
+
+  // Pin every pane's right price scale to the same minimum width so the
+  // chart drawing area has identical horizontal extents in each pane.
   try {
-    const panes = chart.panes();
-    const totalH = els.chartContainer.clientHeight || 580;
-    if (panes && panes.length >= 2) {
+    const panes = chart.panes() || [];
+    panes.forEach((p) => {
+      try { p.priceScale('right').applyOptions({ minimumWidth: SCALE_MIN_WIDTH }); }
+      catch (_) { /* ignore */ }
+    });
+    const totalH = els.chartContainer.clientHeight || 720;
+    if (panes.length >= 3) {
+      panes[0].setHeight(Math.round(totalH * 0.56));
+      panes[1].setHeight(Math.round(totalH * 0.22));
+      panes[2].setHeight(Math.round(totalH * 0.22));
+    } else if (panes.length >= 2) {
       panes[0].setHeight(Math.round(totalH * 0.74));
       panes[1].setHeight(Math.round(totalH * 0.26));
     }
@@ -333,6 +441,10 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeChart
 
 Object.values(toggles).forEach((t) => t && t.addEventListener('change', syncDisabledStates));
 syncDisabledStates();
+
+if (els.thead) els.thead.addEventListener('click', onSortHeaderClick);
+if (inputs.high_lookback) inputs.high_lookback.addEventListener('input', updateHighHeader);
+updateHighHeader();
 
 loadDates();
 loadHistory();

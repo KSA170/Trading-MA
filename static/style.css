@@ -191,6 +191,20 @@ td { font-size: 13px; }
 tr.empty td { text-align: center; color: var(--muted); padding: 20px; }
 tr:hover td { background: rgba(88, 166, 255, 0.06); }
 
+table.sortable th[data-sort] {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+}
+table.sortable th[data-sort]:hover { color: var(--text); }
+table.sortable th.sort-asc::after { content: " \25B2"; color: var(--accent); }
+table.sortable th.sort-desc::after { content: " \25BC"; color: var(--accent); }
+
+tr.row-equal td {
+  background: rgba(63, 185, 80, 0.18);
+}
+tr.row-equal:hover td { background: rgba(63, 185, 80, 0.28); }
+
 .pos { color: var(--green); }
 .neg { color: var(--red); }
 
@@ -254,10 +268,13 @@ tr:hover td { background: rgba(88, 166, 255, 0.06); }
 .dot-ema50 { background: #ffa657; }
 .dot-rsi { background: #58a6ff; }
 .dot-rsi9 { background: #f0883e; }
+.dot-macd { background: #58a6ff; }
+.dot-macd-signal { background: #f0883e; }
+.dot-macd-hist { background: #8b949e; }
 
 .chart-container {
   width: 100%;
-  height: 580px;
+  height: 720px;
   background: var(--panel);
 }
 
