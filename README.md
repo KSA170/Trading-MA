@@ -20,17 +20,23 @@ S&P 500, Dow 30, and Nasdaq 100).
 
 ## Default screen
 
-A ticker passes when **all four** are true on the most recent daily close:
+A ticker passes when **all five** are true on the close being evaluated
+(latest by default; up to 10 prior trading days are selectable):
 
-1. **30-day high** — previous close ≥ the highest close in the prior 30 days.
+1. **30-day high** — that close ≥ the highest close in the prior 30 days.
 2. **RSI(14) ∈ [45, 50]** — Wilder smoothing.
-3. **RSI(9) deviation vs RSI(14) ∈ [-5%, +10%]** — `(RSI9 − RSI14) / RSI14`.
-4. **10-day relative volume > 0.5** — yesterday's volume / mean of the prior
+3. **RSI(14) deviation vs its 9-day SMA ∈ [-5%, +5%]** —
+   `(RSI14 − SMA(RSI14, 9)) / SMA(RSI14, 9)`.
+4. **10-day relative volume > 0.5** — that day's volume / mean of the prior
    10 days.
+5. **Price between $1 and $1000** — based on that close.
 
 Every filter is adjustable from the UI. Each criterion has an "Apply"
 checkbox — uncheck it to ignore that filter while still seeing its measured
-value in the table.
+value in the table. The "As-of close" dropdown lets you re-run the screen on
+any of the last 10 trading days; the actual evaluated date is shown both in
+the header and per row (the per-row date can differ between US and Canadian
+names on holidays).
 
 Data source: Yahoo Finance via [`yfinance`](https://pypi.org/project/yfinance/).
 
@@ -49,25 +55,29 @@ each name; subsequent runs are cached for 30 minutes.
 
 - `GET /` — single page UI
 - `GET /api/screen?<params>` — see params below
-- `GET /api/chart/<ticker>` — OHLCV + EMA21 + EMA50 + RSI(14) + RSI(9)
+- `GET /api/chart/<ticker>` — OHLCV + EMA21 + EMA50 + RSI(14) + 9d SMA of RSI
 - `GET /api/history` — top-5 hits per day from `history.json`
 - `GET /api/lists` — available list keys + labels
+- `GET /api/dates?n=11` — last N US trading-day dates (anchored on SPY)
 
 `/api/screen` query params:
 
-| param                 | default | notes                                       |
-|-----------------------|---------|---------------------------------------------|
-| `high_lookback`       | 30      | days for the prev-close-is-N-day-high check |
-| `rsi_min`, `rsi_max`  | 45, 50  | RSI(14) band                                |
-| `rsi9_dev_min_pct`    | -5      | min `(RSI9-RSI14)/RSI14 * 100`             |
-| `rsi9_dev_max_pct`    | 10      | max `(RSI9-RSI14)/RSI14 * 100`             |
-| `rvol_lookback`       | 10      | trailing days for average volume            |
-| `rvol_min`            | 0.5     | min volume / avg(rvol_lookback)             |
-| `apply_high`          | 1       | `0` to skip the 30-day high check           |
-| `apply_rsi`           | 1       | `0` to skip the RSI(14) band check          |
-| `apply_rsi9`          | 1       | `0` to skip the RSI(9) deviation check      |
-| `apply_rvol`          | 1       | `0` to skip the relative-volume check       |
-| `lists`               | (all)   | one of `sp500,dow,nasdaq100,tsx`; empty = all |
+| param                  | default | notes                                       |
+|------------------------|---------|---------------------------------------------|
+| `as_of_offset`         | 0       | 0 = latest close; up to 10 = 10 days back   |
+| `high_lookback`        | 30      | days for the prev-close-is-N-day-high check |
+| `rsi_min`, `rsi_max`   | 45, 50  | RSI(14) band                                |
+| `rsi_dev_min_pct`      | -5      | min `(RSI14 - SMA(RSI14, 9)) / SMA * 100`  |
+| `rsi_dev_max_pct`      | 5       | max `(RSI14 - SMA(RSI14, 9)) / SMA * 100`  |
+| `rvol_lookback`        | 10      | trailing days for average volume            |
+| `rvol_min`             | 0.5     | min volume / avg(rvol_lookback)             |
+| `price_min`, `price_max` | 1, 1000 | inclusive price range                     |
+| `apply_high`           | 1       | `0` to skip the 30-day high check           |
+| `apply_rsi`            | 1       | `0` to skip the RSI(14) band check          |
+| `apply_rsi_dev`        | 1       | `0` to skip the RSI-vs-SMA deviation check  |
+| `apply_rvol`           | 1       | `0` to skip the relative-volume check       |
+| `apply_price`          | 1       | `0` to skip the price-range check           |
+| `lists`                | (all)   | one of `sp500,dow,nasdaq100,tsx`; empty = all |
 
 ## History
 

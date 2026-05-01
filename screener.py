@@ -5,10 +5,10 @@ when disabled the criterion is skipped but the value is still reported.
 Default filters (all enabled):
   - Previous close set a new N-day high (default 30)
   - Daily RSI(14) inside [rsi_min, rsi_max] (default 45-50)
-  - RSI(9) deviation vs RSI(14) within [rsi9_dev_min, rsi9_dev_max]%
-    (default -5%..+10%)
+  - RSI(14) deviation vs its own 9-day SMA within [-5%, +5%]
   - Relative volume over the trailing N days greater than threshold
     (default 10-day, > 0.5)
+  - Price range (default $1 - $1000)
 
 Universe is selected via list keys: 'sp500', 'dow', 'nasdaq100', 'tsx'.
 
@@ -40,13 +40,14 @@ class ScreenHit:
     exchange: str
     lists: list[str]
     list_labels: list[str]
+    as_of_date: str
     close: float
     prev_close: float
     pct_change: float
     high_lookback: float
     rsi: float
-    rsi9: float
-    rsi9_dev_pct: float
+    rsi_sma9: float
+    rsi_dev_pct: float
     rel_volume: float
     avg_volume: float
     volume: float
@@ -118,62 +119,86 @@ def _company_name(ticker: str) -> str:
 
 # --- core screening --------------------------------------------------------
 
+MAX_AS_OF_OFFSET = 10
+
+
 def evaluate_ticker(
     ticker: str,
     high_lookback: int = 30,
     rsi_period: int = 14,
     rsi_min: float = 45.0,
     rsi_max: float = 50.0,
-    rsi9_period: int = 9,
-    rsi9_dev_min_pct: float = -5.0,
-    rsi9_dev_max_pct: float = 10.0,
+    rsi_sma_period: int = 9,
+    rsi_dev_min_pct: float = -5.0,
+    rsi_dev_max_pct: float = 5.0,
     rvol_lookback: int = 10,
     rvol_min: float = 0.5,
+    price_min: float = 1.0,
+    price_max: float = 1000.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
-    apply_rsi9: bool = True,
+    apply_rsi_dev: bool = True,
     apply_rvol: bool = True,
+    apply_price: bool = True,
+    as_of_offset: int = 0,
 ) -> ScreenHit | None:
+    if as_of_offset < 0:
+        as_of_offset = 0
+    if as_of_offset > MAX_AS_OF_OFFSET:
+        as_of_offset = MAX_AS_OF_OFFSET
+
     df = _cached_history(ticker, period="6mo")
-    if df is None or len(df) < max(high_lookback + 2, rsi_period + 5, rvol_lookback + 2):
+    needed = max(high_lookback + 2, rsi_period + 5, rvol_lookback + 2) + as_of_offset
+    if df is None or len(df) < needed:
         return None
 
     closes = df["Close"]
     volumes = df["Volume"]
 
-    # "Based on previous close": evaluate using the most recent completed bar.
-    prev_close = float(closes.iloc[-1])
-    prior_close = float(closes.iloc[-2])
-    volume = float(volumes.iloc[-1])
+    # The "evaluation bar" is the close used for the prev_close gate. With
+    # as_of_offset=0 it's the latest bar; offset=k pushes back k trading days.
+    eval_idx = -(1 + as_of_offset)
+    prior_idx = eval_idx - 1
+    eval_date = df.index[eval_idx].strftime("%Y-%m-%d")
 
-    # N-day high lookup uses the prior `high_lookback` closes (excluding the
-    # current bar). When the high filter is enabled, prev_close must be >= max.
-    window = closes.iloc[-(high_lookback + 1):-1]
+    prev_close = float(closes.iloc[eval_idx])
+    prior_close = float(closes.iloc[prior_idx])
+    volume = float(volumes.iloc[eval_idx])
+
+    # Price-range filter (applied first - cheapest gate)
+    if apply_price and not (price_min <= prev_close <= price_max):
+        return None
+
+    # N-day high: max of the prior `high_lookback` closes (excluding eval bar).
+    window_start = eval_idx - high_lookback
+    window = closes.iloc[window_start:eval_idx]
     if window.empty:
         return None
     lookback_high = float(window.max())
     if apply_high and prev_close < lookback_high:
         return None
 
-    # RSI(14)
-    rsi_series = rsi_wilder(closes, period=rsi_period)
+    # RSI(14) computed up to and including the eval bar
+    closes_to_eval = closes.iloc[: len(closes) + eval_idx + 1] if eval_idx < -1 else closes
+    rsi_series = rsi_wilder(closes_to_eval, period=rsi_period)
     rsi_val = rsi_series.iloc[-1]
     if not np.isfinite(rsi_val):
         return None
     if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
         return None
 
-    # RSI(9) and deviation vs RSI(14)
-    rsi9_series = rsi_wilder(closes, period=rsi9_period)
-    rsi9_val = rsi9_series.iloc[-1]
-    if not np.isfinite(rsi9_val) or rsi_val == 0:
+    # 9-day SMA of RSI(14) and RSI's deviation from it.
+    rsi_sma_series = rsi_series.rolling(window=rsi_sma_period, min_periods=rsi_sma_period).mean()
+    rsi_sma_val = rsi_sma_series.iloc[-1]
+    if not np.isfinite(rsi_sma_val) or rsi_sma_val == 0:
         return None
-    rsi9_dev_pct = (float(rsi9_val) - float(rsi_val)) / float(rsi_val) * 100.0
-    if apply_rsi9 and not (rsi9_dev_min_pct <= rsi9_dev_pct <= rsi9_dev_max_pct):
+    rsi_dev_pct = (float(rsi_val) - float(rsi_sma_val)) / float(rsi_sma_val) * 100.0
+    if apply_rsi_dev and not (rsi_dev_min_pct <= rsi_dev_pct <= rsi_dev_max_pct):
         return None
 
-    # Relative volume: last bar volume / mean of prior N bars
-    vol_window = volumes.iloc[-(rvol_lookback + 1):-1]
+    # Relative volume: eval-bar volume / mean of the prior rvol_lookback bars
+    vol_window_start = eval_idx - rvol_lookback
+    vol_window = volumes.iloc[vol_window_start:eval_idx]
     if vol_window.empty or vol_window.mean() == 0:
         return None
     avg_volume = float(vol_window.mean())
@@ -193,13 +218,14 @@ def evaluate_ticker(
         exchange=exchange,
         lists=membership,
         list_labels=list_labels(membership),
+        as_of_date=eval_date,
         close=round(prev_close, 4),
         prev_close=round(prior_close, 4),
         pct_change=round(pct_change, 2),
         high_lookback=round(lookback_high, 4),
         rsi=round(float(rsi_val), 2),
-        rsi9=round(float(rsi9_val), 2),
-        rsi9_dev_pct=round(rsi9_dev_pct, 2),
+        rsi_sma9=round(float(rsi_sma_val), 2),
+        rsi_dev_pct=round(rsi_dev_pct, 2),
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
@@ -211,14 +237,18 @@ def run_screen(
     high_lookback: int = 30,
     rsi_min: float = 45.0,
     rsi_max: float = 50.0,
-    rsi9_dev_min_pct: float = -5.0,
-    rsi9_dev_max_pct: float = 10.0,
+    rsi_dev_min_pct: float = -5.0,
+    rsi_dev_max_pct: float = 5.0,
     rvol_lookback: int = 10,
     rvol_min: float = 0.5,
+    price_min: float = 1.0,
+    price_max: float = 1000.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
-    apply_rsi9: bool = True,
+    apply_rsi_dev: bool = True,
     apply_rvol: bool = True,
+    apply_price: bool = True,
+    as_of_offset: int = 0,
     lists: list[str] | None = None,
     universe: Iterable[str] | None = None,
     max_workers: int = 16,
@@ -238,14 +268,18 @@ def run_screen(
                 high_lookback=high_lookback,
                 rsi_min=rsi_min,
                 rsi_max=rsi_max,
-                rsi9_dev_min_pct=rsi9_dev_min_pct,
-                rsi9_dev_max_pct=rsi9_dev_max_pct,
+                rsi_dev_min_pct=rsi_dev_min_pct,
+                rsi_dev_max_pct=rsi_dev_max_pct,
                 rvol_lookback=rvol_lookback,
                 rvol_min=rvol_min,
+                price_min=price_min,
+                price_max=price_max,
                 apply_high=apply_high,
                 apply_rsi=apply_rsi,
-                apply_rsi9=apply_rsi9,
+                apply_rsi_dev=apply_rsi_dev,
                 apply_rvol=apply_rvol,
+                apply_price=apply_price,
+                as_of_offset=as_of_offset,
             )
         except Exception as exc:
             log.warning("evaluate failed for %s: %s", t, exc)
@@ -273,7 +307,7 @@ def chart_payload(ticker: str, period: str = "1y") -> dict | None:
     df["EMA21"] = ema(df["Close"], 21)
     df["EMA50"] = ema(df["Close"], 50)
     df["RSI"] = rsi_wilder(df["Close"], 14)
-    df["RSI9"] = rsi_wilder(df["Close"], 9)
+    df["RSI_SMA9"] = df["RSI"].rolling(window=9, min_periods=9).mean()
 
     def _row(idx, r):
         ts = idx.strftime("%Y-%m-%d")
@@ -287,7 +321,7 @@ def chart_payload(ticker: str, period: str = "1y") -> dict | None:
             "ema21": _safe(r["EMA21"]),
             "ema50": _safe(r["EMA50"]),
             "rsi": _safe(r["RSI"]),
-            "rsi9": _safe(r["RSI9"]),
+            "rsi_sma9": _safe(r["RSI_SMA9"]),
         }
 
     rows = [_row(idx, r) for idx, r in df.iterrows()]
@@ -296,6 +330,21 @@ def chart_payload(ticker: str, period: str = "1y") -> dict | None:
         "name": _company_name(ticker),
         "rows": rows,
     }
+
+
+def reference_dates(n: int = 11) -> list[dict]:
+    """Last `n` US trading-day dates from a reference ticker (SPY).
+
+    Returns a list of {"offset": k, "date": "YYYY-MM-DD"} most recent first.
+    The dropdown uses these as anchors; per-ticker actual dates may differ on
+    Canadian holidays (each row's `as_of_date` reports what was actually used).
+    """
+    df = _cached_history("SPY", period="3mo")
+    if df is None or df.empty:
+        return []
+    dates = [idx.strftime("%Y-%m-%d") for idx in df.index][-n:]
+    # most recent first, with offset 0 = latest
+    return [{"offset": i, "date": d} for i, d in enumerate(reversed(dates))]
 
 
 def _safe(v):

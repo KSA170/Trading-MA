@@ -5,6 +5,7 @@ const els = {
   runBtn: $('#run-btn'),
   status: $('#status-text'),
   matchCount: $('#match-count'),
+  asOfLabel: $('#as-of-label'),
   body: $('#results-body'),
   historyBody: $('#history-body'),
   modal: $('#chart-modal'),
@@ -18,20 +19,24 @@ const inputs = {
   high_lookback: $('#high_lookback'),
   rsi_min: $('#rsi_min'),
   rsi_max: $('#rsi_max'),
-  rsi9_dev_min_pct: $('#rsi9_dev_min_pct'),
-  rsi9_dev_max_pct: $('#rsi9_dev_max_pct'),
+  rsi_dev_min_pct: $('#rsi_dev_min_pct'),
+  rsi_dev_max_pct: $('#rsi_dev_max_pct'),
   rvol_lookback: $('#rvol_lookback'),
   rvol_min: $('#rvol_min'),
+  price_min: $('#price_min'),
+  price_max: $('#price_max'),
 };
 
 const toggles = {
   apply_high: $('#apply_high'),
   apply_rsi: $('#apply_rsi'),
-  apply_rsi9: $('#apply_rsi9'),
+  apply_rsi_dev: $('#apply_rsi_dev'),
   apply_rvol: $('#apply_rvol'),
+  apply_price: $('#apply_price'),
 };
 
 const listFilter = $('#list_filter');
+const asOfSelect = $('#as_of_offset');
 
 const LIST_LABELS = {
   sp500: 'S&P 500',
@@ -65,6 +70,9 @@ function buildQuery() {
   if (listFilter && listFilter.value) {
     params.set('lists', listFilter.value);
   }
+  if (asOfSelect) {
+    params.set('as_of_offset', asOfSelect.value || '0');
+  }
   return params.toString();
 }
 
@@ -72,8 +80,9 @@ function syncDisabledStates() {
   const map = {
     apply_high: 'high',
     apply_rsi: 'rsi',
-    apply_rsi9: 'rsi9',
+    apply_rsi_dev: 'rsi_dev',
     apply_rvol: 'rvol',
+    apply_price: 'price',
   };
   for (const [toggleId, groupKey] of Object.entries(map)) {
     const t = toggles[toggleId];
@@ -83,22 +92,46 @@ function syncDisabledStates() {
   }
 }
 
+async function loadDates() {
+  if (!asOfSelect) return;
+  try {
+    const res = await fetch('/api/dates');
+    const data = await res.json();
+    const dates = data.dates || [];
+    if (!dates.length) return;
+    asOfSelect.innerHTML = '';
+    dates.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = String(d.offset);
+      opt.textContent = i === 0 ? `${d.date} (latest)` : d.date;
+      asOfSelect.appendChild(opt);
+    });
+  } catch (err) {
+    console.warn('date list load failed:', err);
+  }
+}
+
 async function runScreen() {
   setStatus('running…');
   els.runBtn.disabled = true;
-  els.body.innerHTML = '<tr class="empty"><td colspan="13">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
+  els.body.innerHTML = '<tr class="empty"><td colspan="14">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
   els.matchCount.textContent = '';
+  if (els.asOfLabel) els.asOfLabel.textContent = '';
   try {
     const res = await fetch('/api/screen?' + buildQuery());
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     renderResults(data.results || []);
+    if (els.asOfLabel) {
+      const d = data.as_of_date || (asOfSelect && asOfSelect.options[asOfSelect.selectedIndex]?.text) || '';
+      els.asOfLabel.textContent = d ? `as of ${d}` : '';
+    }
     setStatus(data.cached ? 'cached' : `done in ${data.elapsed_sec || '?'}s`);
     loadHistory();
   } catch (err) {
     console.error(err);
     setStatus('error');
-    els.body.innerHTML = `<tr class="empty"><td colspan="13">Error: ${err.message}</td></tr>`;
+    els.body.innerHTML = `<tr class="empty"><td colspan="14">Error: ${err.message}</td></tr>`;
   } finally {
     els.runBtn.disabled = false;
   }
@@ -107,26 +140,27 @@ async function runScreen() {
 function renderResults(results) {
   els.matchCount.textContent = `(${results.length})`;
   if (!results.length) {
-    els.body.innerHTML = '<tr class="empty"><td colspan="13">No matches with these filters.</td></tr>';
+    els.body.innerHTML = '<tr class="empty"><td colspan="14">No matches with these filters.</td></tr>';
     return;
   }
   els.body.innerHTML = '';
   for (const r of results) {
     const tr = document.createElement('tr');
     const pctClass = r.pct_change >= 0 ? 'pos' : 'neg';
-    const devClass = r.rsi9_dev_pct >= 0 ? 'pos' : 'neg';
+    const devClass = r.rsi_dev_pct >= 0 ? 'pos' : 'neg';
     const lists = (r.lists || []).map((k) => `<span class="chip list-${k}">${LIST_LABELS[k] || k}</span>`).join('');
     tr.innerHTML = `
       <td><strong>${r.ticker}</strong></td>
       <td>${escapeHtml(r.name || '')}</td>
       <td><span class="chip">${r.exchange}</span></td>
       <td>${lists || '<span class="muted">—</span>'}</td>
+      <td class="muted">${escapeHtml(r.as_of_date || '')}</td>
       <td class="num">${fmtNum(r.close)}</td>
       <td class="num ${pctClass}">${r.pct_change >= 0 ? '+' : ''}${fmtNum(r.pct_change)}%</td>
       <td class="num">${fmtNum(r.high_lookback)}</td>
       <td class="num">${fmtNum(r.rsi)}</td>
-      <td class="num">${fmtNum(r.rsi9)}</td>
-      <td class="num ${devClass}">${r.rsi9_dev_pct >= 0 ? '+' : ''}${fmtNum(r.rsi9_dev_pct)}%</td>
+      <td class="num">${fmtNum(r.rsi_sma9)}</td>
+      <td class="num ${devClass}">${r.rsi_dev_pct >= 0 ? '+' : ''}${fmtNum(r.rsi_dev_pct)}%</td>
       <td class="num">${fmtNum(r.rel_volume)}×</td>
       <td class="num">${fmtVol(r.volume)}</td>
       <td><button class="link" data-ticker="${escapeHtml(r.ticker)}">view</button></td>
@@ -159,8 +193,8 @@ function renderHistory(records) {
     div.className = 'history-day';
     const items = (rec.top || [])
       .map((t) => {
-        const dev = t.rsi9_dev_pct;
-        const devTxt = dev === undefined || dev === null ? '' : `, Δ9 ${dev >= 0 ? '+' : ''}${fmtNum(dev)}%`;
+        const dev = t.rsi_dev_pct ?? t.rsi9_dev_pct; // back-compat for old snapshots
+        const devTxt = dev === undefined || dev === null ? '' : `, Δsma ${dev >= 0 ? '+' : ''}${fmtNum(dev)}%`;
         return `<li><strong>${escapeHtml(t.ticker)}</strong> — ${escapeHtml(t.name || '')} <span class="muted">RSI ${fmtNum(t.rsi)}${devTxt}, RVol ${fmtNum(t.rel_volume)}×</span></li>`;
       })
       .join('');
@@ -173,11 +207,11 @@ function renderHistory(records) {
 
 // --- chart modal -----------------------------------------------------------
 
-let priceChart, rsiChart, candleSeries, ema21Series, ema50Series, rsiSeries, rsi9Series, volSeries;
+let priceChart, rsiChart, candleSeries, ema21Series, ema50Series, rsiSeries, rsiSmaSeries, volSeries;
 
 function disposeCharts() {
   [priceChart, rsiChart].forEach((c) => c && c.remove && c.remove());
-  priceChart = rsiChart = candleSeries = ema21Series = ema50Series = rsiSeries = rsi9Series = volSeries = null;
+  priceChart = rsiChart = candleSeries = ema21Series = ema50Series = rsiSeries = rsiSmaSeries = volSeries = null;
   els.priceChart.innerHTML = '';
   els.rsiChart.innerHTML = '';
 }
@@ -253,8 +287,8 @@ function drawChart(data) {
   });
   rsiSeries = rsiChart.addLineSeries({ color: '#58a6ff', lineWidth: 2, title: 'RSI(14)' });
   rsiSeries.setData(rows.filter((r) => r.rsi !== null).map((r) => ({ time: r.time, value: r.rsi })));
-  rsi9Series = rsiChart.addLineSeries({ color: '#f0883e', lineWidth: 1, title: 'RSI(9)' });
-  rsi9Series.setData(rows.filter((r) => r.rsi9 !== null && r.rsi9 !== undefined).map((r) => ({ time: r.time, value: r.rsi9 })));
+  rsiSmaSeries = rsiChart.addLineSeries({ color: '#f0883e', lineWidth: 1, title: '9d SMA of RSI' });
+  rsiSmaSeries.setData(rows.filter((r) => r.rsi_sma9 !== null && r.rsi_sma9 !== undefined).map((r) => ({ time: r.time, value: r.rsi_sma9 })));
   rsiSeries.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '70' });
   rsiSeries.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '30' });
   rsiSeries.createPriceLine({ price: 50, color: '#8b949e', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '50' });
@@ -291,4 +325,5 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeChart
 Object.values(toggles).forEach((t) => t && t.addEventListener('change', syncDisabledStates));
 syncDisabledStates();
 
+loadDates();
 loadHistory();
