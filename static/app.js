@@ -243,18 +243,32 @@ function drawChart(data) {
   }
   els.chartTitle.textContent = `${data.ticker} ${data.name ? '— ' + data.name : ''} (daily)`;
 
+  // Both charts must share the same right-price-scale geometry so the data
+  // areas line up horizontally; otherwise the wider price labels on the top
+  // chart shove its bars rightward relative to the RSI panel.
+  const sharedScaleOpts = {
+    borderColor: '#2a313c',
+    minimumWidth: 64,
+    scaleMargins: { top: 0.08, bottom: 0.08 },
+  };
   const baseOpts = {
     layout: { background: { color: '#161b22' }, textColor: '#c9d1d9' },
     grid: { vertLines: { color: '#22272e' }, horzLines: { color: '#22272e' } },
-    timeScale: { borderColor: '#2a313c' },
-    rightPriceScale: { borderColor: '#2a313c' },
+    rightPriceScale: sharedScaleOpts,
+    leftPriceScale: { visible: false },
+    timeScale: { borderColor: '#2a313c', rightOffset: 4, barSpacing: 6 },
     crosshair: { mode: 1 },
+    handleScroll: true,
+    handleScale: true,
   };
 
+  // Top chart: hide the time axis (RSI panel below carries the only one),
+  // which keeps both panels at identical horizontal extents.
   priceChart = LightweightCharts.createChart(els.priceChart, {
     ...baseOpts,
     width: els.priceChart.clientWidth,
     height: els.priceChart.clientHeight,
+    timeScale: { ...baseOpts.timeScale, visible: false },
   });
   candleSeries = priceChart.addCandlestickSeries({
     upColor: '#3fb950', downColor: '#f85149',
@@ -293,14 +307,47 @@ function drawChart(data) {
   rsiSeries.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '30' });
   rsiSeries.createPriceLine({ price: 50, color: '#8b949e', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '50' });
 
-  // sync time axes
-  priceChart.timeScale().subscribeVisibleLogicalRangeChange((r) => r && rsiChart.timeScale().setVisibleLogicalRange(r));
-  rsiChart.timeScale().subscribeVisibleLogicalRangeChange((r) => r && priceChart.timeScale().setVisibleLogicalRange(r));
+  // Bidirectional logical-range sync with a reentrancy guard so both axes
+  // settle on identical bar boundaries (no off-by-one shimmy).
+  let syncing = false;
+  const syncTime = (source, target) => {
+    source.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range || syncing) return;
+      syncing = true;
+      try {
+        target.timeScale().setVisibleLogicalRange(range);
+      } finally {
+        syncing = false;
+      }
+    });
+  };
+  syncTime(priceChart, rsiChart);
+  syncTime(rsiChart, priceChart);
 
+  // Crosshair sync so hovering on one panel highlights the same date on the
+  // other.
+  const syncCrosshair = (source, target, targetSeries) => {
+    source.subscribeCrosshairMove((param) => {
+      if (!param || !param.time) {
+        target.clearCrosshairPosition();
+        return;
+      }
+      try {
+        target.setCrosshairPosition(NaN, param.time, targetSeries);
+      } catch (_) {
+        target.clearCrosshairPosition();
+      }
+    });
+  };
+  syncCrosshair(priceChart, rsiChart, rsiSeries);
+  syncCrosshair(rsiChart, priceChart, candleSeries);
+
+  // Apply the same visible window from a single source of truth.
   priceChart.timeScale().fitContent();
-  rsiChart.timeScale().fitContent();
+  const range = priceChart.timeScale().getVisibleLogicalRange();
+  if (range) rsiChart.timeScale().setVisibleLogicalRange(range);
 
-  // resize to container changes
+  // Resize handler keeps both panels widthwise in sync on container changes.
   const ro = new ResizeObserver(() => {
     if (priceChart) priceChart.applyOptions({ width: els.priceChart.clientWidth, height: els.priceChart.clientHeight });
     if (rsiChart) rsiChart.applyOptions({ width: els.rsiChart.clientWidth, height: els.rsiChart.clientHeight });
