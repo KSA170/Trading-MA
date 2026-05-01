@@ -11,8 +11,7 @@ const els = {
   modal: $('#chart-modal'),
   modalClose: $('#chart-close'),
   chartTitle: $('#chart-title'),
-  priceChart: $('#price-chart'),
-  rsiChart: $('#rsi-chart'),
+  chartContainer: $('#chart-container'),
 };
 
 const inputs = {
@@ -207,81 +206,78 @@ function renderHistory(records) {
 
 // --- chart modal -----------------------------------------------------------
 
-let priceChart, rsiChart, candleSeries, ema21Series, ema50Series, rsiSeries, rsiSmaSeries, volSeries;
+let chart, chartResizeObserver;
 
-function disposeCharts() {
-  [priceChart, rsiChart].forEach((c) => c && c.remove && c.remove());
-  priceChart = rsiChart = candleSeries = ema21Series = ema50Series = rsiSeries = rsiSmaSeries = volSeries = null;
-  els.priceChart.innerHTML = '';
-  els.rsiChart.innerHTML = '';
+function disposeChart() {
+  if (chartResizeObserver) {
+    try { chartResizeObserver.disconnect(); } catch (_) { /* ignore */ }
+    chartResizeObserver = null;
+  }
+  if (chart && chart.remove) {
+    try { chart.remove(); } catch (_) { /* ignore */ }
+  }
+  chart = null;
+  els.chartContainer.innerHTML = '';
 }
 
 async function openChart(ticker) {
   els.chartTitle.textContent = ticker + ' — daily';
   els.modal.classList.remove('hidden');
-  disposeCharts();
+  disposeChart();
   try {
     const res = await fetch('/api/chart/' + encodeURIComponent(ticker));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     drawChart(data);
   } catch (err) {
-    els.priceChart.innerHTML = `<p class="muted" style="padding:20px">Failed to load chart: ${err.message}</p>`;
+    els.chartContainer.innerHTML = `<p class="muted" style="padding:20px">Failed to load chart: ${err.message}</p>`;
   }
 }
 
 function closeChart() {
   els.modal.classList.add('hidden');
-  disposeCharts();
+  disposeChart();
 }
 
 function drawChart(data) {
   const rows = (data.rows || []).filter((r) => r.close !== null);
   if (!rows.length) {
-    els.priceChart.innerHTML = '<p class="muted" style="padding:20px">No chart data.</p>';
+    els.chartContainer.innerHTML = '<p class="muted" style="padding:20px">No chart data.</p>';
     return;
   }
   els.chartTitle.textContent = `${data.ticker} ${data.name ? '— ' + data.name : ''} (daily)`;
 
-  // Both charts must share the same right-price-scale geometry so the data
-  // areas line up horizontally; otherwise the wider price labels on the top
-  // chart shove its bars rightward relative to the RSI panel.
-  const sharedScaleOpts = {
-    borderColor: '#2a313c',
-    minimumWidth: 64,
-    scaleMargins: { top: 0.08, bottom: 0.08 },
-  };
-  const baseOpts = {
+  // Single chart with two panes (price on top, RSI below). Because both panes
+  // share the same chart instance, they share one time axis — every price bar
+  // is drawn at exactly the same X coordinate as its RSI value, all the way
+  // across.
+  chart = LightweightCharts.createChart(els.chartContainer, {
     layout: { background: { color: '#161b22' }, textColor: '#c9d1d9' },
     grid: { vertLines: { color: '#22272e' }, horzLines: { color: '#22272e' } },
-    rightPriceScale: sharedScaleOpts,
+    rightPriceScale: { borderColor: '#2a313c', minimumWidth: 64 },
     leftPriceScale: { visible: false },
     timeScale: { borderColor: '#2a313c', rightOffset: 4, barSpacing: 6 },
     crosshair: { mode: 1 },
-    handleScroll: true,
-    handleScale: true,
-  };
-
-  // Top chart: hide the time axis (RSI panel below carries the only one),
-  // which keeps both panels at identical horizontal extents.
-  priceChart = LightweightCharts.createChart(els.priceChart, {
-    ...baseOpts,
-    width: els.priceChart.clientWidth,
-    height: els.priceChart.clientHeight,
-    timeScale: { ...baseOpts.timeScale, visible: false },
+    autoSize: true,
   });
-  candleSeries = priceChart.addCandlestickSeries({
+
+  // --- Pane 0: candles + EMAs + volume ---
+  const candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
     upColor: '#3fb950', downColor: '#f85149',
     wickUpColor: '#3fb950', wickDownColor: '#f85149',
     borderVisible: false,
-  });
-  ema21Series = priceChart.addLineSeries({ color: '#d2a8ff', lineWidth: 2, priceLineVisible: false });
-  ema50Series = priceChart.addLineSeries({ color: '#ffa657', lineWidth: 2, priceLineVisible: false });
-  volSeries = priceChart.addHistogramSeries({
+  }, 0);
+  const ema21Series = chart.addSeries(LightweightCharts.LineSeries, {
+    color: '#d2a8ff', lineWidth: 2, priceLineVisible: false,
+  }, 0);
+  const ema50Series = chart.addSeries(LightweightCharts.LineSeries, {
+    color: '#ffa657', lineWidth: 2, priceLineVisible: false,
+  }, 0);
+  const volSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
     priceFormat: { type: 'volume' },
     priceScaleId: '',
     color: '#30363d',
-  });
+  }, 0);
   volSeries.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
 
   candleSeries.setData(rows.map((r) => ({
@@ -294,66 +290,32 @@ function drawChart(data) {
     color: r.close >= r.open ? 'rgba(63,185,80,0.4)' : 'rgba(248,81,73,0.4)',
   })));
 
-  rsiChart = LightweightCharts.createChart(els.rsiChart, {
-    ...baseOpts,
-    width: els.rsiChart.clientWidth,
-    height: els.rsiChart.clientHeight,
-  });
-  rsiSeries = rsiChart.addLineSeries({ color: '#58a6ff', lineWidth: 2, title: 'RSI(14)' });
+  // --- Pane 1: RSI(14) + 9d SMA of RSI ---
+  const rsiSeries = chart.addSeries(LightweightCharts.LineSeries, {
+    color: '#58a6ff', lineWidth: 2, title: 'RSI(14)',
+    priceLineVisible: false,
+  }, 1);
+  const rsiSmaSeries = chart.addSeries(LightweightCharts.LineSeries, {
+    color: '#f0883e', lineWidth: 1, title: '9d SMA of RSI',
+    priceLineVisible: false,
+  }, 1);
   rsiSeries.setData(rows.filter((r) => r.rsi !== null).map((r) => ({ time: r.time, value: r.rsi })));
-  rsiSmaSeries = rsiChart.addLineSeries({ color: '#f0883e', lineWidth: 1, title: '9d SMA of RSI' });
   rsiSmaSeries.setData(rows.filter((r) => r.rsi_sma9 !== null && r.rsi_sma9 !== undefined).map((r) => ({ time: r.time, value: r.rsi_sma9 })));
   rsiSeries.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '70' });
   rsiSeries.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '30' });
   rsiSeries.createPriceLine({ price: 50, color: '#8b949e', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '50' });
 
-  // Bidirectional logical-range sync with a reentrancy guard so both axes
-  // settle on identical bar boundaries (no off-by-one shimmy).
-  let syncing = false;
-  const syncTime = (source, target) => {
-    source.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-      if (!range || syncing) return;
-      syncing = true;
-      try {
-        target.timeScale().setVisibleLogicalRange(range);
-      } finally {
-        syncing = false;
-      }
-    });
-  };
-  syncTime(priceChart, rsiChart);
-  syncTime(rsiChart, priceChart);
+  // Roughly 75% / 25% split between the price pane and the RSI pane.
+  try {
+    const panes = chart.panes();
+    const totalH = els.chartContainer.clientHeight || 580;
+    if (panes && panes.length >= 2) {
+      panes[0].setHeight(Math.round(totalH * 0.74));
+      panes[1].setHeight(Math.round(totalH * 0.26));
+    }
+  } catch (_) { /* pane heights are best-effort */ }
 
-  // Crosshair sync so hovering on one panel highlights the same date on the
-  // other.
-  const syncCrosshair = (source, target, targetSeries) => {
-    source.subscribeCrosshairMove((param) => {
-      if (!param || !param.time) {
-        target.clearCrosshairPosition();
-        return;
-      }
-      try {
-        target.setCrosshairPosition(NaN, param.time, targetSeries);
-      } catch (_) {
-        target.clearCrosshairPosition();
-      }
-    });
-  };
-  syncCrosshair(priceChart, rsiChart, rsiSeries);
-  syncCrosshair(rsiChart, priceChart, candleSeries);
-
-  // Apply the same visible window from a single source of truth.
-  priceChart.timeScale().fitContent();
-  const range = priceChart.timeScale().getVisibleLogicalRange();
-  if (range) rsiChart.timeScale().setVisibleLogicalRange(range);
-
-  // Resize handler keeps both panels widthwise in sync on container changes.
-  const ro = new ResizeObserver(() => {
-    if (priceChart) priceChart.applyOptions({ width: els.priceChart.clientWidth, height: els.priceChart.clientHeight });
-    if (rsiChart) rsiChart.applyOptions({ width: els.rsiChart.clientWidth, height: els.rsiChart.clientHeight });
-  });
-  ro.observe(els.priceChart);
-  ro.observe(els.rsiChart);
+  chart.timeScale().fitContent();
 }
 
 function escapeHtml(s) {

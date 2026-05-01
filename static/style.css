@@ -255,9 +255,11 @@ tr:hover td { background: rgba(88, 166, 255, 0.06); }
 .dot-rsi { background: #58a6ff; }
 .dot-rsi9 { background: #f0883e; }
 
-.chart { width: 100%; }
-.chart.price { height: 420px; }
-.chart.rsi { height: 140px; border-top: 1px solid var(--border); }
+.chart-container {
+  width: 100%;
+  height: 580px;
+  background: var(--panel);
+}
 
 button.link {
   background: transparent;
