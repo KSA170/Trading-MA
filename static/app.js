@@ -376,6 +376,10 @@ function drawChart(data) {
 
   // --- Pane 2: MACD(12, 26, 9) ---
   // Histogram drawn first so the MACD/signal lines render on top of the bars.
+  // TradingView 4-color convention: bright green when histogram is above zero
+  // *and rising*, faded green when above zero *but falling*, bright red when
+  // below zero *and falling further*, faded red when below zero *but
+  // recovering*. Tells you momentum direction at a glance.
   const macdHistSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
     priceFormat: { type: 'price', precision: 4, minMove: 0.0001 },
     priceLineVisible: false,
@@ -390,14 +394,26 @@ function drawChart(data) {
     priceLineVisible: false,
     lastValueVisible: false,
   }, 2);
+  const HIST_BULL_BRIGHT = '#26a69a';
+  const HIST_BULL_FADED = 'rgba(38, 166, 154, 0.40)';
+  const HIST_BEAR_BRIGHT = '#ef5350';
+  const HIST_BEAR_FADED = 'rgba(239, 83, 80, 0.40)';
   const macdRows = rows.filter((r) => r.macd !== null && r.macd !== undefined);
-  macdHistSeries.setData(macdRows
-    .filter((r) => r.macd_hist !== null && r.macd_hist !== undefined)
-    .map((r) => ({
-      time: r.time,
-      value: r.macd_hist,
-      color: r.macd_hist >= 0 ? 'rgba(63,185,80,0.55)' : 'rgba(248,81,73,0.55)',
-    })));
+  const histRows = macdRows.filter((r) => r.macd_hist !== null && r.macd_hist !== undefined);
+  const histPoints = [];
+  let prevHist = null;
+  for (const r of histRows) {
+    const h = r.macd_hist;
+    let color;
+    if (h >= 0) {
+      color = (prevHist === null || h > prevHist) ? HIST_BULL_BRIGHT : HIST_BULL_FADED;
+    } else {
+      color = (prevHist === null || h < prevHist) ? HIST_BEAR_BRIGHT : HIST_BEAR_FADED;
+    }
+    histPoints.push({ time: r.time, value: h, color });
+    prevHist = h;
+  }
+  macdHistSeries.setData(histPoints);
   macdSeries.setData(macdRows.map((r) => ({ time: r.time, value: r.macd })));
   macdSignalSeries.setData(rows
     .filter((r) => r.macd_signal !== null && r.macd_signal !== undefined)
@@ -406,11 +422,30 @@ function drawChart(data) {
 
   // Pin every pane's right price scale to the same minimum width so the
   // chart drawing area has identical horizontal extents in each pane.
+  // Also attach a text-watermark label to each pane so users can identify
+  // which pane is which at a glance.
+  const PANE_LABELS = ['Price + EMAs', 'RSI(14) + 9d SMA', 'MACD(12, 26, 9)'];
   try {
     const panes = chart.panes() || [];
-    panes.forEach((p) => {
+    panes.forEach((p, i) => {
       try { p.priceScale('right').applyOptions({ minimumWidth: SCALE_MIN_WIDTH }); }
       catch (_) { /* ignore */ }
+      const label = PANE_LABELS[i];
+      if (label && typeof LightweightCharts.createTextWatermark === 'function') {
+        try {
+          LightweightCharts.createTextWatermark(p, {
+            horzAlign: 'left',
+            vertAlign: 'top',
+            lines: [{
+              text: label,
+              color: 'rgba(139, 148, 158, 0.75)',
+              fontSize: 12,
+              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+              fontStyle: '600',
+            }],
+          });
+        } catch (_) { /* watermark is best-effort */ }
+      }
     });
     const totalH = els.chartContainer.clientHeight || 720;
     if (panes.length >= 3) {
