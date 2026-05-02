@@ -422,41 +422,58 @@ function drawChart(data) {
 
   // Pin every pane's right price scale to the same minimum width so the
   // chart drawing area has identical horizontal extents in each pane.
-  // Also attach a text-watermark label to each pane so users can identify
-  // which pane is which at a glance.
-  const PANE_LABELS = ['Price + EMAs', 'RSI(14) + 9d SMA', 'MACD(12, 26, 9)'];
+  const panes = chart.panes() || [];
+  panes.forEach((p) => {
+    try { p.priceScale('right').applyOptions({ minimumWidth: SCALE_MIN_WIDTH }); }
+    catch (_) { /* ignore */ }
+  });
+
+  // Pane proportions via stretch factors (the v5-correct API). setHeight
+  // alone tends to be ignored under autoSize because the chart re-distributes
+  // space using stretch factors. Ratios below give roughly 56/22/22.
   try {
-    const panes = chart.panes() || [];
-    panes.forEach((p, i) => {
-      try { p.priceScale('right').applyOptions({ minimumWidth: SCALE_MIN_WIDTH }); }
-      catch (_) { /* ignore */ }
-      const label = PANE_LABELS[i];
-      if (label && typeof LightweightCharts.createTextWatermark === 'function') {
-        try {
-          LightweightCharts.createTextWatermark(p, {
-            horzAlign: 'left',
-            vertAlign: 'top',
-            lines: [{
-              text: label,
-              color: 'rgba(139, 148, 158, 0.75)',
-              fontSize: 12,
-              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-              fontStyle: '600',
-            }],
-          });
-        } catch (_) { /* watermark is best-effort */ }
-      }
-    });
-    const totalH = els.chartContainer.clientHeight || 720;
     if (panes.length >= 3) {
-      panes[0].setHeight(Math.round(totalH * 0.56));
-      panes[1].setHeight(Math.round(totalH * 0.22));
-      panes[2].setHeight(Math.round(totalH * 0.22));
+      const setStretch = (p, f) => {
+        if (typeof p.setStretchFactor === 'function') p.setStretchFactor(f);
+        else if (typeof p.setHeight === 'function') p.setHeight(f * 100);
+      };
+      setStretch(panes[0], 2.6);
+      setStretch(panes[1], 1.0);
+      setStretch(panes[2], 1.0);
     } else if (panes.length >= 2) {
-      panes[0].setHeight(Math.round(totalH * 0.74));
-      panes[1].setHeight(Math.round(totalH * 0.26));
+      const setStretch = (p, f) => {
+        if (typeof p.setStretchFactor === 'function') p.setStretchFactor(f);
+        else if (typeof p.setHeight === 'function') p.setHeight(f * 100);
+      };
+      setStretch(panes[0], 2.8);
+      setStretch(panes[1], 1.0);
     }
-  } catch (_) { /* pane heights are best-effort */ }
+  } catch (_) { /* best-effort */ }
+
+  // Pane labels — overlay HTML divs positioned by each pane's actual rendered
+  // pixel height. More reliable than the v5 watermark API across CDN builds.
+  const PANE_LABELS = ['Price + EMAs', 'RSI(14) + 9d SMA of RSI', 'MACD(12, 26, 9)'];
+  const placeLabels = () => {
+    els.chartContainer.querySelectorAll('.pane-label').forEach((n) => n.remove());
+    if (!chart) return;
+    const ps = chart.panes() || [];
+    let topPx = 0;
+    ps.forEach((p, i) => {
+      if (!PANE_LABELS[i]) return;
+      const div = document.createElement('div');
+      div.className = 'pane-label';
+      div.textContent = PANE_LABELS[i];
+      div.style.top = (topPx + 6) + 'px';
+      els.chartContainer.appendChild(div);
+      try { topPx += (p.getHeight && p.getHeight()) || 0; } catch (_) { /* ignore */ }
+    });
+  };
+  // Defer one frame so pane heights have settled after stretch factors apply.
+  requestAnimationFrame(() => { placeLabels(); requestAnimationFrame(placeLabels); });
+
+  // Reposition labels when the modal/container is resized.
+  chartResizeObserver = new ResizeObserver(() => requestAnimationFrame(placeLabels));
+  chartResizeObserver.observe(els.chartContainer);
 
   chart.timeScale().fitContent();
 }

@@ -276,6 +276,21 @@ tr.row-equal:hover td { background: rgba(63, 185, 80, 0.28); }
   width: 100%;
   height: 720px;
   background: var(--panel);
+  position: relative;
+}
+
+.pane-label {
+  position: absolute;
+  left: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(139, 148, 158, 0.85);
+  pointer-events: none;
+  z-index: 5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(22, 27, 34, 0.55);
+  letter-spacing: 0.02em;
 }
 
 button.link {
