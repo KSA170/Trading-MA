@@ -12,11 +12,11 @@ single list or all of them combined ("Any"):
 |--------------|-------------|-------|
 | `sp500`      | S&P 500     | ~500  |
 | `dow`        | Dow 30      | 30    |
-| `nasdaq100`  | Nasdaq 100  | ~100  |
+| `nasdaq`     | Nasdaq (broader, ~390 names) | ~390 |
 | `tsx`        | TSX (Canada, `.TO` suffix) | ~150 |
 
 Each result row shows which lists the ticker is a member of (e.g. AAPL is in
-S&P 500, Dow 30, and Nasdaq 100).
+S&P 500, Dow 30, and Nasdaq).
 
 ## Default screen
 
@@ -77,7 +77,7 @@ each name; subsequent runs are cached for 30 minutes.
 | `apply_rsi_dev`        | 1       | `0` to skip the RSI-vs-SMA deviation check  |
 | `apply_rvol`           | 1       | `0` to skip the relative-volume check       |
 | `apply_price`          | 1       | `0` to skip the price-range check           |
-| `lists`                | (all)   | one of `sp500,dow,nasdaq100,tsx`; empty = all |
+| `lists`                | (all)   | one of `sp500,dow,nasdaq,tsx`; empty = all   |
 
 ## History
 
@@ -92,7 +92,7 @@ hot before.
 |----------------|------------------------------------------------------|
 | `app.py`       | Flask app and JSON endpoints                         |
 | `screener.py`  | Indicator math + per-ticker evaluation               |
-| `tickers.py`   | List membership (S&P 500 / Dow 30 / Nasdaq 100 / TSX)|
+| `tickers.py`   | List membership (S&P 500 / Dow 30 / Nasdaq / TSX)    |
 | `templates/`   | `index.html`                                         |
 | `static/`      | `style.css`, `app.js` (uses lightweight-charts CDN)  |
 | `history.json` | Daily top-5 snapshots (created on first run)         |

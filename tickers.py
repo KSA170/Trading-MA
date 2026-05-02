@@ -75,8 +75,12 @@ DOW30: list[str] = [
     "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT",
 ]
 
-# --- Nasdaq-100 (curated; ~100 names, may drift) ----------------------------
-NDX100: list[str] = [
+# --- Nasdaq (curated broader Nasdaq listing — Nasdaq-100 + active mid/small
+# caps across software, semis, biotech, consumer, fintech, EV). The full
+# Nasdaq Composite is ~3,500 names; we keep this to a tractable subset of
+# liquid names. -------------------------------------------------------------
+NASDAQ: list[str] = [
+    # Nasdaq-100 mega-caps
     "AAPL", "ABNB", "ADBE", "ADI", "ADP", "ADSK", "AEP", "AMAT", "AMD",
     "AMGN", "AMZN", "ANSS", "ARM", "ASML", "AVGO", "AZN", "BIIB", "BKNG",
     "BKR", "CCEP", "CDNS", "CDW", "CEG", "CHTR", "CMCSA", "COST", "CPRT",
@@ -89,6 +93,52 @@ NDX100: list[str] = [
     "PYPL", "QCOM", "REGN", "ROP", "ROST", "SBUX", "SNPS", "TEAM", "TMUS",
     "TSLA", "TTD", "TTWO", "TXN", "VRSK", "VRTX", "WBA", "WBD", "WDAY",
     "XEL", "ZS",
+    # Software / SaaS / cloud
+    "ZM", "DOCU", "OKTA", "SNOW", "NET", "TWLO", "FSLY", "ESTC", "U",
+    "PATH", "S", "AI", "GTLB", "BILL", "DOCS", "DBX", "HUBS", "FIVN",
+    "DT", "NEWR", "PD", "BAND", "EVBG", "RPD", "ALRM", "APPN", "BL",
+    "AYX", "COUP", "SMAR", "FROG", "MNDY", "ZI", "TENB", "QLYS", "JAMF",
+    "BRZE", "SPT", "BLKB", "TYL", "JKHY", "SSNC", "PCTY", "PEGA", "WK",
+    "WIX", "AKAM", "VRSN", "NTAP", "PTC", "CRUS", "TRMB", "ZBRA", "VRNS",
+    "QTWO", "SPWH", "FORG", "EGAN", "VEEV", "AUR", "RDFN",
+    # Semiconductors / hardware
+    "CRDO", "COHR", "IPGP", "ENTG", "ONTO", "RMBS", "NVMI", "FORM", "BESI",
+    "ICHR", "KLIC", "AEHR", "AMBA", "SIMO", "SLAB", "ACMR", "SITM", "ALGM",
+    "CALX", "CIEN", "COMM", "INFN", "POWI", "SGH", "SYNA", "UCTT", "VECO",
+    "WOLF", "FN", "AOSL", "MTSI", "AMKR", "VICR", "DIOD", "AMSC", "TER",
+    "QRVO", "MPWR", "SWKS", "STX", "WDC", "LITE", "SANM",
+    # Biotech / pharma
+    "ALNY", "BMRN", "IONS", "MRTX", "EXEL", "CRSP", "BEAM", "NTLA", "EDIT",
+    "RGNX", "HALO", "LEGN", "NBIX", "AKRO", "ARWR", "SAGE", "TGTX", "RPRX",
+    "ACAD", "GH", "INSM", "FATE", "RXRX", "NUVL", "JANX", "ALLO", "IOVA",
+    "DAWN", "VKTX", "MDGL", "KRTX", "KYMR", "RVMD", "PRTA", "STOK", "SRPT",
+    "ARGX", "ALEC", "RYTM", "IMVT", "HIMS", "ANNX", "REPL", "SDGR", "GMAB",
+    "VCYT", "LXRX", "ATAI", "ALDX", "CYTK", "CTKB", "ESPR", "ALPN", "RVNC",
+    "GERN", "CPRX", "BNTX", "INCY", "NVAX", "AKBA", "CLDX", "TVTX", "BPMC",
+    "FOLD", "PTCT", "ARCT", "ADMA", "RIGL", "TWST", "PACB", "AMRX",
+    "HOLX", "MASI", "PEN", "INMD", "NTRA", "TDOC", "CERT", "OMCL",
+    # Consumer / retail / restaurants / leisure (Nasdaq-listed)
+    "DKNG", "ROKU", "TXRH", "WING", "JACK", "PLAY", "FOXF", "YETI", "BJRI",
+    "CAKE", "CHEF", "CHUY", "CHWY", "PTON", "ETSY", "FUBO", "POOL", "WW",
+    "ZUMZ", "EYE", "CASY", "DRVN", "BURL", "DKS", "FIVE", "OLLI", "TCOM",
+    "VIK", "OPRA", "GRAB", "SE", "BIDU", "JD", "BABA", "ROL",
+    "SBOW", "CHRD", "CDNA",
+    # Fintech / financials
+    "COIN", "HOOD", "SOFI", "AFRM", "UPST", "LC", "OPEN", "RKT", "MQ",
+    "DAVE", "ALLY", "TREE", "NU", "PAGS", "STNE", "FOUR",
+    "FLYW", "FOA", "PFSI",
+    # EV / mobility / auto
+    "RIVN", "LCID", "FSR", "NIO", "LI", "XPEV", "GOEV", "BLNK", "CHPT",
+    "QS", "EVGO",
+    # Energy (Nasdaq-listed)
+    "AR", "CIVI", "CRC", "MEG", "PR", "SD", "SM", "MTDR", "GPRE",
+    # Media / telecom (Nasdaq-listed)
+    "PARA", "SIRI", "FOXA", "FOX", "LYV", "NWSA", "NWS", "DISH", "LBRDA",
+    "LBRDK", "LSXMK", "LSXMA",
+    # Industrials / misc Nasdaq-listed names
+    "FFIV", "ULTA", "EXPE", "TRIP", "SAIA", "WERN", "JBHT",
+    "LANC", "HSIC", "CINF", "FITB", "HBAN", "MTCH", "TROW", "EBAY",
+    "ZG", "Z",
 ]
 
 # --- TSX (Canada) - active large/mid caps -----------------------------------
@@ -117,14 +167,14 @@ TSX: list[str] = [t + ".TO" for t in _TSX_BASE]
 LISTS: dict[str, list[str]] = {
     "sp500": SP500,
     "dow": DOW30,
-    "nasdaq100": NDX100,
+    "nasdaq": NASDAQ,
     "tsx": TSX,
 }
 
 LIST_LABELS: dict[str, str] = {
     "sp500": "S&P 500",
     "dow": "Dow 30",
-    "nasdaq100": "Nasdaq 100",
+    "nasdaq": "Nasdaq",
     "tsx": "TSX",
 }
 

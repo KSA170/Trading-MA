@@ -45,7 +45,7 @@ const asOfSelect = $('#as_of_offset');
 const LIST_LABELS = {
   sp500: 'S&P 500',
   dow: 'Dow 30',
-  nasdaq100: 'Nasdaq 100',
+  nasdaq: 'Nasdaq',
   tsx: 'TSX',
 };
 
