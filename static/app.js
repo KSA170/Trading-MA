@@ -428,35 +428,51 @@ function drawChart(data) {
     catch (_) { /* ignore */ }
   });
 
-  // Pane proportions via stretch factors (the v5-correct API). setHeight
-  // alone tends to be ignored under autoSize because the chart re-distributes
-  // space using stretch factors. Ratios below give roughly 56/22/22.
-  try {
-    if (panes.length >= 3) {
-      const setStretch = (p, f) => {
-        if (typeof p.setStretchFactor === 'function') p.setStretchFactor(f);
-        else if (typeof p.setHeight === 'function') p.setHeight(f * 100);
-      };
-      setStretch(panes[0], 2.6);
-      setStretch(panes[1], 1.0);
-      setStretch(panes[2], 1.0);
-    } else if (panes.length >= 2) {
-      const setStretch = (p, f) => {
-        if (typeof p.setStretchFactor === 'function') p.setStretchFactor(f);
-        else if (typeof p.setHeight === 'function') p.setHeight(f * 100);
-      };
-      setStretch(panes[0], 2.8);
-      setStretch(panes[1], 1.0);
-    }
-  } catch (_) { /* best-effort */ }
-
-  // Pane labels — overlay HTML divs positioned by each pane's actual rendered
-  // pixel height. More reliable than the v5 watermark API across CDN builds.
+  // --- Pane sizing ---------------------------------------------------------
+  // Strategy: set the SMALLER (RSI, MACD) panes to explicit pixel heights;
+  // the chart engine forces pane 0 to absorb the leftover space. Calling
+  // setHeight on pane 0 directly tends to fight the engine because total
+  // chart height must stay constant. Try setStretchFactor first when it
+  // exists, then fall back to setHeight (more universally supported).
   const PANE_LABELS = ['Price + EMAs', 'RSI(14) + 9d SMA of RSI', 'MACD(12, 26, 9)'];
-  const placeLabels = () => {
+  const TIME_SCALE_PX = 30;
+
+  function applyPaneSizes() {
+    if (!panes.length) return;
+    const totalH = (els.chartContainer.clientHeight || 720) - TIME_SCALE_PX;
+    if (panes.length >= 3) {
+      const small = Math.max(120, Math.round(totalH * 0.22));
+      // setHeight on the small panes (work back-to-front so pane 0 absorbs).
+      try { if (panes[2].setHeight) panes[2].setHeight(small); } catch (_) {}
+      try { if (panes[1].setHeight) panes[1].setHeight(small); } catch (_) {}
+      // setStretchFactor as a belt-and-suspenders measure if available.
+      try {
+        if (panes[0].setStretchFactor) {
+          panes[0].setStretchFactor(2.6);
+          panes[1].setStretchFactor(1.0);
+          panes[2].setStretchFactor(1.0);
+        }
+      } catch (_) {}
+    } else if (panes.length >= 2) {
+      const small = Math.max(140, Math.round(totalH * 0.26));
+      try { if (panes[1].setHeight) panes[1].setHeight(small); } catch (_) {}
+      try {
+        if (panes[0].setStretchFactor) {
+          panes[0].setStretchFactor(2.8);
+          panes[1].setStretchFactor(1.0);
+        }
+      } catch (_) {}
+    }
+  }
+
+  // --- Pane label overlay --------------------------------------------------
+  // HTML labels positioned by each pane's *currently rendered* getHeight().
+  // Re-place after every layout change.
+  function placeLabels() {
     els.chartContainer.querySelectorAll('.pane-label').forEach((n) => n.remove());
     if (!chart) return;
     const ps = chart.panes() || [];
+    const SEPARATOR = 1;
     let topPx = 0;
     ps.forEach((p, i) => {
       if (!PANE_LABELS[i]) return;
@@ -465,14 +481,25 @@ function drawChart(data) {
       div.textContent = PANE_LABELS[i];
       div.style.top = (topPx + 6) + 'px';
       els.chartContainer.appendChild(div);
-      try { topPx += (p.getHeight && p.getHeight()) || 0; } catch (_) { /* ignore */ }
+      let h = 0;
+      try { h = (p.getHeight && p.getHeight()) || 0; } catch (_) {}
+      topPx += h + SEPARATOR;
     });
-  };
-  // Defer one frame so pane heights have settled after stretch factors apply.
-  requestAnimationFrame(() => { placeLabels(); requestAnimationFrame(placeLabels); });
+  }
 
-  // Reposition labels when the modal/container is resized.
-  chartResizeObserver = new ResizeObserver(() => requestAnimationFrame(placeLabels));
+  // Apply sizing repeatedly to win against the engine's auto-layout. Each
+  // call is cheap; the duplicates settle on the same layout so the labels
+  // finally line up with their panes.
+  applyPaneSizes();
+  requestAnimationFrame(() => { applyPaneSizes(); placeLabels(); });
+  setTimeout(() => { applyPaneSizes(); placeLabels(); }, 60);
+  setTimeout(() => { placeLabels(); }, 200);
+  setTimeout(() => { placeLabels(); }, 500);
+
+  // Reposition labels (and re-assert sizes) when the modal/container resizes.
+  chartResizeObserver = new ResizeObserver(() => {
+    requestAnimationFrame(() => { applyPaneSizes(); placeLabels(); });
+  });
   chartResizeObserver.observe(els.chartContainer);
 
   chart.timeScale().fitContent();
