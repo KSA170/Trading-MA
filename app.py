@@ -48,11 +48,14 @@ DEFAULT_PARAMS: dict = {
     "rvol_min": 0.5,
     "price_min": 1.0,
     "price_max": 1000.0,
+    "price_dev_min_pct": -5.0,
+    "price_dev_max_pct": 5.0,
     "apply_high": True,
     "apply_rsi": True,
     "apply_rsi_dev": True,
     "apply_rvol": True,
     "apply_price": True,
+    "apply_price_dev": True,
     "as_of_offset": 0,
     "lists": tuple(sorted(_VALID_LISTS)),
 }
@@ -66,9 +69,10 @@ def _cache_key(params: dict) -> tuple:
     rsi_dev = (round(float(params["rsi_dev_min_pct"]), 3), round(float(params["rsi_dev_max_pct"]), 3)) if params["apply_rsi_dev"] else ("off",)
     rvol = (int(params["rvol_lookback"]), round(float(params["rvol_min"]), 3)) if params["apply_rvol"] else ("off",)
     price = (round(float(params["price_min"]), 4), round(float(params["price_max"]), 4)) if params["apply_price"] else ("off",)
+    price_dev = (round(float(params["price_dev_min_pct"]), 3), round(float(params["price_dev_max_pct"]), 3)) if params["apply_price_dev"] else ("off",)
     lists = tuple(sorted(params["lists"]))
     as_of = int(params["as_of_offset"])
-    return ("v4", as_of, price, high, rsi, rsi_dev, rvol, lists)
+    return ("v5", as_of, price, price_dev, high, rsi, rsi_dev, rvol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -102,11 +106,14 @@ def _parse_params() -> dict:
         "rvol_min": float(request.args.get("rvol_min", 0.5)),
         "price_min": float(request.args.get("price_min", 1)),
         "price_max": float(request.args.get("price_max", 1000)),
+        "price_dev_min_pct": float(request.args.get("price_dev_min_pct", -5)),
+        "price_dev_max_pct": float(request.args.get("price_dev_max_pct", 5)),
         "apply_high": _parse_bool("apply_high", True),
         "apply_rsi": _parse_bool("apply_rsi", True),
         "apply_rsi_dev": _parse_bool("apply_rsi_dev", True),
         "apply_rvol": _parse_bool("apply_rvol", True),
         "apply_price": _parse_bool("apply_price", True),
+        "apply_price_dev": _parse_bool("apply_price_dev", True),
         "as_of_offset": as_of_offset,
         "lists": tuple(wanted),
     }
@@ -180,11 +187,14 @@ def api_screen():
         rvol_min=params["rvol_min"],
         price_min=params["price_min"],
         price_max=params["price_max"],
+        price_dev_min_pct=params["price_dev_min_pct"],
+        price_dev_max_pct=params["price_dev_max_pct"],
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
         apply_rsi_dev=params["apply_rsi_dev"],
         apply_rvol=params["apply_rvol"],
         apply_price=params["apply_price"],
+        apply_price_dev=params["apply_price_dev"],
         as_of_offset=params["as_of_offset"],
         lists=list(params["lists"]),
     )

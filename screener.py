@@ -48,6 +48,8 @@ class ScreenHit:
     rsi: float
     rsi_sma9: float
     rsi_dev_pct: float
+    ema21: float
+    price_ema21_dev_pct: float
     rel_volume: float
     avg_volume: float
     volume: float
@@ -135,11 +137,15 @@ def evaluate_ticker(
     rvol_min: float = 0.5,
     price_min: float = 1.0,
     price_max: float = 1000.0,
+    ema_period: int = 21,
+    price_dev_min_pct: float = -5.0,
+    price_dev_max_pct: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
     apply_rvol: bool = True,
     apply_price: bool = True,
+    apply_price_dev: bool = True,
     as_of_offset: int = 0,
 ) -> ScreenHit | None:
     if as_of_offset < 0:
@@ -148,7 +154,7 @@ def evaluate_ticker(
         as_of_offset = MAX_AS_OF_OFFSET
 
     df = _cached_history(ticker, period="6mo")
-    needed = max(high_lookback + 2, rsi_period + 5, rvol_lookback + 2) + as_of_offset
+    needed = max(high_lookback + 2, rsi_period + 5, rvol_lookback + 2, ema_period + 2) + as_of_offset
     if df is None or len(df) < needed:
         return None
 
@@ -196,6 +202,17 @@ def evaluate_ticker(
     if apply_rsi_dev and not (rsi_dev_min_pct <= rsi_dev_pct <= rsi_dev_max_pct):
         return None
 
+    # EMA(21) of close, evaluated through the eval bar, and price's
+    # deviation from it as a percentage.
+    ema_series = ema(closes_to_eval, ema_period)
+    ema_val = ema_series.iloc[-1]
+    if not np.isfinite(ema_val) or ema_val == 0:
+        return None
+    ema_val = float(ema_val)
+    price_ema21_dev_pct = (prev_close - ema_val) / ema_val * 100.0
+    if apply_price_dev and not (price_dev_min_pct <= price_ema21_dev_pct <= price_dev_max_pct):
+        return None
+
     # Relative volume: eval-bar volume / mean of the prior rvol_lookback bars
     vol_window_start = eval_idx - rvol_lookback
     vol_window = volumes.iloc[vol_window_start:eval_idx]
@@ -226,6 +243,8 @@ def evaluate_ticker(
         rsi=round(float(rsi_val), 2),
         rsi_sma9=round(float(rsi_sma_val), 2),
         rsi_dev_pct=round(rsi_dev_pct, 2),
+        ema21=round(ema_val, 4),
+        price_ema21_dev_pct=round(price_ema21_dev_pct, 2),
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
@@ -243,11 +262,14 @@ def run_screen(
     rvol_min: float = 0.5,
     price_min: float = 1.0,
     price_max: float = 1000.0,
+    price_dev_min_pct: float = -5.0,
+    price_dev_max_pct: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
     apply_rvol: bool = True,
     apply_price: bool = True,
+    apply_price_dev: bool = True,
     as_of_offset: int = 0,
     lists: list[str] | None = None,
     universe: Iterable[str] | None = None,
@@ -274,11 +296,14 @@ def run_screen(
                 rvol_min=rvol_min,
                 price_min=price_min,
                 price_max=price_max,
+                price_dev_min_pct=price_dev_min_pct,
+                price_dev_max_pct=price_dev_max_pct,
                 apply_high=apply_high,
                 apply_rsi=apply_rsi,
                 apply_rsi_dev=apply_rsi_dev,
                 apply_rvol=apply_rvol,
                 apply_price=apply_price,
+                apply_price_dev=apply_price_dev,
                 as_of_offset=as_of_offset,
             )
         except Exception as exc:

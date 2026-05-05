@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Trading MA — Breakout Screener</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
-  <script src="https://unpkg.com/lightweight-charts@5.0.7/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -83,6 +82,18 @@
       </div>
     </div>
 
+    <div class="filter-group" data-group="price_dev">
+      <label class="group-toggle"><input type="checkbox" id="apply_price_dev" checked /> Price dev vs EMA(21)</label>
+      <div class="filter">
+        <label>min (%)</label>
+        <input id="price_dev_min_pct" type="number" step="0.5" value="-5" />
+      </div>
+      <div class="filter">
+        <label>max (%)</label>
+        <input id="price_dev_max_pct" type="number" step="0.5" value="5" />
+      </div>
+    </div>
+
     <div class="filter-group" data-group="rvol">
       <label class="group-toggle"><input type="checkbox" id="apply_rvol" checked /> Relative volume</label>
       <div class="filter">
@@ -119,47 +130,19 @@
               <th class="num" data-sort="rsi" data-type="num">RSI(14)</th>
               <th class="num" data-sort="rsi_sma9" data-type="num">9d SMA</th>
               <th class="num" data-sort="rsi_dev_pct" data-type="num">RSI dev</th>
+              <th class="num" data-sort="ema21" data-type="num">EMA(21)</th>
+              <th class="num" data-sort="price_ema21_dev_pct" data-type="num">vs EMA21</th>
               <th class="num" data-sort="rel_volume" data-type="num">RVol</th>
               <th class="num" data-sort="volume" data-type="num">Volume</th>
-              <th>Chart</th>
             </tr>
           </thead>
           <tbody id="results-body">
-            <tr class="empty"><td colspan="12">Click "Run screen" to start.</td></tr>
+            <tr class="empty"><td colspan="13">Click "Run screen" to start.</td></tr>
           </tbody>
         </table>
       </div>
     </section>
-
-    <aside class="history">
-      <h2>History — top 5 / day</h2>
-      <div id="history-body" class="history-body">
-        <p class="muted">No history yet. Run the screener to start logging.</p>
-      </div>
-    </aside>
   </main>
-
-  <div id="chart-modal" class="modal hidden">
-    <div class="modal-card">
-      <header class="modal-header">
-        <div>
-          <h3 id="chart-title">Chart</h3>
-          <div class="legend">
-            <span class="dot dot-close"></span> Close
-            <span class="dot dot-ema21"></span> EMA 21
-            <span class="dot dot-ema50"></span> EMA 50
-            <span class="dot dot-rsi"></span> RSI(14)
-            <span class="dot dot-rsi9"></span> 9d SMA of RSI
-            <span class="dot dot-macd"></span> MACD(12, 26)
-            <span class="dot dot-macd-signal"></span> Signal(9)
-            <span class="dot dot-macd-hist"></span> Histogram
-          </div>
-        </div>
-        <button id="chart-close" class="icon-btn">×</button>
-      </header>
-      <div id="chart-container" class="chart-container"></div>
-    </div>
-  </div>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
