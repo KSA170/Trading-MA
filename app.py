@@ -2,18 +2,16 @@
 Flask web app exposing:
   GET  /                  -> single page UI
   GET  /api/screen        -> run screener (cached for the trading session)
-  GET  /api/chart/<tkr>   -> daily OHLCV + RSI + 21/50 EMA for a ticker
-  GET  /api/history       -> top-5 hits per past trading day
+  GET  /api/lists         -> available list keys / labels
+  GET  /api/dates         -> last N trading-day dates for the date picker
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
 import time
-from datetime import date, datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -25,7 +23,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("app")
 
 ROOT = Path(__file__).resolve().parent
-HISTORY_PATH = ROOT / "history.json"
 
 app = Flask(__name__, template_folder=str(ROOT / "templates"), static_folder=str(ROOT / "static"))
 
@@ -119,39 +116,6 @@ def _parse_params() -> dict:
     }
 
 
-# --- history persistence ---------------------------------------------------
-
-def _load_history() -> list[dict]:
-    if not HISTORY_PATH.exists():
-        return []
-    try:
-        return json.loads(HISTORY_PATH.read_text())
-    except Exception:
-        return []
-
-
-def _save_history(records: list[dict]) -> None:
-    HISTORY_PATH.write_text(json.dumps(records, indent=2))
-
-
-def _record_history(hits: list[dict]) -> None:
-    """Snapshot today's top 5 results to history.json (one record per date)."""
-    today = date.today().isoformat()
-    records = _load_history()
-    records = [r for r in records if r.get("date") != today]
-    top5 = hits[:5]
-    if not top5:
-        return
-    records.append({
-        "date": today,
-        "captured_at": datetime.utcnow().isoformat() + "Z",
-        "top": top5,
-    })
-    records.sort(key=lambda r: r.get("date", ""), reverse=True)
-    records = records[:60]  # keep last ~60 trading days
-    _save_history(records)
-
-
 # --- routes ----------------------------------------------------------------
 
 @app.route("/")
@@ -205,14 +169,6 @@ def api_screen():
     with _screen_lock:
         _screen_cache[key] = (now, payload)
 
-    # Only the default-parameter run drives the public history. That keeps
-    # daily snapshots stable instead of being overwritten by ad-hoc tweaks.
-    if key == _cache_key(DEFAULT_PARAMS):
-        try:
-            _record_history(payload)
-        except Exception as exc:
-            log.warning("history record failed: %s", exc)
-
     serializable_params = {**params, "lists": list(params["lists"])}
     summary_date = payload[0]["as_of_date"] if payload else None
     return jsonify({
@@ -222,21 +178,6 @@ def api_screen():
         "as_of_date": summary_date,
         "elapsed_sec": round(elapsed, 1),
     })
-
-
-@app.route("/api/chart/<path:ticker>")
-def api_chart(ticker: str):
-    # Frontend may pass the display symbol. The yfinance ticker already matches
-    # in our universe, so use the input as-is.
-    payload = screener.chart_payload(ticker)
-    if payload is None:
-        return jsonify({"error": f"no data for {ticker}"}), 404
-    return jsonify(payload)
-
-
-@app.route("/api/history")
-def api_history():
-    return jsonify({"records": _load_history()})
 
 
 @app.route("/api/lists")

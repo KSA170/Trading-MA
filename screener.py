@@ -18,7 +18,6 @@ Data source: yfinance (Yahoo Finance public endpoints).
 from __future__ import annotations
 
 import logging
-import math
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
@@ -320,53 +319,6 @@ def run_screen(
     return hits
 
 
-# --- chart payload ---------------------------------------------------------
-
-def chart_payload(ticker: str, period: str = "1y") -> dict | None:
-    # accept user-facing ticker (e.g. "RY.TO") and use as-is
-    df = _cached_history(ticker, period=period)
-    if df is None or df.empty:
-        return None
-
-    df = df.copy()
-    df["EMA21"] = ema(df["Close"], 21)
-    df["EMA50"] = ema(df["Close"], 50)
-    df["RSI"] = rsi_wilder(df["Close"], 14)
-    df["RSI_SMA9"] = df["RSI"].rolling(window=9, min_periods=9).mean()
-
-    # MACD(12, 26, 9): macd line, 9d EMA signal, histogram = macd - signal
-    ema12 = ema(df["Close"], 12)
-    ema26 = ema(df["Close"], 26)
-    df["MACD"] = ema12 - ema26
-    df["MACD_SIGNAL"] = ema(df["MACD"], 9)
-    df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
-
-    def _row(idx, r):
-        ts = idx.strftime("%Y-%m-%d")
-        return {
-            "time": ts,
-            "open": _safe(r["Open"]),
-            "high": _safe(r["High"]),
-            "low": _safe(r["Low"]),
-            "close": _safe(r["Close"]),
-            "volume": _safe(r["Volume"]),
-            "ema21": _safe(r["EMA21"]),
-            "ema50": _safe(r["EMA50"]),
-            "rsi": _safe(r["RSI"]),
-            "rsi_sma9": _safe(r["RSI_SMA9"]),
-            "macd": _safe(r["MACD"]),
-            "macd_signal": _safe(r["MACD_SIGNAL"]),
-            "macd_hist": _safe(r["MACD_HIST"]),
-        }
-
-    rows = [_row(idx, r) for idx, r in df.iterrows()]
-    return {
-        "ticker": display_symbol(ticker),
-        "name": _company_name(ticker),
-        "rows": rows,
-    }
-
-
 def reference_dates(n: int = 11) -> list[dict]:
     """Last `n` US trading-day dates from a reference ticker (SPY).
 
@@ -380,15 +332,3 @@ def reference_dates(n: int = 11) -> list[dict]:
     dates = [idx.strftime("%Y-%m-%d") for idx in df.index][-n:]
     # most recent first, with offset 0 = latest
     return [{"offset": i, "date": d} for i, d in enumerate(reversed(dates))]
-
-
-def _safe(v):
-    if v is None:
-        return None
-    try:
-        f = float(v)
-    except Exception:
-        return None
-    if math.isnan(f) or math.isinf(f):
-        return None
-    return f
