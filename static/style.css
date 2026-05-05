@@ -60,26 +60,28 @@ button.primary {
 }
 button.primary:hover { filter: brightness(1.05); }
 .filters {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 14px;
   padding: 14px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
-  align-items: flex-start;
 }
 
 .filter-group {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel-2);
+  min-width: 0;
 }
-.filter-group .group-label,
-.filter-group .group-toggle {
+.filter-group > .group-label,
+.filter-group > .group-toggle {
   font-size: 12px;
   color: var(--text);
   font-weight: 600;
@@ -87,6 +89,7 @@ button.primary:hover { filter: brightness(1.05); }
   align-items: center;
   gap: 6px;
   user-select: none;
+  width: 100%;
 }
 .filter-group .group-toggle input[type="checkbox"] {
   accent-color: var(--accent);
@@ -95,21 +98,14 @@ button.primary:hover { filter: brightness(1.05); }
   cursor: pointer;
 }
 .filter-group .group-toggle { cursor: pointer; }
-.filter-group.scope { min-width: 280px; }
 
-.filter-group .filters-inner,
-.filter-group .filter-row {
+.filter {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 0;
 }
-
-/* group-children layout: side-by-side filters under the toggle */
-.filter-group > .filter { width: 110px; }
-.filter-group { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
-.filter-group > .group-label,
-.filter-group > .group-toggle { width: 100%; }
-
-.filter { display: flex; flex-direction: column; gap: 4px; min-width: 110px; }
 .filter label { color: var(--muted); font-size: 12px; }
 .filter input,
 .filter select {
@@ -128,7 +124,7 @@ button.primary:hover { filter: brightness(1.05); }
 .filter-group.disabled .filter input { pointer-events: none; }
 
 .filter-notes {
-  flex-basis: 100%;
+  grid-column: 1 / -1;
   color: var(--muted);
   font-size: 12px;
   padding-top: 4px;
