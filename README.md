@@ -8,12 +8,17 @@ the filter band, run the screen, sort the results.
 Tickers are organised into named lists; the UI dropdown lets you screen any
 single list or all of them combined ("Any"):
 
-| key       | label                        | size  |
-|-----------|------------------------------|-------|
-| `sp500`   | S&P 500                      | ~500  |
-| `dow`     | Dow 30                       | 30    |
-| `nasdaq`  | Nasdaq (broader, ~390 names) | ~390  |
-| `tsx`     | TSX (`.TO`)                  | ~150  |
+| key            | label                                        | size   |
+|----------------|----------------------------------------------|--------|
+| `sp500`        | S&P 500                                      | ~500   |
+| `dow`          | Dow 30                                       | 30     |
+| `nasdaq`       | Nasdaq (broader)                             | ~390   |
+| `russell2000`  | Russell 2000 (US Small Cap, curated subset)  | ~1900  |
+| `tsx`          | TSX (`.TO`)                                  | ~150   |
+
+Total deduped universe: ~2500 names. Picking `russell2000` from the dropdown
+materially extends a cold-cache screen run (a few minutes vs ~30 seconds for
+S&P 500 alone).
 
 ## Default screen
 
@@ -77,7 +82,7 @@ each name; subsequent runs are cached for 30 minutes.
 | `apply_price_dev`        | 1       | `0` to skip the price-vs-EMA21 check        |
 | `apply_rvol`             | 1       | `0` to skip the relative-volume check       |
 | `apply_price`            | 1       | `0` to skip the price-range check           |
-| `lists`                  | (all)   | one of `sp500,dow,nasdaq,tsx`; empty = all  |
+| `lists`                  | (all)   | one of `sp500,dow,nasdaq,russell2000,tsx`; empty = all |
 
 ## Files
 
