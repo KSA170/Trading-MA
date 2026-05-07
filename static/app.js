@@ -25,6 +25,8 @@ const inputs = {
   price_max: $('#price_max'),
   price_dev_min_pct: $('#price_dev_min_pct'),
   price_dev_max_pct: $('#price_dev_max_pct'),
+  ema_dev_min_pct: $('#ema_dev_min_pct'),
+  ema_dev_max_pct: $('#ema_dev_max_pct'),
 };
 
 const toggles = {
@@ -34,6 +36,7 @@ const toggles = {
   apply_rvol: $('#apply_rvol'),
   apply_price: $('#apply_price'),
   apply_price_dev: $('#apply_price_dev'),
+  apply_ema_dev: $('#apply_ema_dev'),
 };
 
 const listFilter = $('#list_filter');
@@ -78,6 +81,7 @@ function syncDisabledStates() {
     apply_rvol: 'rvol',
     apply_price: 'price',
     apply_price_dev: 'price_dev',
+    apply_ema_dev: 'ema_dev',
   };
   for (const [toggleId, groupKey] of Object.entries(map)) {
     const t = toggles[toggleId];
@@ -109,7 +113,7 @@ async function loadDates() {
 async function runScreen() {
   setStatus('running…');
   els.runBtn.disabled = true;
-  els.body.innerHTML = '<tr class="empty"><td colspan="13">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
+  els.body.innerHTML = '<tr class="empty"><td colspan="15">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
   els.matchCount.textContent = '';
   if (els.asOfLabel) els.asOfLabel.textContent = '';
   updateHighHeader();
@@ -127,7 +131,7 @@ async function runScreen() {
   } catch (err) {
     console.error(err);
     setStatus('error');
-    els.body.innerHTML = `<tr class="empty"><td colspan="13">Error: ${err.message}</td></tr>`;
+    els.body.innerHTML = `<tr class="empty"><td colspan="15">Error: ${err.message}</td></tr>`;
   } finally {
     els.runBtn.disabled = false;
   }
@@ -170,7 +174,7 @@ function sortedResults() {
 function renderResults(results) {
   els.matchCount.textContent = `(${results.length})`;
   if (!results.length) {
-    els.body.innerHTML = '<tr class="empty"><td colspan="13">No matches with these filters.</td></tr>';
+    els.body.innerHTML = '<tr class="empty"><td colspan="15">No matches with these filters.</td></tr>';
     return;
   }
   els.body.innerHTML = '';
@@ -179,6 +183,7 @@ function renderResults(results) {
     const pctClass = r.pct_change >= 0 ? 'pos' : 'neg';
     const devClass = r.rsi_dev_pct >= 0 ? 'pos' : 'neg';
     const emaDevClass = r.price_ema21_dev_pct >= 0 ? 'pos' : 'neg';
+    const emaCrossClass = r.ema21_ema50_dev_pct >= 0 ? 'pos' : 'neg';
     if (r.rsi !== null && r.rsi_sma9 !== null && r.rsi !== undefined && r.rsi_sma9 !== undefined && r.rsi === r.rsi_sma9) {
       tr.classList.add('row-equal');
     }
@@ -194,6 +199,8 @@ function renderResults(results) {
       <td class="num ${devClass}">${r.rsi_dev_pct >= 0 ? '+' : ''}${fmtNum(r.rsi_dev_pct)}%</td>
       <td class="num">${fmtNum(r.ema21)}</td>
       <td class="num ${emaDevClass}">${r.price_ema21_dev_pct >= 0 ? '+' : ''}${fmtNum(r.price_ema21_dev_pct)}%</td>
+      <td class="num">${fmtNum(r.ema50)}</td>
+      <td class="num ${emaCrossClass}">${r.ema21_ema50_dev_pct >= 0 ? '+' : ''}${fmtNum(r.ema21_ema50_dev_pct)}%</td>
       <td class="num">${fmtNum(r.rel_volume)}×</td>
       <td class="num">${fmtVol(r.volume)}</td>
     `;

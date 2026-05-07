@@ -49,6 +49,8 @@ class ScreenHit:
     rsi_dev_pct: float
     ema21: float
     price_ema21_dev_pct: float
+    ema50: float
+    ema21_ema50_dev_pct: float
     rel_volume: float
     avg_volume: float
     volume: float
@@ -137,14 +139,18 @@ def evaluate_ticker(
     price_min: float = 1.0,
     price_max: float = 1000.0,
     ema_period: int = 21,
+    ema_long_period: int = 50,
     price_dev_min_pct: float = -5.0,
     price_dev_max_pct: float = 5.0,
+    ema_dev_min_pct: float = -5.0,
+    ema_dev_max_pct: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
     apply_rvol: bool = True,
     apply_price: bool = True,
     apply_price_dev: bool = True,
+    apply_ema_dev: bool = True,
     as_of_offset: int = 0,
 ) -> ScreenHit | None:
     if as_of_offset < 0:
@@ -153,7 +159,10 @@ def evaluate_ticker(
         as_of_offset = MAX_AS_OF_OFFSET
 
     df = _cached_history(ticker, period="6mo")
-    needed = max(high_lookback + 2, rsi_period + 5, rvol_lookback + 2, ema_period + 2) + as_of_offset
+    needed = max(
+        high_lookback + 2, rsi_period + 5, rvol_lookback + 2,
+        ema_period + 2, ema_long_period + 2,
+    ) + as_of_offset
     if df is None or len(df) < needed:
         return None
 
@@ -212,6 +221,17 @@ def evaluate_ticker(
     if apply_price_dev and not (price_dev_min_pct <= price_ema21_dev_pct <= price_dev_max_pct):
         return None
 
+    # EMA(50) of close and the EMA21-vs-EMA50 deviation. Positive = EMA21 is
+    # above EMA50 (golden-cross territory); negative = EMA21 below EMA50.
+    ema_long_series = ema(closes_to_eval, ema_long_period)
+    ema_long_val = ema_long_series.iloc[-1]
+    if not np.isfinite(ema_long_val) or ema_long_val == 0:
+        return None
+    ema_long_val = float(ema_long_val)
+    ema21_ema50_dev_pct = (ema_val - ema_long_val) / ema_long_val * 100.0
+    if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
+        return None
+
     # Relative volume: eval-bar volume / mean of the prior rvol_lookback bars
     vol_window_start = eval_idx - rvol_lookback
     vol_window = volumes.iloc[vol_window_start:eval_idx]
@@ -244,6 +264,8 @@ def evaluate_ticker(
         rsi_dev_pct=round(rsi_dev_pct, 2),
         ema21=round(ema_val, 4),
         price_ema21_dev_pct=round(price_ema21_dev_pct, 2),
+        ema50=round(ema_long_val, 4),
+        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2),
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
@@ -263,12 +285,15 @@ def run_screen(
     price_max: float = 1000.0,
     price_dev_min_pct: float = -5.0,
     price_dev_max_pct: float = 5.0,
+    ema_dev_min_pct: float = -5.0,
+    ema_dev_max_pct: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
     apply_rvol: bool = True,
     apply_price: bool = True,
     apply_price_dev: bool = True,
+    apply_ema_dev: bool = True,
     as_of_offset: int = 0,
     lists: list[str] | None = None,
     universe: Iterable[str] | None = None,
@@ -297,12 +322,15 @@ def run_screen(
                 price_max=price_max,
                 price_dev_min_pct=price_dev_min_pct,
                 price_dev_max_pct=price_dev_max_pct,
+                ema_dev_min_pct=ema_dev_min_pct,
+                ema_dev_max_pct=ema_dev_max_pct,
                 apply_high=apply_high,
                 apply_rsi=apply_rsi,
                 apply_rsi_dev=apply_rsi_dev,
                 apply_rvol=apply_rvol,
                 apply_price=apply_price,
                 apply_price_dev=apply_price_dev,
+                apply_ema_dev=apply_ema_dev,
                 as_of_offset=as_of_offset,
             )
         except Exception as exc:
