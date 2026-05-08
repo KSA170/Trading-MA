@@ -1,10 +1,11 @@
 """
 Flask web app exposing:
-  GET  /                  -> single page UI
-  GET  /api/screen        -> run screener (cached for the trading session)
-  GET  /api/chart/<tkr>   -> daily OHLCV + EMA21/50 + RSI(14)/9d-SMA
-  GET  /api/lists         -> available list keys / labels
-  GET  /api/dates         -> last N trading-day dates for the date picker
+  GET   /                    -> single page UI
+  GET   /api/screen          -> run screener (cached for the trading session)
+  GET   /api/chart/<tkr>     -> daily OHLCV + EMA21/50 + RSI(14)/9d-SMA
+  GET   /api/lists           -> available list keys / labels
+  GET   /api/dates           -> last N trading-day dates for the date picker
+  POST  /api/export/xlsx     -> download selected rows as an Excel workbook
 """
 
 from __future__ import annotations
@@ -13,9 +14,10 @@ import logging
 import os
 import threading
 import time
+from io import BytesIO
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
 import screener
 from tickers import LIST_LABELS
@@ -213,6 +215,63 @@ def api_dates():
     n = int(request.args.get("n", screener.MAX_AS_OF_OFFSET + 1))
     n = max(1, min(n, screener.MAX_AS_OF_OFFSET + 1))
     return jsonify({"dates": screener.reference_dates(n=n)})
+
+
+# Column order + display labels for the Excel export. Keys must match the
+# fields produced by ScreenHit.to_dict().
+_EXPORT_COLUMNS: list[tuple[str, str]] = [
+    ("ticker", "Ticker"),
+    ("name", "Name"),
+    ("exchange", "Exchange"),
+    ("as_of_date", "As-of date"),
+    ("close", "Close"),
+    ("prev_close", "Prior close"),
+    ("pct_change", "% change"),
+    ("high_lookback", "Streak high"),
+    ("rsi", "RSI(14)"),
+    ("rsi_sma9", "9d SMA RSI"),
+    ("rsi_dev_pct", "RSI dev %"),
+    ("ema21", "EMA(21)"),
+    ("price_ema21_dev_pct", "Price vs EMA21 %"),
+    ("ema50", "EMA(50)"),
+    ("ema21_ema50_dev_pct", "EMA21 vs EMA50 %"),
+    ("rel_volume", "RVol"),
+    ("avg_volume", "Avg volume"),
+    ("volume", "Volume"),
+    ("score", "Score"),
+]
+
+
+@app.route("/api/export/xlsx", methods=["POST"])
+def api_export_xlsx():
+    """Build an .xlsx workbook from a JSON `rows` array and stream it back."""
+    import pandas as pd
+
+    payload = request.get_json(silent=True) or {}
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list) or not rows:
+        return jsonify({"error": "no rows provided"}), 400
+
+    df = pd.DataFrame(rows)
+    keep_keys = [k for k, _ in _EXPORT_COLUMNS if k in df.columns]
+    rename_map = {k: label for k, label in _EXPORT_COLUMNS if k in df.columns}
+    df = df[keep_keys].rename(columns=rename_map)
+
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Screened", index=False)
+        # Auto-size columns to content for readability.
+        ws = writer.sheets["Screened"]
+        for col_cells in ws.columns:
+            length = max(len(str(c.value)) if c.value is not None else 0 for c in col_cells)
+            ws.column_dimensions[col_cells[0].column_letter].width = min(max(length + 2, 8), 30)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name="trading-ma-export.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 if __name__ == "__main__":

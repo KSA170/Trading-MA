@@ -131,10 +131,18 @@
         Matches <span id="match-count" class="muted"></span>
         <span id="as-of-label" class="as-of-label muted"></span>
       </h2>
+      <div class="results-toolbar">
+        <span id="selection-count" class="muted">0 selected</span>
+        <button id="email-btn" type="button" disabled>Email</button>
+        <button id="share-btn" type="button" disabled>Share</button>
+        <button id="export-btn" type="button" disabled>Export to Excel</button>
+        <button id="clear-selection-btn" type="button" disabled>Clear</button>
+      </div>
       <div class="table-wrap">
         <table id="results-table" class="sortable">
           <thead>
             <tr>
+              <th class="check"><input type="checkbox" id="select-all" aria-label="Select all rows" /></th>
               <th data-sort="ticker" data-type="text">Ticker</th>
               <th data-sort="name" data-type="text">Name</th>
               <th data-sort="exchange" data-type="text">Ex.</th>
@@ -153,7 +161,7 @@
             </tr>
           </thead>
           <tbody id="results-body">
-            <tr class="empty"><td colspan="15">Click "Run screen" to start.</td></tr>
+            <tr class="empty"><td colspan="16">Click "Run screen" to start.</td></tr>
           </tbody>
         </table>
       </div>

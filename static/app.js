@@ -8,11 +8,19 @@ const els = {
   body: $('#results-body'),
   thead: document.querySelector('#results-table thead'),
   thHigh: $('#th-high'),
+  selectAll: $('#select-all'),
+  selectionCount: $('#selection-count'),
+  emailBtn: $('#email-btn'),
+  shareBtn: $('#share-btn'),
+  exportBtn: $('#export-btn'),
+  clearSelectionBtn: $('#clear-selection-btn'),
   hoverChart: $('#hover-chart'),
   hoverChartTitle: $('#hover-chart-title'),
   hoverChartStatus: $('#hover-chart-status'),
   hoverChartContainer: $('#hover-chart-container'),
 };
+
+const selectedTickers = new Set();
 
 let lastResults = [];
 let sortState = { key: null, dir: null }; // dir: 'asc' | 'desc'
@@ -117,7 +125,7 @@ async function loadDates() {
 async function runScreen() {
   setStatus('running…');
   els.runBtn.disabled = true;
-  els.body.innerHTML = '<tr class="empty"><td colspan="15">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
+  els.body.innerHTML = '<tr class="empty"><td colspan="16">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
   els.matchCount.textContent = '';
   if (els.asOfLabel) els.asOfLabel.textContent = '';
   updateHighHeader();
@@ -135,7 +143,7 @@ async function runScreen() {
   } catch (err) {
     console.error(err);
     setStatus('error');
-    els.body.innerHTML = `<tr class="empty"><td colspan="15">Error: ${err.message}</td></tr>`;
+    els.body.innerHTML = `<tr class="empty"><td colspan="16">Error: ${err.message}</td></tr>`;
   } finally {
     els.runBtn.disabled = false;
   }
@@ -178,7 +186,7 @@ function sortedResults() {
 function renderResults(results) {
   els.matchCount.textContent = `(${results.length})`;
   if (!results.length) {
-    els.body.innerHTML = '<tr class="empty"><td colspan="15">No matches with these filters.</td></tr>';
+    els.body.innerHTML = '<tr class="empty"><td colspan="16">No matches with these filters.</td></tr>';
     return;
   }
   els.body.innerHTML = '';
@@ -191,7 +199,9 @@ function renderResults(results) {
     if (r.rsi !== null && r.rsi_sma9 !== null && r.rsi !== undefined && r.rsi_sma9 !== undefined && r.rsi === r.rsi_sma9) {
       tr.classList.add('row-equal');
     }
+    const isSelected = selectedTickers.has(r.ticker);
     tr.innerHTML = `
+      <td class="check"><input type="checkbox" data-select="${escapeHtml(r.ticker)}"${isSelected ? ' checked' : ''} aria-label="Select ${escapeHtml(r.ticker)}" /></td>
       <td data-ticker="${escapeHtml(r.ticker)}"><strong>${r.ticker}</strong></td>
       <td>${escapeHtml(r.name || '')}</td>
       <td><span class="chip">${r.exchange}</span></td>
@@ -213,8 +223,145 @@ function renderResults(results) {
 }
 
 function renderTable() {
+  pruneSelection();
   applySortIndicators();
   renderResults(sortedResults());
+  updateSelectionUI();
+}
+
+function pruneSelection() {
+  if (!selectedTickers.size) return;
+  const visible = new Set(lastResults.map((r) => r.ticker));
+  for (const t of Array.from(selectedTickers)) {
+    if (!visible.has(t)) selectedTickers.delete(t);
+  }
+}
+
+function updateSelectionUI() {
+  const count = selectedTickers.size;
+  if (els.selectionCount) {
+    els.selectionCount.textContent = count === 1 ? '1 selected' : `${count} selected`;
+  }
+  [els.emailBtn, els.shareBtn, els.exportBtn, els.clearSelectionBtn].forEach((b) => {
+    if (b) b.disabled = count === 0;
+  });
+  if (els.selectAll) {
+    if (!lastResults.length) {
+      els.selectAll.checked = false;
+      els.selectAll.indeterminate = false;
+    } else {
+      const allChecked = lastResults.every((r) => selectedTickers.has(r.ticker));
+      els.selectAll.checked = allChecked && count > 0;
+      els.selectAll.indeterminate = count > 0 && !allChecked;
+    }
+  }
+}
+
+function onRowCheckboxChange(ev) {
+  const cb = ev.target.closest('input[data-select]');
+  if (!cb) return;
+  const ticker = cb.dataset.select;
+  if (cb.checked) selectedTickers.add(ticker);
+  else selectedTickers.delete(ticker);
+  updateSelectionUI();
+}
+
+function onSelectAllChange() {
+  if (!els.selectAll) return;
+  if (els.selectAll.checked) {
+    lastResults.forEach((r) => selectedTickers.add(r.ticker));
+  } else {
+    lastResults.forEach((r) => selectedTickers.delete(r.ticker));
+  }
+  renderTable();
+}
+
+function selectedRows() {
+  return lastResults.filter((r) => selectedTickers.has(r.ticker));
+}
+
+function summariseRow(r) {
+  const parts = [
+    r.ticker,
+    r.name ? `— ${r.name}` : '',
+    `$${r.close}`,
+    `(${r.pct_change >= 0 ? '+' : ''}${r.pct_change}%)`,
+    `RSI ${r.rsi}`,
+    `RVol ${r.rel_volume}×`,
+  ];
+  return parts.filter(Boolean).join(' ');
+}
+
+function emailSelected() {
+  const rows = selectedRows();
+  if (!rows.length) return;
+  const subject = `Trading-MA screen: ${rows.length} ticker${rows.length > 1 ? 's' : ''}`;
+  const body = [
+    `Trading-MA screen results — ${new Date().toISOString().slice(0, 10)}`,
+    '',
+    ...rows.map(summariseRow),
+    '',
+  ].join('\n');
+  const href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = href;
+}
+
+async function shareSelected() {
+  const rows = selectedRows();
+  if (!rows.length) return;
+  const text = rows.map(summariseRow).join('\n');
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Trading-MA tickers', text });
+      return;
+    } catch (_) { /* user cancelled or unsupported */ }
+  }
+  // SMS fallback first; then clipboard.
+  const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
+  if (isMobile) {
+    const sep = /iPhone|iPad/i.test(navigator.userAgent) ? '&' : '?';
+    window.location.href = `sms:${sep}body=${encodeURIComponent(text)}`;
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus('copied to clipboard');
+  } catch (_) {
+    window.prompt('Copy the tickers below:', text);
+  }
+}
+
+async function exportSelected() {
+  const rows = selectedRows();
+  if (!rows.length) return;
+  setStatus('exporting…');
+  try {
+    const res = await fetch('/api/export/xlsx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `trading-ma-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    setStatus('exported');
+  } catch (err) {
+    console.error(err);
+    setStatus('export failed');
+  }
+}
+
+function clearSelection() {
+  if (!selectedTickers.size) return;
+  selectedTickers.clear();
+  renderTable();
 }
 
 function onSortHeaderClick(ev) {
@@ -410,8 +557,16 @@ function onTickerLeave(ev) {
 if (els.body) {
   els.body.addEventListener('mouseover', onTickerEnter);
   els.body.addEventListener('mouseout', onTickerLeave);
+  els.body.addEventListener('change', onRowCheckboxChange);
 }
 window.addEventListener('scroll', hideHoverChart, true);
+
+if (els.selectAll) els.selectAll.addEventListener('change', onSelectAllChange);
+if (els.emailBtn) els.emailBtn.addEventListener('click', emailSelected);
+if (els.shareBtn) els.shareBtn.addEventListener('click', shareSelected);
+if (els.exportBtn) els.exportBtn.addEventListener('click', exportSelected);
+if (els.clearSelectionBtn) els.clearSelectionBtn.addEventListener('click', clearSelection);
+updateSelectionUI();
 
 // --- bootstrap -------------------------------------------------------------
 
