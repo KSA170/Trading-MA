@@ -144,7 +144,7 @@ async function runScreen() {
 function updateHighHeader() {
   if (!els.thHigh) return;
   const n = parseInt(inputs.high_lookback.value, 10);
-  els.thHigh.textContent = (Number.isFinite(n) && n > 0) ? `${n}d high` : 'High';
+  els.thHigh.textContent = (Number.isFinite(n) && n > 0) ? `${n}d HH` : 'HH';
 }
 
 function applySortIndicators() {

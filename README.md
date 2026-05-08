@@ -25,7 +25,8 @@ S&P 500 alone).
 A ticker passes when **all seven** are true on the close being evaluated
 (latest by default; up to 10 prior trading days are selectable):
 
-1. **30-day high** — that close ≥ the highest close in the prior 30 days.
+1. **Higher-high streak (5 days)** — each of the last 5 daily highs is
+   strictly greater than the bar before it.
 2. **RSI(14) ∈ [45, 50]** — Wilder smoothing.
 3. **RSI(14) deviation vs its 9-day SMA ∈ [-5%, +5%]** —
    `(RSI14 − SMA(RSI14, 9)) / SMA(RSI14, 9)`.
@@ -69,7 +70,7 @@ each name; subsequent runs are cached for 30 minutes.
 | param                    | default | notes                                       |
 |--------------------------|---------|---------------------------------------------|
 | `as_of_offset`           | 0       | 0 = latest close; up to 10 = 10 days back   |
-| `high_lookback`          | 30      | days for the prev-close-is-N-day-high check |
+| `high_lookback`          | 5       | required length of the consecutive higher-high streak |
 | `rsi_min`, `rsi_max`     | 45, 50  | RSI(14) band                                |
 | `rsi_dev_min_pct`        | -5      | min `(RSI14 - SMA(RSI14, 9)) / SMA * 100`   |
 | `rsi_dev_max_pct`        | 5       | max `(RSI14 - SMA(RSI14, 9)) / SMA * 100`   |
@@ -80,7 +81,7 @@ each name; subsequent runs are cached for 30 minutes.
 | `rvol_lookback`          | 10      | trailing days for average volume            |
 | `rvol_min`               | 0.5     | min volume / avg(rvol_lookback)             |
 | `price_min`, `price_max` | 1, 1000 | inclusive price range                       |
-| `apply_high`             | 1       | `0` to skip the N-day-high check            |
+| `apply_high`             | 1       | `0` to skip the higher-high streak check    |
 | `apply_rsi`              | 1       | `0` to skip the RSI(14) band check          |
 | `apply_rsi_dev`          | 1       | `0` to skip the RSI-vs-SMA deviation check  |
 | `apply_price_dev`        | 1       | `0` to skip the price-vs-EMA21 check        |

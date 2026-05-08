@@ -37,7 +37,7 @@ _SCREEN_TTL_SEC = 60 * 30  # 30 minutes
 _VALID_LISTS = set(LIST_LABELS.keys())
 
 DEFAULT_PARAMS: dict = {
-    "high_lookback": 30,
+    "high_lookback": 5,
     "rsi_min": 45.0,
     "rsi_max": 50.0,
     "rsi_dev_min_pct": -5.0,
@@ -99,7 +99,7 @@ def _parse_params() -> dict:
     if as_of_offset > screener.MAX_AS_OF_OFFSET:
         as_of_offset = screener.MAX_AS_OF_OFFSET
     return {
-        "high_lookback": int(request.args.get("high_lookback", 30)),
+        "high_lookback": int(request.args.get("high_lookback", 5)),
         "rsi_min": float(request.args.get("rsi_min", 45)),
         "rsi_max": float(request.args.get("rsi_max", 50)),
         "rsi_dev_min_pct": float(request.args.get("rsi_dev_min_pct", -5)),

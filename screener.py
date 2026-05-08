@@ -128,7 +128,7 @@ MAX_AS_OF_OFFSET = 10
 
 def evaluate_ticker(
     ticker: str,
-    high_lookback: int = 30,
+    high_lookback: int = 5,
     rsi_period: int = 14,
     rsi_min: float = 45.0,
     rsi_max: float = 50.0,
@@ -184,13 +184,21 @@ def evaluate_ticker(
     if apply_price and not (price_min <= prev_close <= price_max):
         return None
 
-    # N-day high: max of the prior `high_lookback` closes (excluding eval bar).
-    window_start = eval_idx - high_lookback
-    window = closes.iloc[window_start:eval_idx]
-    if window.empty:
+    # Higher-high streak: each of the last `high_lookback` bars must have a
+    # daily high strictly greater than the bar before it. That's N consecutive
+    # comparisons across N+1 bars (eval bar plus the N preceding).
+    highs = df["High"]
+    hh_start = eval_idx - high_lookback
+    if eval_idx + 1 < 0:
+        hh_window = highs.iloc[hh_start:eval_idx + 1]
+    else:
+        hh_window = highs.iloc[hh_start:]
+    if len(hh_window) < high_lookback + 1:
         return None
-    lookback_high = float(window.max())
-    if apply_high and prev_close < lookback_high:
+    eval_high = float(hh_window.iloc[-1])
+    streak_start_high = float(hh_window.iloc[0])
+    streak_ok = bool(hh_window.diff().iloc[1:].gt(0).all())
+    if apply_high and not streak_ok:
         return None
 
     # RSI(14) computed up to and including the eval bar
@@ -245,8 +253,8 @@ def evaluate_ticker(
 
     pct_change = (prev_close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
-    breakout = max(0.0, prev_close - lookback_high) / lookback_high if lookback_high else 0.0
-    score = max(rel_vol, 0.01) * (1 + breakout)
+    breakout = (eval_high - streak_start_high) / streak_start_high if streak_start_high else 0.0
+    score = max(rel_vol, 0.01) * (1 + max(0.0, breakout))
 
     membership = lists_for(ticker)
     return ScreenHit(
@@ -259,7 +267,7 @@ def evaluate_ticker(
         close=round(prev_close, 4),
         prev_close=round(prior_close, 4),
         pct_change=round(pct_change, 2),
-        high_lookback=round(lookback_high, 4),
+        high_lookback=round(eval_high, 4),
         rsi=round(float(rsi_val), 2),
         rsi_sma9=round(float(rsi_sma_val), 2),
         rsi_dev_pct=round(rsi_dev_pct, 2),
@@ -275,7 +283,7 @@ def evaluate_ticker(
 
 
 def run_screen(
-    high_lookback: int = 30,
+    high_lookback: int = 5,
     rsi_min: float = 45.0,
     rsi_max: float = 50.0,
     rsi_dev_min_pct: float = -5.0,

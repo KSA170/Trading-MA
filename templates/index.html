@@ -53,10 +53,10 @@
     </div>
 
     <div class="filter-group" data-group="high">
-      <label class="group-toggle"><input type="checkbox" id="apply_high" checked /> N-day high</label>
+      <label class="group-toggle"><input type="checkbox" id="apply_high" checked /> Higher-high streak</label>
       <div class="filter">
-        <label>Lookback (days)</label>
-        <input id="high_lookback" type="number" min="2" max="252" value="30" />
+        <label>Streak length (days)</label>
+        <input id="high_lookback" type="number" min="2" max="60" value="5" />
       </div>
     </div>
 
@@ -140,7 +140,7 @@
               <th data-sort="exchange" data-type="text">Ex.</th>
               <th class="num" data-sort="close" data-type="num">Prev close</th>
               <th class="num" data-sort="pct_change" data-type="num">% chg</th>
-              <th class="num" data-sort="high_lookback" data-type="num" id="th-high">30d high</th>
+              <th class="num" data-sort="high_lookback" data-type="num" id="th-high">5d HH</th>
               <th class="num" data-sort="rsi" data-type="num">RSI(14)</th>
               <th class="num" data-sort="rsi_sma9" data-type="num">9d SMA</th>
               <th class="num" data-sort="rsi_dev_pct" data-type="num">RSI dev</th>
