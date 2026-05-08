@@ -8,6 +8,10 @@ const els = {
   body: $('#results-body'),
   thead: document.querySelector('#results-table thead'),
   thHigh: $('#th-high'),
+  hoverChart: $('#hover-chart'),
+  hoverChartTitle: $('#hover-chart-title'),
+  hoverChartStatus: $('#hover-chart-status'),
+  hoverChartContainer: $('#hover-chart-container'),
 };
 
 let lastResults = [];
@@ -188,7 +192,7 @@ function renderResults(results) {
       tr.classList.add('row-equal');
     }
     tr.innerHTML = `
-      <td><strong>${r.ticker}</strong></td>
+      <td data-ticker="${escapeHtml(r.ticker)}"><strong>${r.ticker}</strong></td>
       <td>${escapeHtml(r.name || '')}</td>
       <td><span class="chip">${r.exchange}</span></td>
       <td class="num">${fmtNum(r.close)}</td>
@@ -230,6 +234,184 @@ function escapeHtml(s) {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[m]));
 }
+
+// --- hover chart popover --------------------------------------------------
+// Hovering a ticker cell opens a small daily chart (price + EMAs + volume on
+// pane 0, RSI(14) + 9d SMA on pane 1) anchored next to the cell. Fetched
+// payloads are cached per ticker for the session so a second hover is
+// instant.
+
+const HOVER_DELAY_MS = 220;
+const HOVER_W = 620;
+const HOVER_H = 380;
+const _chartCache = new Map();
+let _hoverChart = null;
+let _hoverShowTimer = null;
+let _hoverTicker = null;
+
+function disposeHoverChart() {
+  if (_hoverChart && _hoverChart.remove) {
+    try { _hoverChart.remove(); } catch (_) { /* ignore */ }
+  }
+  _hoverChart = null;
+  if (els.hoverChartContainer) els.hoverChartContainer.innerHTML = '';
+}
+
+function hideHoverChart() {
+  if (_hoverShowTimer) {
+    clearTimeout(_hoverShowTimer);
+    _hoverShowTimer = null;
+  }
+  _hoverTicker = null;
+  if (els.hoverChart) els.hoverChart.classList.add('hidden');
+  disposeHoverChart();
+}
+
+function positionHoverChart(rect) {
+  const margin = 12;
+  let left = rect.right + margin;
+  if (left + HOVER_W > window.innerWidth - margin) {
+    left = rect.left - HOVER_W - margin;
+  }
+  if (left < margin) left = margin;
+  let top = rect.top;
+  if (top + HOVER_H > window.innerHeight - margin) {
+    top = window.innerHeight - HOVER_H - margin;
+  }
+  if (top < margin) top = margin;
+  els.hoverChart.style.left = left + 'px';
+  els.hoverChart.style.top = top + 'px';
+}
+
+async function showHoverChart(ticker, anchorEl) {
+  if (!els.hoverChart || typeof LightweightCharts === 'undefined') return;
+  _hoverTicker = ticker;
+  els.hoverChartTitle.textContent = ticker;
+  els.hoverChartStatus.textContent = 'loading…';
+  positionHoverChart(anchorEl.getBoundingClientRect());
+  els.hoverChart.classList.remove('hidden');
+  disposeHoverChart();
+  let payload = _chartCache.get(ticker);
+  if (!payload) {
+    try {
+      const res = await fetch('/api/chart/' + encodeURIComponent(ticker));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      payload = await res.json();
+      _chartCache.set(ticker, payload);
+    } catch (err) {
+      if (_hoverTicker === ticker) {
+        els.hoverChartStatus.textContent = 'failed';
+      }
+      return;
+    }
+  }
+  if (_hoverTicker !== ticker) return; // user moved off before fetch completed
+  els.hoverChartStatus.textContent = payload.name || '';
+  drawHoverChart(payload);
+}
+
+function drawHoverChart(data) {
+  const rows = (data.rows || []).filter((r) => r.close !== null);
+  if (!rows.length) {
+    els.hoverChartStatus.textContent = 'no data';
+    return;
+  }
+  _hoverChart = LightweightCharts.createChart(els.hoverChartContainer, {
+    layout: { background: { color: '#161b22' }, textColor: '#c9d1d9' },
+    grid: { vertLines: { color: '#22272e' }, horzLines: { color: '#22272e' } },
+    rightPriceScale: { borderColor: '#2a313c', minimumWidth: 56 },
+    leftPriceScale: { visible: false },
+    timeScale: { borderColor: '#2a313c', rightOffset: 2, barSpacing: 4 },
+    crosshair: { mode: 1 },
+    autoSize: true,
+  });
+
+  // Pane 0 — candles + EMA21 + EMA50 + volume overlay
+  const candle = _hoverChart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: '#3fb950', downColor: '#f85149',
+    wickUpColor: '#3fb950', wickDownColor: '#f85149',
+    borderVisible: false,
+  }, 0);
+  const ema21 = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#d2a8ff', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+  }, 0);
+  const ema50 = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#ffa657', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+  }, 0);
+  const vol = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
+    priceFormat: { type: 'volume' },
+    priceScaleId: '',
+    color: '#30363d',
+    lastValueVisible: false,
+    priceLineVisible: false,
+  }, 0);
+  vol.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+
+  candle.setData(rows.map((r) => ({
+    time: r.time, open: r.open, high: r.high, low: r.low, close: r.close,
+  })));
+  ema21.setData(rows.filter((r) => r.ema21 != null).map((r) => ({ time: r.time, value: r.ema21 })));
+  ema50.setData(rows.filter((r) => r.ema50 != null).map((r) => ({ time: r.time, value: r.ema50 })));
+  vol.setData(rows.map((r) => ({
+    time: r.time, value: r.volume || 0,
+    color: r.close >= r.open ? 'rgba(63,185,80,0.4)' : 'rgba(248,81,73,0.4)',
+  })));
+
+  // Pane 1 — RSI(14) + 9d SMA of RSI
+  const rsi = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
+  }, 1);
+  const rsiSma = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+  }, 1);
+  rsi.setData(rows.filter((r) => r.rsi != null).map((r) => ({ time: r.time, value: r.rsi })));
+  rsiSma.setData(rows.filter((r) => r.rsi_sma9 != null).map((r) => ({ time: r.time, value: r.rsi_sma9 })));
+  rsi.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
+  rsi.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
+
+  // Compress the RSI pane (~25% of plot area). setHeight on the small pane
+  // forces pane 0 to absorb the rest.
+  const apply = () => {
+    try {
+      const panes = _hoverChart.panes() || [];
+      panes.forEach((p) => {
+        try { p.priceScale('right').applyOptions({ minimumWidth: 56 }); } catch (_) {}
+      });
+      if (panes.length >= 2 && panes[1].setHeight) {
+        panes[1].setHeight(80);
+      }
+    } catch (_) { /* ignore */ }
+    try { _hoverChart.timeScale().fitContent(); } catch (_) {}
+  };
+  apply();
+  requestAnimationFrame(apply);
+  setTimeout(apply, 80);
+}
+
+function onTickerEnter(ev) {
+  const cell = ev.target.closest('td[data-ticker]');
+  if (!cell) return;
+  const ticker = cell.dataset.ticker;
+  if (!ticker || _hoverTicker === ticker) return;
+  if (_hoverShowTimer) clearTimeout(_hoverShowTimer);
+  _hoverShowTimer = setTimeout(() => {
+    showHoverChart(ticker, cell);
+  }, HOVER_DELAY_MS);
+}
+
+function onTickerLeave(ev) {
+  const cell = ev.target.closest('td[data-ticker]');
+  if (!cell) return;
+  const related = ev.relatedTarget;
+  if (related && cell.contains(related)) return;
+  hideHoverChart();
+}
+
+if (els.body) {
+  els.body.addEventListener('mouseover', onTickerEnter);
+  els.body.addEventListener('mouseout', onTickerLeave);
+}
+window.addEventListener('scroll', hideHoverChart, true);
 
 // --- bootstrap -------------------------------------------------------------
 

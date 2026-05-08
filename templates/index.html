@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Trading MA — Breakout Screener</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://unpkg.com/lightweight-charts@5.0.7/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -158,6 +159,20 @@
       </div>
     </section>
   </main>
+
+  <div id="hover-chart" class="hover-chart hidden" aria-hidden="true">
+    <div class="hover-chart-header">
+      <span id="hover-chart-title"></span>
+      <span id="hover-chart-status" class="muted"></span>
+    </div>
+    <div id="hover-chart-container" class="hover-chart-container"></div>
+    <div class="hover-chart-legend">
+      <span><span class="dot dot-ema21"></span> EMA 21</span>
+      <span><span class="dot dot-ema50"></span> EMA 50</span>
+      <span><span class="dot dot-rsi"></span> RSI(14)</span>
+      <span><span class="dot dot-rsi9"></span> 9d SMA</span>
+    </div>
+  </div>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

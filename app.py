@@ -2,6 +2,7 @@
 Flask web app exposing:
   GET  /                  -> single page UI
   GET  /api/screen        -> run screener (cached for the trading session)
+  GET  /api/chart/<tkr>   -> daily OHLCV + EMA21/50 + RSI(14)/9d-SMA
   GET  /api/lists         -> available list keys / labels
   GET  /api/dates         -> last N trading-day dates for the date picker
 """
@@ -188,6 +189,15 @@ def api_screen():
         "as_of_date": summary_date,
         "elapsed_sec": round(elapsed, 1),
     })
+
+
+@app.route("/api/chart/<path:ticker>")
+def api_chart(ticker: str):
+    """OHLCV + EMA(21)/EMA(50) + RSI(14)/9d-SMA for the ticker hover chart."""
+    payload = screener.chart_payload(ticker)
+    if payload is None:
+        return jsonify({"error": f"no data for {ticker}"}), 404
+    return jsonify(payload)
 
 
 @app.route("/api/lists")

@@ -188,6 +188,68 @@ tr.row-equal td {
 }
 tr.row-equal:hover td { background: rgba(63, 185, 80, 0.28); }
 
+td[data-ticker] { cursor: help; }
+td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
+
+.hover-chart {
+  position: fixed;
+  width: 620px;
+  height: 380px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  z-index: 1000;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.hover-chart.hidden { display: none; }
+
+.hover-chart-header {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--panel-2);
+}
+.hover-chart-header #hover-chart-status {
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.hover-chart-container {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+}
+
+.hover-chart-legend {
+  display: flex;
+  gap: 12px;
+  padding: 4px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-2);
+}
+.hover-chart-legend .dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+.hover-chart-legend .dot-ema21 { background: #d2a8ff; }
+.hover-chart-legend .dot-ema50 { background: #ffa657; }
+.hover-chart-legend .dot-rsi { background: #58a6ff; }
+.hover-chart-legend .dot-rsi9 { background: #f0883e; }
+
 .pos { color: var(--green); }
 .neg { color: var(--red); }
 
