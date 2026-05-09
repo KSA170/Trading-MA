@@ -52,6 +52,8 @@ DEFAULT_PARAMS: dict = {
     "price_dev_max_pct": 5.0,
     "ema_dev_min_pct": -5.0,
     "ema_dev_max_pct": 5.0,
+    "macd_hist_min": 0.0,
+    "macd_require_rising": True,
     "apply_high": True,
     "apply_rsi": True,
     "apply_rsi_dev": True,
@@ -59,6 +61,7 @@ DEFAULT_PARAMS: dict = {
     "apply_price": True,
     "apply_price_dev": True,
     "apply_ema_dev": True,
+    "apply_macd": True,
     "as_of_offset": 0,
     "lists": tuple(sorted(_VALID_LISTS)),
 }
@@ -74,9 +77,10 @@ def _cache_key(params: dict) -> tuple:
     price = (round(float(params["price_min"]), 4), round(float(params["price_max"]), 4)) if params["apply_price"] else ("off",)
     price_dev = (round(float(params["price_dev_min_pct"]), 3), round(float(params["price_dev_max_pct"]), 3)) if params["apply_price_dev"] else ("off",)
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
+    macd = (round(float(params["macd_hist_min"]), 4), bool(params["macd_require_rising"])) if params["apply_macd"] else ("off",)
     lists = tuple(sorted(params["lists"]))
     as_of = int(params["as_of_offset"])
-    return ("v6", as_of, price, price_dev, ema_dev, high, rsi, rsi_dev, rvol, lists)
+    return ("v7", as_of, price, price_dev, ema_dev, macd, high, rsi, rsi_dev, rvol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -114,6 +118,8 @@ def _parse_params() -> dict:
         "price_dev_max_pct": float(request.args.get("price_dev_max_pct", 5)),
         "ema_dev_min_pct": float(request.args.get("ema_dev_min_pct", -5)),
         "ema_dev_max_pct": float(request.args.get("ema_dev_max_pct", 5)),
+        "macd_hist_min": float(request.args.get("macd_hist_min", 0)),
+        "macd_require_rising": _parse_bool("macd_require_rising", True),
         "apply_high": _parse_bool("apply_high", True),
         "apply_rsi": _parse_bool("apply_rsi", True),
         "apply_rsi_dev": _parse_bool("apply_rsi_dev", True),
@@ -121,6 +127,7 @@ def _parse_params() -> dict:
         "apply_price": _parse_bool("apply_price", True),
         "apply_price_dev": _parse_bool("apply_price_dev", True),
         "apply_ema_dev": _parse_bool("apply_ema_dev", True),
+        "apply_macd": _parse_bool("apply_macd", True),
         "as_of_offset": as_of_offset,
         "lists": tuple(wanted),
     }
@@ -165,6 +172,8 @@ def api_screen():
         price_dev_max_pct=params["price_dev_max_pct"],
         ema_dev_min_pct=params["ema_dev_min_pct"],
         ema_dev_max_pct=params["ema_dev_max_pct"],
+        macd_hist_min=params["macd_hist_min"],
+        macd_require_rising=params["macd_require_rising"],
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
         apply_rsi_dev=params["apply_rsi_dev"],
@@ -172,6 +181,7 @@ def api_screen():
         apply_price=params["apply_price"],
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
+        apply_macd=params["apply_macd"],
         as_of_offset=params["as_of_offset"],
         lists=list(params["lists"]),
     )

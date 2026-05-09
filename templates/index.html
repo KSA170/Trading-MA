@@ -108,6 +108,17 @@
       </div>
     </div>
 
+    <div class="filter-group" data-group="macd">
+      <label class="group-toggle"><input type="checkbox" id="apply_macd" checked /> MACD histogram bullish</label>
+      <div class="filter">
+        <label>min hist value</label>
+        <input id="macd_hist_min" type="number" step="0.01" value="0" />
+      </div>
+      <div class="filter inline-toggle">
+        <label class="inline-checkbox"><input type="checkbox" id="macd_require_rising" checked /> require rising</label>
+      </div>
+    </div>
+
     <div class="filter-group" data-group="rvol">
       <label class="group-toggle"><input type="checkbox" id="apply_rvol" checked /> Relative volume</label>
       <div class="filter">
@@ -156,12 +167,13 @@
               <th class="num" data-sort="price_ema21_dev_pct" data-type="num">vs EMA21</th>
               <th class="num" data-sort="ema50" data-type="num">EMA(50)</th>
               <th class="num" data-sort="ema21_ema50_dev_pct" data-type="num">21 vs 50</th>
+              <th class="num" data-sort="macd_hist" data-type="num">MACD hist</th>
               <th class="num" data-sort="rel_volume" data-type="num">RVol</th>
               <th class="num" data-sort="volume" data-type="num">Volume</th>
             </tr>
           </thead>
           <tbody id="results-body">
-            <tr class="empty"><td colspan="16">Click "Run screen" to start.</td></tr>
+            <tr class="empty"><td colspan="17">Click "Run screen" to start.</td></tr>
           </tbody>
         </table>
       </div>

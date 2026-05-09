@@ -123,6 +123,23 @@ button.primary:hover { filter: brightness(1.05); }
 .filter-group.disabled { opacity: 0.5; }
 .filter-group.disabled .filter input { pointer-events: none; }
 
+.filter .inline-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  padding-bottom: 4px;
+}
+.filter .inline-checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  margin: 0;
+}
+
 .filter-notes {
   grid-column: 1 / -1;
   color: var(--muted);

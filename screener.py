@@ -52,6 +52,10 @@ class ScreenHit:
     price_ema21_dev_pct: float
     ema50: float
     ema21_ema50_dev_pct: float
+    macd: float
+    macd_signal: float
+    macd_hist: float
+    macd_hist_prev: float
     rel_volume: float
     avg_volume: float
     volume: float
@@ -145,6 +149,8 @@ def evaluate_ticker(
     price_dev_max_pct: float = 5.0,
     ema_dev_min_pct: float = -5.0,
     ema_dev_max_pct: float = 5.0,
+    macd_hist_min: float = 0.0,
+    macd_require_rising: bool = True,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
@@ -152,6 +158,7 @@ def evaluate_ticker(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
+    apply_macd: bool = True,
     as_of_offset: int = 0,
 ) -> ScreenHit | None:
     if as_of_offset < 0:
@@ -163,6 +170,9 @@ def evaluate_ticker(
     needed = max(
         high_lookback + 2, rsi_period + 5, rvol_lookback + 2,
         ema_period + 2, ema_long_period + 2,
+        # MACD(12,26,9) needs 26 + 9 = 35 bars for the signal line, plus 1
+        # extra so we can compare today's hist vs yesterday's.
+        26 + 9 + 2,
     ) + as_of_offset
     if df is None or len(df) < needed:
         return None
@@ -241,6 +251,25 @@ def evaluate_ticker(
     if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
         return None
 
+    # MACD(12, 26, 9): histogram = MACD line - signal line. "Bullish trending"
+    # = histogram is at or above `macd_hist_min` AND today's hist is greater
+    # than yesterday's (momentum building).
+    macd_line_series = ema(closes_to_eval, 12) - ema(closes_to_eval, 26)
+    macd_signal_series = ema(macd_line_series, 9)
+    macd_hist_series = macd_line_series - macd_signal_series
+    macd_val = macd_line_series.iloc[-1]
+    macd_signal_val = macd_signal_series.iloc[-1]
+    macd_hist_val = macd_hist_series.iloc[-1]
+    macd_hist_prev = macd_hist_series.iloc[-2] if len(macd_hist_series) > 1 else float("nan")
+    if not (np.isfinite(macd_val) and np.isfinite(macd_signal_val) and
+            np.isfinite(macd_hist_val) and np.isfinite(macd_hist_prev)):
+        return None
+    if apply_macd:
+        if float(macd_hist_val) < macd_hist_min:
+            return None
+        if macd_require_rising and not (float(macd_hist_val) > float(macd_hist_prev)):
+            return None
+
     # Relative volume: eval-bar volume / mean of the prior rvol_lookback bars
     vol_window_start = eval_idx - rvol_lookback
     vol_window = volumes.iloc[vol_window_start:eval_idx]
@@ -275,6 +304,10 @@ def evaluate_ticker(
         price_ema21_dev_pct=round(price_ema21_dev_pct, 2),
         ema50=round(ema_long_val, 4),
         ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2),
+        macd=round(float(macd_val), 4),
+        macd_signal=round(float(macd_signal_val), 4),
+        macd_hist=round(float(macd_hist_val), 4),
+        macd_hist_prev=round(float(macd_hist_prev), 4),
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
@@ -296,6 +329,8 @@ def run_screen(
     price_dev_max_pct: float = 5.0,
     ema_dev_min_pct: float = -5.0,
     ema_dev_max_pct: float = 5.0,
+    macd_hist_min: float = 0.0,
+    macd_require_rising: bool = True,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
@@ -303,6 +338,7 @@ def run_screen(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
+    apply_macd: bool = True,
     as_of_offset: int = 0,
     lists: list[str] | None = None,
     universe: Iterable[str] | None = None,
@@ -333,6 +369,8 @@ def run_screen(
                 price_dev_max_pct=price_dev_max_pct,
                 ema_dev_min_pct=ema_dev_min_pct,
                 ema_dev_max_pct=ema_dev_max_pct,
+                macd_hist_min=macd_hist_min,
+                macd_require_rising=macd_require_rising,
                 apply_high=apply_high,
                 apply_rsi=apply_rsi,
                 apply_rsi_dev=apply_rsi_dev,
@@ -340,6 +378,7 @@ def run_screen(
                 apply_price=apply_price,
                 apply_price_dev=apply_price_dev,
                 apply_ema_dev=apply_ema_dev,
+                apply_macd=apply_macd,
                 as_of_offset=as_of_offset,
             )
         except Exception as exc:
