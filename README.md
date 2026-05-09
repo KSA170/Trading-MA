@@ -22,23 +22,27 @@ S&P 500 alone).
 
 ## Default screen
 
+Defaults are tuned to catch the early phase of an EMA-reclaim breakout
+(RSI rising through 50, price reclaiming EMA21 with EMA21 about to cross
+EMA50, MACD histogram flipping bullish, volume above the 10-day average).
 A ticker passes when **all eight** are true on the close being evaluated
 (latest by default; up to 10 prior trading days are selectable):
 
-1. **Higher-high streak (5 days)** — each of the last 5 daily highs is
+1. **Higher-high streak (2 days)** — each of the last 2 daily highs is
    strictly greater than the bar before it.
-2. **RSI(14) ∈ [45, 50]** — Wilder smoothing.
-3. **RSI(14) deviation vs its 9-day SMA ∈ [-5%, +5%]** —
-   `(RSI14 − SMA(RSI14, 9)) / SMA(RSI14, 9)`.
-4. **Price deviation vs EMA(21) ∈ [-5%, +5%]** —
-   `(close − EMA21) / EMA21`.
-5. **EMA(21) deviation vs EMA(50) ∈ [-5%, +5%]** —
-   `(EMA21 − EMA50) / EMA50`.
-6. **MACD histogram bullish** — `MACD(12, 26, 9)` histogram ≥ 0 and
-   today's hist > yesterday's (rising momentum). Threshold and "require
-   rising" flag are adjustable.
-7. **10-day relative volume > 0.5** — that day's volume / mean of the prior
-   10 days.
+2. **RSI(14) ∈ [45, 65]** — Wilder smoothing. Above neutral, not yet
+   overbought.
+3. **RSI(14) deviation vs its 9-day SMA ∈ [0%, +10%]** — RSI is at or
+   above its smoothed average (rising momentum).
+4. **Price deviation vs EMA(21) ∈ [-1%, +4%]** — close has just reclaimed
+   EMA21.
+5. **EMA(21) deviation vs EMA(50) ∈ [-3%, +3%]** — EMA21 is at or just
+   crossing EMA50 (early golden-cross territory).
+6. **MACD(12, 26, 9) histogram bullish** — histogram ≥ 0 *and* today's
+   hist > yesterday's. Threshold and "require rising" toggle are
+   adjustable.
+7. **10-day relative volume ≥ 1.2×** — confirms above-average
+   participation.
 8. **Price between $1 and $1000** — based on that close.
 
 Every filter is adjustable from the UI. Each criterion has an "Apply"
@@ -73,18 +77,18 @@ each name; subsequent runs are cached for 30 minutes.
 | param                    | default | notes                                       |
 |--------------------------|---------|---------------------------------------------|
 | `as_of_offset`           | 0       | 0 = latest close; up to 10 = 10 days back   |
-| `high_lookback`          | 5       | required length of the consecutive higher-high streak |
-| `rsi_min`, `rsi_max`     | 45, 50  | RSI(14) band                                |
-| `rsi_dev_min_pct`        | -5      | min `(RSI14 - SMA(RSI14, 9)) / SMA * 100`   |
-| `rsi_dev_max_pct`        | 5       | max `(RSI14 - SMA(RSI14, 9)) / SMA * 100`   |
-| `price_dev_min_pct`      | -5      | min `(close - EMA21) / EMA21 * 100`         |
-| `price_dev_max_pct`      | 5       | max `(close - EMA21) / EMA21 * 100`         |
-| `ema_dev_min_pct`        | -5      | min `(EMA21 - EMA50) / EMA50 * 100`         |
-| `ema_dev_max_pct`        | 5       | max `(EMA21 - EMA50) / EMA50 * 100`         |
+| `high_lookback`          | 2       | required length of the consecutive higher-high streak |
+| `rsi_min`, `rsi_max`     | 45, 65  | RSI(14) band                                |
+| `rsi_dev_min_pct`        | 0       | min `(RSI14 - SMA(RSI14, 9)) / SMA * 100`   |
+| `rsi_dev_max_pct`        | 10      | max `(RSI14 - SMA(RSI14, 9)) / SMA * 100`   |
+| `price_dev_min_pct`      | -1      | min `(close - EMA21) / EMA21 * 100`         |
+| `price_dev_max_pct`      | 4       | max `(close - EMA21) / EMA21 * 100`         |
+| `ema_dev_min_pct`        | -3      | min `(EMA21 - EMA50) / EMA50 * 100`         |
+| `ema_dev_max_pct`        | 3       | max `(EMA21 - EMA50) / EMA50 * 100`         |
 | `macd_hist_min`          | 0       | min MACD(12,26,9) histogram value           |
 | `macd_require_rising`    | 1       | require today's hist > yesterday's hist     |
 | `rvol_lookback`          | 10      | trailing days for average volume            |
-| `rvol_min`               | 0.5     | min volume / avg(rvol_lookback)             |
+| `rvol_min`               | 1.2     | min volume / avg(rvol_lookback)             |
 | `price_min`, `price_max` | 1, 1000 | inclusive price range                       |
 | `apply_high`             | 1       | `0` to skip the higher-high streak check    |
 | `apply_rsi`              | 1       | `0` to skip the RSI(14) band check          |
