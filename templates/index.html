@@ -18,16 +18,14 @@
 
   <section class="filters">
     <div class="filter-group scope">
-      <label class="group-label">List</label>
-      <div class="filter">
-        <select id="list_filter">
-          <option value="">Any (S&amp;P 500 + Dow + Nasdaq + Russell 2000 + TSX)</option>
-          <option value="sp500">S&amp;P 500</option>
-          <option value="dow">Dow 30</option>
-          <option value="nasdaq">Nasdaq</option>
-          <option value="russell2000">Russell 2000 (US Small Cap)</option>
-          <option value="tsx">TSX (Canada)</option>
-        </select>
+      <label class="group-label">Lists / exchanges</label>
+      <div class="filter list-checkboxes">
+        <label class="list-option list-all"><input type="checkbox" id="list_all" checked /> Select all</label>
+        <label class="list-option"><input type="checkbox" data-list-key="sp500" checked /> S&amp;P 500</label>
+        <label class="list-option"><input type="checkbox" data-list-key="dow" checked /> Dow 30</label>
+        <label class="list-option"><input type="checkbox" data-list-key="nasdaq" checked /> Nasdaq</label>
+        <label class="list-option"><input type="checkbox" data-list-key="russell2000" checked /> Russell 2000</label>
+        <label class="list-option"><input type="checkbox" data-list-key="tsx" checked /> TSX (Canada)</label>
       </div>
     </div>
 

@@ -54,7 +54,8 @@ const toggles = {
   macd_require_rising: $('#macd_require_rising'),
 };
 
-const listFilter = $('#list_filter');
+const listAllCb = $('#list_all');
+const listCheckboxes = Array.from(document.querySelectorAll('input[data-list-key]'));
 const asOfSelect = $('#as_of_offset');
 
 function setStatus(text) { els.status.textContent = text; }
@@ -71,6 +72,10 @@ function fmtVol(n) {
   return String(n);
 }
 
+function getSelectedListKeys() {
+  return listCheckboxes.filter((cb) => cb.checked).map((cb) => cb.dataset.listKey);
+}
+
 function buildQuery() {
   const params = new URLSearchParams();
   for (const [k, el] of Object.entries(inputs)) {
@@ -79,13 +84,42 @@ function buildQuery() {
   for (const [k, el] of Object.entries(toggles)) {
     params.set(k, el.checked ? '1' : '0');
   }
-  if (listFilter && listFilter.value) {
-    params.set('lists', listFilter.value);
+  const selectedLists = getSelectedListKeys();
+  if (listCheckboxes.length && selectedLists.length < listCheckboxes.length) {
+    // Subset (or none) selected — send the explicit list. Empty string tells
+    // the backend "no lists" (returns no candidates); the UI normally
+    // disables the Run button before this can happen.
+    params.set('lists', selectedLists.join(','));
   }
   if (asOfSelect) {
     params.set('as_of_offset', asOfSelect.value || '0');
   }
   return params.toString();
+}
+
+function updateListAllState() {
+  if (!listAllCb || !listCheckboxes.length) return;
+  const total = listCheckboxes.length;
+  const checked = listCheckboxes.filter((cb) => cb.checked).length;
+  listAllCb.checked = checked === total;
+  listAllCb.indeterminate = checked > 0 && checked < total;
+  // Disable Run if nothing is selected — empty universe is not a useful screen.
+  if (els.runBtn) {
+    if (checked === 0) {
+      els.runBtn.disabled = true;
+      els.runBtn.title = 'Select at least one list / exchange';
+    } else {
+      els.runBtn.disabled = false;
+      els.runBtn.title = '';
+    }
+  }
+}
+
+function onListAllChange() {
+  if (!listAllCb) return;
+  const checked = listAllCb.checked;
+  listCheckboxes.forEach((cb) => { cb.checked = checked; });
+  updateListAllState();
 }
 
 function syncDisabledStates() {
@@ -584,5 +618,9 @@ syncDisabledStates();
 if (els.thead) els.thead.addEventListener('click', onSortHeaderClick);
 if (inputs.high_lookback) inputs.high_lookback.addEventListener('input', updateHighHeader);
 updateHighHeader();
+
+if (listAllCb) listAllCb.addEventListener('change', onListAllChange);
+listCheckboxes.forEach((cb) => cb.addEventListener('change', updateListAllState));
+updateListAllState();
 
 loadDates();

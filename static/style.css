@@ -140,6 +140,36 @@ button.primary:hover { filter: brightness(1.05); }
   margin: 0;
 }
 
+.filter.list-checkboxes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 100%;
+}
+.filter.list-checkboxes .list-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 2px 0;
+  user-select: none;
+}
+.filter.list-checkboxes .list-option input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  margin: 0;
+}
+.filter.list-checkboxes .list-all {
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+  margin-bottom: 2px;
+}
+
 .filter-notes {
   grid-column: 1 / -1;
   color: var(--muted);
