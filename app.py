@@ -227,6 +227,42 @@ def api_dates():
     return jsonify({"dates": screener.reference_dates(n=n)})
 
 
+@app.route("/api/debug/<path:ticker>")
+def api_debug(ticker: str):
+    """Run each filter against a single ticker and return a pass/fail
+    breakdown — used by the "Diagnose" panel in the UI to explain why a
+    given ticker did or did not match a screen."""
+    params = _parse_params()
+    result = screener.diagnose_ticker(
+        ticker.upper().strip(),
+        high_lookback=params["high_lookback"],
+        rsi_min=params["rsi_min"],
+        rsi_max=params["rsi_max"],
+        rsi_dev_min_pct=params["rsi_dev_min_pct"],
+        rsi_dev_max_pct=params["rsi_dev_max_pct"],
+        rvol_lookback=params["rvol_lookback"],
+        rvol_min=params["rvol_min"],
+        price_min=params["price_min"],
+        price_max=params["price_max"],
+        price_dev_min_pct=params["price_dev_min_pct"],
+        price_dev_max_pct=params["price_dev_max_pct"],
+        ema_dev_min_pct=params["ema_dev_min_pct"],
+        ema_dev_max_pct=params["ema_dev_max_pct"],
+        macd_hist_min=params["macd_hist_min"],
+        macd_require_rising=params["macd_require_rising"],
+        apply_high=params["apply_high"],
+        apply_rsi=params["apply_rsi"],
+        apply_rsi_dev=params["apply_rsi_dev"],
+        apply_rvol=params["apply_rvol"],
+        apply_price=params["apply_price"],
+        apply_price_dev=params["apply_price_dev"],
+        apply_ema_dev=params["apply_ema_dev"],
+        apply_macd=params["apply_macd"],
+        as_of_offset=params["as_of_offset"],
+    )
+    return jsonify(result)
+
+
 # Column order + display labels for the Excel export. Keys must match the
 # fields produced by ScreenHit.to_dict().
 _EXPORT_COLUMNS: list[tuple[str, str]] = [

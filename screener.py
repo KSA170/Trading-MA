@@ -457,3 +457,194 @@ def _safe(v):
     if math.isnan(f) or math.isinf(f):
         return None
     return f
+
+
+# --- diagnostic: per-filter pass/fail for a single ticker ------------------
+
+def diagnose_ticker(
+    ticker: str,
+    high_lookback: int = 2,
+    rsi_period: int = 14,
+    rsi_min: float = 45.0,
+    rsi_max: float = 65.0,
+    rsi_sma_period: int = 9,
+    rsi_dev_min_pct: float = 0.0,
+    rsi_dev_max_pct: float = 10.0,
+    rvol_lookback: int = 10,
+    rvol_min: float = 1.2,
+    price_min: float = 1.0,
+    price_max: float = 1000.0,
+    ema_period: int = 21,
+    ema_long_period: int = 50,
+    price_dev_min_pct: float = -1.0,
+    price_dev_max_pct: float = 4.0,
+    ema_dev_min_pct: float = -3.0,
+    ema_dev_max_pct: float = 3.0,
+    macd_hist_min: float = 0.0,
+    macd_require_rising: bool = True,
+    apply_high: bool = True,
+    apply_rsi: bool = True,
+    apply_rsi_dev: bool = True,
+    apply_rvol: bool = True,
+    apply_price: bool = True,
+    apply_price_dev: bool = True,
+    apply_ema_dev: bool = True,
+    apply_macd: bool = True,
+    as_of_offset: int = 0,
+) -> dict:
+    """Run each filter independently and return a per-filter pass/fail
+    breakdown. Mirrors evaluate_ticker but without short-circuiting so the
+    user can see exactly which check rejected a ticker.
+    """
+    out: dict = {
+        "ticker": display_symbol(ticker),
+        "in_universe": bool(lists_for(ticker)),
+        "lists": lists_for(ticker),
+        "as_of_offset": int(as_of_offset),
+        "as_of_date": None,
+        "data_bars": 0,
+        "data_sufficient": False,
+        "all_pass": False,
+        "checks": [],
+        "error": None,
+    }
+
+    df = _cached_history(ticker, period="6mo")
+    if df is None or df.empty:
+        out["error"] = "yfinance returned no data for this ticker"
+        return out
+    out["data_bars"] = int(len(df))
+
+    needed = max(
+        high_lookback + 2, rsi_period + 5, rvol_lookback + 2,
+        ema_period + 2, ema_long_period + 2, 26 + 9 + 2,
+    ) + as_of_offset
+    if len(df) < needed:
+        out["error"] = f"only {len(df)} bars available, screener needs >= {needed}"
+        return out
+    out["data_sufficient"] = True
+
+    closes = df["Close"]
+    volumes = df["Volume"]
+    eval_idx = -(1 + int(as_of_offset))
+    if eval_idx < -len(df):
+        out["error"] = f"as_of_offset {as_of_offset} exceeds available history"
+        return out
+    out["as_of_date"] = df.index[eval_idx].strftime("%Y-%m-%d")
+
+    prev_close = float(closes.iloc[eval_idx])
+    prior_close = float(closes.iloc[eval_idx - 1]) if eval_idx - 1 >= -len(df) else float("nan")
+    volume = float(volumes.iloc[eval_idx])
+
+    def add(name, label, value, applied, ok, band=None, extra=None):
+        out["checks"].append({
+            "name": name,
+            "label": label,
+            "value": value,
+            "applied": bool(applied),
+            "pass": bool(ok) if applied else True,  # ignored filters don't fail
+            "band": band,
+            "extra": extra,
+        })
+
+    # 1. Price range
+    price_ok = price_min <= prev_close <= price_max
+    add("price", f"Price ∈ [${price_min}, ${price_max}]", round(prev_close, 4),
+        apply_price, price_ok, [price_min, price_max])
+
+    # 2. Higher-high streak
+    highs = df["High"]
+    hh_start = eval_idx - high_lookback
+    if eval_idx + 1 < 0:
+        hh_window = highs.iloc[hh_start:eval_idx + 1]
+    else:
+        hh_window = highs.iloc[hh_start:]
+    diffs = hh_window.diff().iloc[1:].tolist() if len(hh_window) >= 2 else []
+    streak_ok = len(hh_window) >= high_lookback + 1 and all(d > 0 for d in diffs if d is not None and not (isinstance(d, float) and (d != d)))
+    add("higher_high_streak",
+        f"Higher-high streak ({high_lookback} days)",
+        round(float(hh_window.iloc[-1]), 4) if len(hh_window) else None,
+        apply_high, streak_ok, None,
+        {"highs": [round(float(h), 4) for h in hh_window.tolist()],
+         "diffs": [round(float(d), 4) for d in diffs if d is not None and not (isinstance(d, float) and (d != d))]})
+
+    # 3. RSI(14) band
+    closes_to_eval = closes.iloc[: len(closes) + eval_idx + 1] if eval_idx < -1 else closes
+    rsi_series = rsi_wilder(closes_to_eval, period=rsi_period)
+    rsi_val = float(rsi_series.iloc[-1]) if np.isfinite(rsi_series.iloc[-1]) else None
+    rsi_ok = rsi_val is not None and rsi_min <= rsi_val <= rsi_max
+    add("rsi", f"RSI({rsi_period}) ∈ [{rsi_min}, {rsi_max}]",
+        round(rsi_val, 2) if rsi_val is not None else None,
+        apply_rsi, rsi_ok, [rsi_min, rsi_max])
+
+    # 4. RSI dev vs 9d SMA
+    rsi_sma_series = rsi_series.rolling(window=rsi_sma_period, min_periods=rsi_sma_period).mean()
+    rsi_sma_val = float(rsi_sma_series.iloc[-1]) if np.isfinite(rsi_sma_series.iloc[-1]) else None
+    rsi_dev_pct = None
+    if rsi_val is not None and rsi_sma_val and rsi_sma_val != 0:
+        rsi_dev_pct = (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+    rsi_dev_ok = rsi_dev_pct is not None and rsi_dev_min_pct <= rsi_dev_pct <= rsi_dev_max_pct
+    add("rsi_dev", f"RSI dev vs 9d SMA ∈ [{rsi_dev_min_pct}%, {rsi_dev_max_pct}%]",
+        round(rsi_dev_pct, 2) if rsi_dev_pct is not None else None,
+        apply_rsi_dev, rsi_dev_ok, [rsi_dev_min_pct, rsi_dev_max_pct],
+        {"rsi_sma9": round(rsi_sma_val, 2) if rsi_sma_val is not None else None})
+
+    # 5. Price dev vs EMA(21)
+    ema_series = ema(closes_to_eval, ema_period)
+    ema_val = float(ema_series.iloc[-1]) if np.isfinite(ema_series.iloc[-1]) else None
+    price_dev_pct = None
+    if ema_val and ema_val != 0:
+        price_dev_pct = (prev_close - ema_val) / ema_val * 100.0
+    pd_ok = price_dev_pct is not None and price_dev_min_pct <= price_dev_pct <= price_dev_max_pct
+    add("price_dev", f"Price vs EMA({ema_period}) ∈ [{price_dev_min_pct}%, {price_dev_max_pct}%]",
+        round(price_dev_pct, 2) if price_dev_pct is not None else None,
+        apply_price_dev, pd_ok, [price_dev_min_pct, price_dev_max_pct],
+        {"ema21": round(ema_val, 4) if ema_val is not None else None})
+
+    # 6. EMA(21) vs EMA(50)
+    ema_long_series = ema(closes_to_eval, ema_long_period)
+    ema_long_val = float(ema_long_series.iloc[-1]) if np.isfinite(ema_long_series.iloc[-1]) else None
+    ema_dev_pct = None
+    if ema_val is not None and ema_long_val and ema_long_val != 0:
+        ema_dev_pct = (ema_val - ema_long_val) / ema_long_val * 100.0
+    ed_ok = ema_dev_pct is not None and ema_dev_min_pct <= ema_dev_pct <= ema_dev_max_pct
+    add("ema_dev", f"EMA({ema_period}) vs EMA({ema_long_period}) ∈ [{ema_dev_min_pct}%, {ema_dev_max_pct}%]",
+        round(ema_dev_pct, 2) if ema_dev_pct is not None else None,
+        apply_ema_dev, ed_ok, [ema_dev_min_pct, ema_dev_max_pct],
+        {"ema50": round(ema_long_val, 4) if ema_long_val is not None else None})
+
+    # 7. MACD histogram
+    macd_line_series = ema(closes_to_eval, 12) - ema(closes_to_eval, 26)
+    macd_signal_series = ema(macd_line_series, 9)
+    macd_hist_series = macd_line_series - macd_signal_series
+    macd_hist_val = float(macd_hist_series.iloc[-1]) if np.isfinite(macd_hist_series.iloc[-1]) else None
+    macd_hist_prev = float(macd_hist_series.iloc[-2]) if len(macd_hist_series) > 1 and np.isfinite(macd_hist_series.iloc[-2]) else None
+    macd_ok = True
+    if macd_hist_val is None:
+        macd_ok = False
+    else:
+        if macd_hist_val < macd_hist_min:
+            macd_ok = False
+        if macd_require_rising and macd_hist_prev is not None and not (macd_hist_val > macd_hist_prev):
+            macd_ok = False
+    add("macd", f"MACD hist ≥ {macd_hist_min}" + (" and rising" if macd_require_rising else ""),
+        round(macd_hist_val, 4) if macd_hist_val is not None else None,
+        apply_macd, macd_ok, None,
+        {"prev_hist": round(macd_hist_prev, 4) if macd_hist_prev is not None else None,
+         "rising": macd_hist_val is not None and macd_hist_prev is not None and macd_hist_val > macd_hist_prev})
+
+    # 8. Relative volume
+    vol_window_start = eval_idx - rvol_lookback
+    vol_window = volumes.iloc[vol_window_start:eval_idx]
+    rvol = None
+    if len(vol_window) and vol_window.mean() > 0:
+        rvol = volume / float(vol_window.mean())
+    rvol_ok = rvol is not None and rvol > rvol_min
+    add("rvol", f"RVol({rvol_lookback}d) > {rvol_min}",
+        round(rvol, 2) if rvol is not None else None,
+        apply_rvol, rvol_ok, [rvol_min, None],
+        {"avg_volume": round(float(vol_window.mean()), 0) if len(vol_window) else None,
+         "volume": round(volume, 0)})
+
+    out["all_pass"] = all(c["pass"] for c in out["checks"])
+    return out

@@ -140,6 +140,14 @@
         Matches <span id="match-count" class="muted"></span>
         <span id="as-of-label" class="as-of-label muted"></span>
       </h2>
+      <div class="diagnose-bar">
+        <label for="diagnose-ticker" class="muted">Diagnose ticker:</label>
+        <input id="diagnose-ticker" type="text" placeholder="e.g. NRGV" autocomplete="off" />
+        <button id="diagnose-btn" type="button">Run</button>
+        <span id="diagnose-status" class="muted"></span>
+      </div>
+      <div id="diagnose-output" class="diagnose-output hidden"></div>
+
       <div class="results-toolbar">
         <span id="selection-count" class="muted">0 selected</span>
         <button id="email-btn" type="button" disabled>Email</button>

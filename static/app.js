@@ -15,6 +15,10 @@ const els = {
   copyQuestradeBtn: $('#copy-questrade-btn'),
   exportBtn: $('#export-btn'),
   clearSelectionBtn: $('#clear-selection-btn'),
+  diagnoseTicker: $('#diagnose-ticker'),
+  diagnoseBtn: $('#diagnose-btn'),
+  diagnoseStatus: $('#diagnose-status'),
+  diagnoseOutput: $('#diagnose-output'),
   hoverChart: $('#hover-chart'),
   hoverChartTitle: $('#hover-chart-title'),
   hoverChartStatus: $('#hover-chart-status'),
@@ -414,6 +418,70 @@ async function exportSelected() {
   }
 }
 
+async function runDiagnose() {
+  if (!els.diagnoseTicker) return;
+  const ticker = (els.diagnoseTicker.value || '').trim().toUpperCase();
+  if (!ticker) {
+    els.diagnoseStatus.textContent = 'enter a ticker';
+    return;
+  }
+  els.diagnoseStatus.textContent = 'checking…';
+  els.diagnoseOutput.classList.add('hidden');
+  try {
+    const res = await fetch('/api/debug/' + encodeURIComponent(ticker) + '?' + buildQuery());
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderDiagnose(data);
+    els.diagnoseStatus.textContent = '';
+  } catch (err) {
+    console.error(err);
+    els.diagnoseStatus.textContent = 'error: ' + err.message;
+  }
+}
+
+function renderDiagnose(d) {
+  const out = els.diagnoseOutput;
+  if (!out) return;
+  out.classList.remove('hidden');
+  const pillClass = d.all_pass ? 'pass' : 'fail';
+  const header = `
+    <div class="diagnose-header">
+      <strong>${escapeHtml(d.ticker)}</strong>
+      ${d.in_universe ? `<span class="pill">in universe: ${escapeHtml((d.lists || []).join(', ') || 'yes')}</span>` : '<span class="pill" style="color:var(--red)">NOT in universe</span>'}
+      ${d.as_of_date ? `<span class="pill">as of ${escapeHtml(d.as_of_date)}</span>` : ''}
+      ${d.data_bars ? `<span class="pill">${d.data_bars} bars</span>` : ''}
+      <span class="pill" style="color:var(${d.all_pass ? '--green' : '--red'})">${d.all_pass ? 'all checks pass' : 'rejected'}</span>
+    </div>
+  `;
+  if (d.error) {
+    out.innerHTML = header + `<div style="color:var(--red)">${escapeHtml(d.error)}</div>`;
+    return;
+  }
+  const fmt = (v) => (v === null || v === undefined) ? '—' : (typeof v === 'number' ? Number(v).toLocaleString(undefined, { maximumFractionDigits: 4 }) : String(v));
+  const checks = (d.checks || []).map((c) => {
+    const cls = !c.applied ? 'skip' : (c.pass ? 'pass' : 'fail');
+    let extras = '';
+    if (c.extra) {
+      const parts = Object.entries(c.extra).slice(0, 4).map(([k, v]) => {
+        if (Array.isArray(v)) {
+          return `${k}=[${v.slice(0, 6).map(fmt).join(', ')}${v.length > 6 ? '…' : ''}]`;
+        }
+        return `${k}=${fmt(v)}`;
+      });
+      extras = parts.length ? ` <span class="ext">${escapeHtml(parts.join(' · '))}</span>` : '';
+    }
+    const bandTxt = c.band ? ` <span class="ext">band [${fmt(c.band[0])}, ${c.band[1] === null ? '∞' : fmt(c.band[1])}]</span>` : '';
+    const status = !c.applied ? 'OFF' : (c.pass ? '✓' : '✗');
+    return `
+      <div class="diagnose-check ${cls}">
+        <span class="name">${status} ${escapeHtml(c.label)}${bandTxt}${extras}</span>
+        <span class="val">${fmt(c.value)}</span>
+      </div>
+    `;
+  }).join('');
+  out.innerHTML = header + `<div class="diagnose-checks">${checks}</div>`;
+}
+
 function clearSelection() {
   if (!selectedTickers.size) return;
   selectedTickers.clear();
@@ -623,6 +691,12 @@ if (els.shareBtn) els.shareBtn.addEventListener('click', shareSelected);
 if (els.copyQuestradeBtn) els.copyQuestradeBtn.addEventListener('click', copyForQuestrade);
 if (els.exportBtn) els.exportBtn.addEventListener('click', exportSelected);
 if (els.clearSelectionBtn) els.clearSelectionBtn.addEventListener('click', clearSelection);
+if (els.diagnoseBtn) els.diagnoseBtn.addEventListener('click', runDiagnose);
+if (els.diagnoseTicker) {
+  els.diagnoseTicker.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runDiagnose(); }
+  });
+}
 updateSelectionUI();
 
 // --- bootstrap -------------------------------------------------------------
