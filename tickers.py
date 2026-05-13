@@ -402,9 +402,26 @@ _NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymbolDirectory/nasda
 _OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymbolDirectory/otherlisted.txt"
 
 
+# nasdaqtrader.com's CDN returns 403 to the default `python-requests/X.Y`
+# User-Agent, so we send a real browser UA. The files are still served
+# free and public — no auth or rate-limit on a single daily fetch.
+_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) "
+        "Gecko/20100101 Firefox/120.0"
+    ),
+    "Accept": "text/plain, text/html, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+_LAST_FETCH_ERROR: dict[str, str] = {}
+
+
 def _fetch_with_cache(url: str, cache_name: str) -> str | None:
     """Read the symbol-directory file, hitting network only if cache is stale.
-    Falls back to a stale cache copy when the network is unreachable."""
+    Falls back to a stale cache copy when the network is unreachable, and
+    retries against the alternate hostname (`www.` vs non-`www.`) if the
+    first attempt fails."""
     try:
         _CACHE_DIR.mkdir(exist_ok=True)
     except Exception as exc:
@@ -417,20 +434,43 @@ def _fetch_with_cache(url: str, cache_name: str) -> str | None:
             return cache_path.read_text(encoding="utf-8")
         except Exception:
             pass
-    try:
-        import requests
-        r = requests.get(url, timeout=20)
-        r.raise_for_status()
-        cache_path.write_text(r.text, encoding="utf-8")
-        return r.text
-    except Exception as exc:
-        log.warning("directory fetch failed for %s: %s", url, exc)
-        if cache_path.exists():
-            try:
-                return cache_path.read_text(encoding="utf-8")
-            except Exception:
-                pass
-        return None
+
+    import requests
+
+    candidates = [url]
+    # Try the alternate hostname as a fallback.
+    if "://www.nasdaqtrader.com" in url:
+        candidates.append(url.replace("://www.nasdaqtrader.com", "://nasdaqtrader.com"))
+    elif "://nasdaqtrader.com" in url:
+        candidates.append(url.replace("://nasdaqtrader.com", "://www.nasdaqtrader.com"))
+
+    last_err: str | None = None
+    for candidate in candidates:
+        try:
+            r = requests.get(candidate, timeout=20, headers=_FETCH_HEADERS)
+            log.info("fetch %s -> %d (%d bytes)", candidate, r.status_code, len(r.content))
+            r.raise_for_status()
+            cache_path.write_text(r.text, encoding="utf-8")
+            _LAST_FETCH_ERROR.pop(cache_name, None)
+            return r.text
+        except Exception as exc:
+            last_err = f"{candidate}: {exc}"
+            log.warning("directory fetch failed for %s", last_err)
+            continue
+
+    if last_err:
+        _LAST_FETCH_ERROR[cache_name] = last_err
+    if cache_path.exists():
+        try:
+            return cache_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    return None
+
+
+def last_fetch_errors() -> dict[str, str]:
+    """Return the most recent fetch error per cached filename, for debug."""
+    return dict(_LAST_FETCH_ERROR)
 
 
 def _is_clean_symbol(symbol: str) -> bool:

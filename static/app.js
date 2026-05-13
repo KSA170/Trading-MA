@@ -495,7 +495,14 @@ async function refreshUniverse() {
     const data = await res.json();
     const sizes = data.sizes || {};
     const summary = Object.entries(sizes).map(([k, v]) => `${k}=${v}`).join(', ');
-    setStatus(`universe refreshed (${summary})`);
+    const errs = data.errors || {};
+    const errParts = Object.entries(errs).map(([file, msg]) => `${file}: ${msg}`);
+    if (errParts.length) {
+      setStatus(`universe refreshed (${summary}) — fetch errors: ${errParts.join('; ')}`);
+      console.warn('refresh-universe fetch errors:', errs);
+    } else {
+      setStatus(`universe refreshed (${summary})`);
+    }
   } catch (err) {
     console.error(err);
     setStatus('refresh failed');

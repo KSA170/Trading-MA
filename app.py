@@ -20,7 +20,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file
 
 import screener
-from tickers import LIST_LABELS, refresh_universe
+from tickers import LIST_LABELS, refresh_universe, last_fetch_errors
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("app")
@@ -243,13 +243,15 @@ def api_dates():
 @app.route("/api/admin/refresh-universe", methods=["POST"])
 def api_refresh_universe():
     """Drop the disk + in-memory caches of the US symbol directory and
-    rebuild from a fresh fetch. Returns the new per-exchange counts."""
+    rebuild from a fresh fetch. Returns the new per-exchange counts plus
+    any fetch errors so a 403/timeout shows up in the UI status line."""
     try:
         # Also bust the in-memory screen cache since the universe just changed.
         with _screen_lock:
             _screen_cache.clear()
         sizes = refresh_universe()
-        return jsonify({"ok": True, "sizes": sizes})
+        errors = last_fetch_errors()
+        return jsonify({"ok": True, "sizes": sizes, "errors": errors})
     except Exception as exc:
         log.warning("refresh_universe failed: %s", exc)
         return jsonify({"ok": False, "error": str(exc)}), 500
