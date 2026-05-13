@@ -45,7 +45,10 @@ const inputs = {
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
   macd_hist_min: $('#macd_hist_min'),
+  extras: $('#extras'),
 };
+
+const refreshUniverseBtn = $('#refresh-universe-btn');
 
 const toggles = {
   apply_high: $('#apply_high'),
@@ -482,6 +485,25 @@ function renderDiagnose(d) {
   out.innerHTML = header + `<div class="diagnose-checks">${checks}</div>`;
 }
 
+async function refreshUniverse() {
+  if (!refreshUniverseBtn) return;
+  refreshUniverseBtn.disabled = true;
+  setStatus('refreshing universe…');
+  try {
+    const res = await fetch('/api/admin/refresh-universe', { method: 'POST' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const sizes = data.sizes || {};
+    const summary = Object.entries(sizes).map(([k, v]) => `${k}=${v}`).join(', ');
+    setStatus(`universe refreshed (${summary})`);
+  } catch (err) {
+    console.error(err);
+    setStatus('refresh failed');
+  } finally {
+    refreshUniverseBtn.disabled = false;
+  }
+}
+
 function clearSelection() {
   if (!selectedTickers.size) return;
   selectedTickers.clear();
@@ -713,5 +735,7 @@ updateHighHeader();
 if (listAllCb) listAllCb.addEventListener('change', onListAllChange);
 listCheckboxes.forEach((cb) => cb.addEventListener('change', updateListAllState));
 updateListAllState();
+
+if (refreshUniverseBtn) refreshUniverseBtn.addEventListener('click', refreshUniverse);
 
 loadDates();

@@ -498,6 +498,32 @@ def _parse_otherlisted(text: str) -> dict[str, list[str]]:
 _US_EXCHANGE_CACHE: dict[str, list[str]] | None = None
 
 
+def refresh_universe() -> dict[str, int]:
+    """Invalidate the in-memory + disk caches and rebuild from a fresh fetch.
+    Returns the new size of each list (after refresh)."""
+    global _US_EXCHANGE_CACHE, _LISTS, _MEMBERSHIP
+    _US_EXCHANGE_CACHE = None
+    _LISTS = None
+    _MEMBERSHIP = None
+    try:
+        for name in ("nasdaqlisted.txt", "otherlisted.txt"):
+            p = _CACHE_DIR / name
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # Also reset the LazyLists view so the next access triggers a build.
+    try:
+        LISTS.clear()
+    except Exception:
+        pass
+    lists = get_lists()
+    return {k: len(v) for k, v in lists.items()}
+
+
 def fetch_us_exchanges() -> dict[str, list[str]]:
     """Return {'nyse': [...], 'nasdaq': [...], 'amex': [...]}, lazily."""
     global _US_EXCHANGE_CACHE

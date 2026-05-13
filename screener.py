@@ -341,6 +341,7 @@ def run_screen(
     apply_macd: bool = True,
     as_of_offset: int = 0,
     lists: list[str] | None = None,
+    extras: list[str] | None = None,
     universe: Iterable[str] | None = None,
     max_workers: int = 32,
 ) -> list[ScreenHit]:
@@ -350,6 +351,14 @@ def run_screen(
         tickers = build_universe(lists)
     else:
         tickers = all_tickers()
+    # Append manually-specified tickers (de-duped, preserving order).
+    if extras:
+        seen = set(tickers)
+        for t in extras:
+            t = t.strip().upper()
+            if t and t not in seen:
+                seen.add(t)
+                tickers.append(t)
     hits: list[ScreenHit] = []
 
     def _eval(t: str) -> ScreenHit | None:

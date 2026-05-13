@@ -20,7 +20,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file
 
 import screener
-from tickers import LIST_LABELS
+from tickers import LIST_LABELS, refresh_universe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("app")
@@ -64,6 +64,7 @@ DEFAULT_PARAMS: dict = {
     "apply_macd": True,
     "as_of_offset": 0,
     "lists": tuple(sorted(_VALID_LISTS)),
+    "extras": (),
 }
 
 
@@ -79,8 +80,9 @@ def _cache_key(params: dict) -> tuple:
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
     macd = (round(float(params["macd_hist_min"]), 4), bool(params["macd_require_rising"])) if params["apply_macd"] else ("off",)
     lists = tuple(sorted(params["lists"]))
+    extras = tuple(sorted(params.get("extras") or ()))
     as_of = int(params["as_of_offset"])
-    return ("v7", as_of, price, price_dev, ema_dev, macd, high, rsi, rsi_dev, rvol, lists)
+    return ("v8", as_of, price, price_dev, ema_dev, macd, high, rsi, rsi_dev, rvol, lists, extras)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -99,6 +101,15 @@ def _parse_params() -> dict:
         wanted = sorted(_VALID_LISTS)
     if not wanted:
         wanted = sorted(_VALID_LISTS)
+    raw_extras = request.args.get("extras", "")
+    extras: list[str] = []
+    if raw_extras.strip():
+        seen: set[str] = set()
+        for s in raw_extras.split(","):
+            t = s.strip().upper()
+            if t and t not in seen:
+                seen.add(t)
+                extras.append(t)
     as_of_offset = int(request.args.get("as_of_offset", 0))
     if as_of_offset < 0:
         as_of_offset = 0
@@ -130,6 +141,7 @@ def _parse_params() -> dict:
         "apply_macd": _parse_bool("apply_macd", True),
         "as_of_offset": as_of_offset,
         "lists": tuple(wanted),
+        "extras": tuple(extras),
     }
 
 
@@ -184,6 +196,7 @@ def api_screen():
         apply_macd=params["apply_macd"],
         as_of_offset=params["as_of_offset"],
         lists=list(params["lists"]),
+        extras=list(params["extras"]),
     )
     payload = [h.to_dict() for h in hits]
     elapsed = time.time() - started
@@ -225,6 +238,21 @@ def api_dates():
     n = int(request.args.get("n", screener.MAX_AS_OF_OFFSET + 1))
     n = max(1, min(n, screener.MAX_AS_OF_OFFSET + 1))
     return jsonify({"dates": screener.reference_dates(n=n)})
+
+
+@app.route("/api/admin/refresh-universe", methods=["POST"])
+def api_refresh_universe():
+    """Drop the disk + in-memory caches of the US symbol directory and
+    rebuild from a fresh fetch. Returns the new per-exchange counts."""
+    try:
+        # Also bust the in-memory screen cache since the universe just changed.
+        with _screen_lock:
+            _screen_cache.clear()
+        sizes = refresh_universe()
+        return jsonify({"ok": True, "sizes": sizes})
+    except Exception as exc:
+        log.warning("refresh_universe failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/api/debug/<path:ticker>")

@@ -18,7 +18,10 @@
 
   <section class="filters">
     <div class="filter-group scope">
-      <label class="group-label">Exchanges</label>
+      <label class="group-label">
+        Exchanges
+        <button id="refresh-universe-btn" type="button" class="refresh-btn" title="Re-fetch the US symbol directory from nasdaqtrader.com">↻</button>
+      </label>
       <div class="filter list-checkboxes">
         <label class="list-option list-all"><input type="checkbox" id="list_all" checked /> Select all</label>
         <label class="list-option"><input type="checkbox" data-list-key="nyse" checked /> NYSE</label>
@@ -26,6 +29,14 @@
         <label class="list-option"><input type="checkbox" data-list-key="amex" checked /> NYSE American (AMEX)</label>
         <label class="list-option"><input type="checkbox" data-list-key="tsx" checked /> TSX</label>
         <label class="list-option"><input type="checkbox" data-list-key="tsxv" checked /> TSX Venture</label>
+      </div>
+    </div>
+
+    <div class="filter-group scope">
+      <label class="group-label">Always include</label>
+      <div class="filter">
+        <label>tickers (comma-separated)</label>
+        <input id="extras" type="text" placeholder="e.g. NRGV, ABCD.TO" autocomplete="off" />
       </div>
     </div>
 
