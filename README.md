@@ -5,20 +5,30 @@ the filter band, run the screen, sort the results.
 
 ## Universe
 
-Tickers are organised into named lists; the UI dropdown lets you screen any
-single list or all of them combined ("Any"):
+The screened universe is grouped by **exchange**. Tick any combination of
+the boxes in the "Exchanges" filter card; "Select all" toggles them in
+bulk.
 
-| key            | label                                        | size   |
-|----------------|----------------------------------------------|--------|
-| `sp500`        | S&P 500                                      | ~500   |
-| `dow`          | Dow 30                                       | 30     |
-| `nasdaq`       | Nasdaq (broader)                             | ~390   |
-| `russell2000`  | Russell 2000 (US Small Cap, curated subset)  | ~1900  |
-| `tsx`          | TSX (`.TO`)                                  | ~150   |
+| key      | exchange                            | size       | source |
+|----------|-------------------------------------|------------|--------|
+| `nyse`   | New York Stock Exchange             | ~2,400     | NASDAQ Trader symbol directory (auto-refreshed daily) |
+| `nasdaq` | NASDAQ Stock Market                 | ~3,500     | NASDAQ Trader symbol directory (auto-refreshed daily) |
+| `amex`   | NYSE American (AMEX)                | ~250       | NASDAQ Trader symbol directory (auto-refreshed daily) |
+| `tsx`    | Toronto Stock Exchange (`.TO`)      | ~160       | Curated — TMX does not publish a free directory       |
+| `tsxv`   | TSX Venture Exchange (`.V`)         | ~95        | Curated — most-traded subset                          |
 
-Total deduped universe: ~2500 names. Picking `russell2000` from the dropdown
-materially extends a cold-cache screen run (a few minutes vs ~30 seconds for
-S&P 500 alone).
+Total: ~6,400 deduped tickers when every exchange is selected.
+
+**Cold-cache cost.** A first run against the full US+CA universe takes
+**5–8 minutes** on Render's free tier while yfinance fetches 6 months of
+daily history for every name. Subsequent runs (same params, within 30 min)
+hit the in-memory cache and return in milliseconds. To keep a single run
+fast, untick exchanges you don't need — picking only `tsx` is roughly a
+3-second screen.
+
+ETFs, warrants, units, and test issues are filtered out of the US
+directories so the screen sticks to common-stock listings. Symbol files
+are cached on disk for 24h in `.cache/` (gitignored).
 
 ## Default screen
 
@@ -98,7 +108,7 @@ each name; subsequent runs are cached for 30 minutes.
 | `apply_macd`             | 1       | `0` to skip the MACD-histogram check        |
 | `apply_rvol`             | 1       | `0` to skip the relative-volume check       |
 | `apply_price`            | 1       | `0` to skip the price-range check           |
-| `lists`                  | (all)   | one of `sp500,dow,nasdaq,russell2000,tsx`; empty = all |
+| `lists`                  | (all)   | comma-list of `nyse,nasdaq,amex,tsx,tsxv`; omit = all |
 
 ## Files
 

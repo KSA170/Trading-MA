@@ -1,18 +1,32 @@
 """
-Universe of US and Canadian stock tickers used by the screener.
+Universe of US and Canadian stock tickers, grouped by *exchange*:
 
-Tickers are organized into named *lists*:
-  - SP500   — S&P 500 (curated, mostly stable)
-  - DOW30   — Dow Jones Industrial Average (30 names)
-  - NDX100  — Nasdaq-100
-  - TSX     — Active TSX listings (yfinance suffix `.TO`)
+  US (fetched on startup from nasdaqtrader.com — refreshed daily, cached
+  to disk for 24h):
+    - NYSE   — New York Stock Exchange
+    - NASDAQ — Nasdaq Stock Market
+    - AMEX   — NYSE American
 
-A ticker may appear in several lists (e.g. AAPL is in S&P 500, Dow 30,
-and Nasdaq-100). Membership is exposed via :func:`lists_for` so the UI can
-display chips and so the screener can filter by list.
+  Canada (curated — TMX does not publish a free symbol directory):
+    - TSX    — Toronto Stock Exchange  (yfinance suffix `.TO`)
+    - TSXV   — TSX Venture Exchange    (yfinance suffix `.V`)
+
+A ticker may appear in several lists. Membership is exposed via
+:func:`lists_for` so the screener can filter by exchange. Curated index
+lists (S&P 500, Dow 30, Russell 2000) are kept here as constants but are
+no longer separate filter options — they're subsets of NYSE+NASDAQ.
 """
 
 from __future__ import annotations
+
+import logging
+import time
+from pathlib import Path
+
+log = logging.getLogger("tickers")
+
+_CACHE_DIR = Path(__file__).resolve().parent / ".cache"
+_CACHE_TTL_SEC = 24 * 3600  # refresh the symbol directories once a day
 
 # --- S&P 500 components (curated; small drift over time) --------------------
 SP500: list[str] = [
@@ -363,37 +377,242 @@ RUSSELL2000: list[str] = [
 ]
 
 
-# --- list registry ----------------------------------------------------------
-LISTS: dict[str, list[str]] = {
-    "sp500": SP500,
-    "dow": DOW30,
-    "nasdaq": NASDAQ,
-    "russell2000": RUSSELL2000,
-    "tsx": TSX,
-}
+# --- TSX Venture (Canada small-cap, suffix `.V`) ----------------------------
+# Curated list of liquid TSXV names. The full TSXV has ~1,700 listings, most
+# of them micro-caps with very thin daily volume; we cap to the active
+# subset so screen runs stay tractable.
+_TSXV_BASE: list[str] = [
+    "ATH", "BBD", "BIR", "BLN", "BTR", "BYL", "CMC", "CYP", "DML", "EFR",
+    "FCU", "FF", "FFOX", "FIH-U", "FILO", "GMG", "GOOD", "GSV", "HAVN",
+    "HEO", "HIVE", "HPQ", "IMP", "ITR", "JFS-UN", "KGL", "KRR", "LAC",
+    "LGD", "LIO", "LPS", "MAG", "MMA", "MNS", "MSV", "NCU", "NDM", "NEXT",
+    "NOM", "NXE", "ORA", "ORE", "OSK", "PAB", "PEMC", "PGM", "PPL", "PRYM",
+    "PTM", "PUL", "PYR", "QQQ", "RIWI", "RYO", "SBB", "SCY", "SGD", "SGI",
+    "SGN", "SIC", "SIL", "SKE", "SPMC", "SRG", "STGO", "TGL", "THM", "TLG",
+    "TMR", "TOI", "TSU", "UCU", "UEX", "URC", "URE", "USA", "VLE", "VO",
+    "VOX", "VST", "WCC", "WCU", "WDO", "WEI", "WHN", "WM", "WSP", "XAU",
+    "XBR", "XMG", "XTM", "YGT", "ZEN", "ZON",
+]
+TSXV: list[str] = [t + ".V" for t in _TSXV_BASE]
+
+
+# --- US symbol-directory fetch ---------------------------------------------
+
+_NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymbolDirectory/nasdaqlisted.txt"
+_OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymbolDirectory/otherlisted.txt"
+
+
+def _fetch_with_cache(url: str, cache_name: str) -> str | None:
+    """Read the symbol-directory file, hitting network only if cache is stale.
+    Falls back to a stale cache copy when the network is unreachable."""
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+    except Exception as exc:
+        log.warning("could not create cache dir %s: %s", _CACHE_DIR, exc)
+        return None
+    cache_path = _CACHE_DIR / cache_name
+    fresh = cache_path.exists() and (time.time() - cache_path.stat().st_mtime) < _CACHE_TTL_SEC
+    if fresh:
+        try:
+            return cache_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    try:
+        import requests
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        cache_path.write_text(r.text, encoding="utf-8")
+        return r.text
+    except Exception as exc:
+        log.warning("directory fetch failed for %s: %s", url, exc)
+        if cache_path.exists():
+            try:
+                return cache_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+        return None
+
+
+def _is_clean_symbol(symbol: str) -> bool:
+    """Filter out warrants ($), units (=), preferred (-), test ($), etc.
+    yfinance only resolves "common" tickers reliably."""
+    if not symbol:
+        return False
+    # Common test / non-equity markers in NASDAQ files:
+    if any(c in symbol for c in ("$", "=", "+", "~", "/", " ", "*")):
+        return False
+    if symbol.endswith(".W") or symbol.endswith(".U") or symbol.endswith(".R"):
+        return False
+    return True
+
+
+def _parse_nasdaqlisted(text: str) -> list[str]:
+    """nasdaqlisted.txt — pipe-delimited:
+    Symbol|Security Name|Market Category|Test Issue|Financial Status|...|ETF"""
+    out: list[str] = []
+    for line in text.splitlines()[1:]:  # skip header
+        if line.startswith("File Creation Time"):
+            break
+        parts = line.split("|")
+        if len(parts) < 4:
+            continue
+        symbol = parts[0].strip()
+        test_issue = parts[3].strip()
+        is_etf = parts[6].strip() if len(parts) > 6 else "N"
+        if test_issue == "Y" or is_etf == "Y":
+            continue
+        if not _is_clean_symbol(symbol):
+            continue
+        out.append(symbol)
+    return out
+
+
+def _parse_otherlisted(text: str) -> dict[str, list[str]]:
+    """otherlisted.txt — pipe-delimited:
+    ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|...
+    Exchange codes:  A = NYSE American,  N = NYSE,  P = NYSE Arca,
+                     Z = Cboe BZX,        V = IEX."""
+    out: dict[str, list[str]] = {"nyse": [], "amex": []}
+    for line in text.splitlines()[1:]:
+        if line.startswith("File Creation Time"):
+            break
+        parts = line.split("|")
+        if len(parts) < 7:
+            continue
+        symbol = parts[0].strip()
+        exchange = parts[2].strip()
+        is_etf = parts[4].strip()
+        test_issue = parts[6].strip()
+        if test_issue == "Y" or is_etf == "Y":
+            continue
+        if not _is_clean_symbol(symbol):
+            continue
+        if exchange == "N":
+            out["nyse"].append(symbol)
+        elif exchange == "A":
+            out["amex"].append(symbol)
+        # Arca / BZX / IEX listings skipped — they're mostly ETFs/funds.
+    return out
+
+
+_US_EXCHANGE_CACHE: dict[str, list[str]] | None = None
+
+
+def fetch_us_exchanges() -> dict[str, list[str]]:
+    """Return {'nyse': [...], 'nasdaq': [...], 'amex': [...]}, lazily."""
+    global _US_EXCHANGE_CACHE
+    if _US_EXCHANGE_CACHE is not None:
+        return _US_EXCHANGE_CACHE
+    nas_text = _fetch_with_cache(_NASDAQ_LISTED_URL, "nasdaqlisted.txt")
+    oth_text = _fetch_with_cache(_OTHER_LISTED_URL, "otherlisted.txt")
+    nasdaq = _parse_nasdaqlisted(nas_text) if nas_text else []
+    other = _parse_otherlisted(oth_text) if oth_text else {"nyse": [], "amex": []}
+    _US_EXCHANGE_CACHE = {
+        "nyse": other.get("nyse", []),
+        "nasdaq": nasdaq,
+        "amex": other.get("amex", []),
+    }
+    log.info(
+        "loaded US exchanges — NYSE %d, NASDAQ %d, AMEX %d",
+        len(_US_EXCHANGE_CACHE["nyse"]),
+        len(_US_EXCHANGE_CACHE["nasdaq"]),
+        len(_US_EXCHANGE_CACHE["amex"]),
+    )
+    return _US_EXCHANGE_CACHE
+
+
+# --- list registry (lazy) ---------------------------------------------------
 
 LIST_LABELS: dict[str, str] = {
-    "sp500": "S&P 500",
-    "dow": "Dow 30",
-    "nasdaq": "Nasdaq",
-    "russell2000": "Russell 2000",
+    "nyse": "NYSE",
+    "nasdaq": "NASDAQ",
+    "amex": "NYSE American",
     "tsx": "TSX",
+    "tsxv": "TSX Venture",
 }
+
+_LISTS: dict[str, list[str]] | None = None
+_MEMBERSHIP: dict[str, set[str]] | None = None
+
+
+def _build_lists() -> dict[str, list[str]]:
+    us = fetch_us_exchanges()
+    return {
+        "nyse": us["nyse"],
+        "nasdaq": us["nasdaq"],
+        "amex": us["amex"],
+        "tsx": TSX,
+        "tsxv": TSXV,
+    }
+
+
+def get_lists() -> dict[str, list[str]]:
+    global _LISTS
+    if _LISTS is None:
+        _LISTS = _build_lists()
+    return _LISTS
+
+
+# Backwards-compat alias: `from tickers import LISTS` callers receive the
+# lazily-built dict the first time they touch it.
+class _LazyLists(dict):
+    def __getitem__(self, key):
+        if not self:
+            self.update(get_lists())
+        return super().__getitem__(key)
+
+    def keys(self):
+        if not self:
+            self.update(get_lists())
+        return super().keys()
+
+    def items(self):
+        if not self:
+            self.update(get_lists())
+        return super().items()
+
+    def values(self):
+        if not self:
+            self.update(get_lists())
+        return super().values()
+
+    def get(self, key, default=None):
+        if not self:
+            self.update(get_lists())
+        return super().get(key, default)
+
+    def __iter__(self):
+        if not self:
+            self.update(get_lists())
+        return super().__iter__()
+
+    def __len__(self):
+        if not self:
+            self.update(get_lists())
+        return super().__len__()
+
+    def __contains__(self, key):
+        if not self:
+            self.update(get_lists())
+        return super().__contains__(key)
+
+
+LISTS: dict[str, list[str]] = _LazyLists()
 
 
 def _membership_index() -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
-    for key, members in LISTS.items():
+    for key, members in get_lists().items():
         for sym in members:
             out.setdefault(sym, set()).add(key)
     return out
 
 
-_MEMBERSHIP = _membership_index()
-
-
 def lists_for(ticker: str) -> list[str]:
-    """Return list-keys that this ticker belongs to (e.g. ['sp500','dow'])."""
+    """Return list-keys that this ticker belongs to (e.g. ['nyse','sp500'])."""
+    global _MEMBERSHIP
+    if _MEMBERSHIP is None:
+        _MEMBERSHIP = _membership_index()
     return sorted(_MEMBERSHIP.get(ticker, set()))
 
 
@@ -403,15 +622,14 @@ def list_labels(keys: list[str]) -> list[str]:
 
 def universe(selected: list[str] | None = None) -> list[str]:
     """Tickers belonging to any of `selected` lists (de-duplicated, ordered).
-
-    Pass `None` or an empty list to get the union of every known list.
-    """
+    Pass `None` or an empty list to get the union of every known list."""
+    lists = get_lists()
     if not selected:
-        selected = list(LISTS.keys())
+        selected = list(lists.keys())
     seen: set[str] = set()
     out: list[str] = []
     for key in selected:
-        for sym in LISTS.get(key, []):
+        for sym in lists.get(key, []):
             if sym not in seen:
                 seen.add(sym)
                 out.append(sym)
@@ -419,12 +637,14 @@ def universe(selected: list[str] | None = None) -> list[str]:
 
 
 def all_tickers() -> list[str]:
-    """Backwards-compatible: union of all lists."""
+    """Union of every known list."""
     return universe(None)
 
 
 def display_symbol(ticker: str) -> str:
-    """Strip exchange suffixes for display purposes."""
+    """Strip non-US exchange suffixes for display."""
     if ticker.endswith(".TO"):
         return ticker[:-3] + ".TO"
+    if ticker.endswith(".V"):
+        return ticker[:-2] + ".V"
     return ticker

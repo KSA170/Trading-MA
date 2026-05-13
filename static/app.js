@@ -12,6 +12,7 @@ const els = {
   selectionCount: $('#selection-count'),
   emailBtn: $('#email-btn'),
   shareBtn: $('#share-btn'),
+  copyQuestradeBtn: $('#copy-questrade-btn'),
   exportBtn: $('#export-btn'),
   clearSelectionBtn: $('#clear-selection-btn'),
   hoverChart: $('#hover-chart'),
@@ -282,7 +283,7 @@ function updateSelectionUI() {
   if (els.selectionCount) {
     els.selectionCount.textContent = count === 1 ? '1 selected' : `${count} selected`;
   }
-  [els.emailBtn, els.shareBtn, els.exportBtn, els.clearSelectionBtn].forEach((b) => {
+  [els.emailBtn, els.shareBtn, els.copyQuestradeBtn, els.exportBtn, els.clearSelectionBtn].forEach((b) => {
     if (b) b.disabled = count === 0;
   });
   if (els.selectAll) {
@@ -368,6 +369,21 @@ async function shareSelected() {
     setStatus('copied to clipboard');
   } catch (_) {
     window.prompt('Copy the tickers below:', text);
+  }
+}
+
+async function copyForQuestrade() {
+  const rows = selectedRows();
+  if (!rows.length) return;
+  // Questrade Pro accepts pasted ticker lists in its watchlist input.
+  // .TO suffix is preserved for Canadian names — Questrade resolves it
+  // to the TSX listing automatically.
+  const text = rows.map((r) => r.ticker).join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus(`copied ${rows.length} ticker${rows.length > 1 ? 's' : ''} for Questrade`);
+  } catch (_) {
+    window.prompt(`Copy the tickers below, then paste into Questrade Pro's watchlist input:`, text);
   }
 }
 
@@ -604,6 +620,7 @@ window.addEventListener('scroll', hideHoverChart, true);
 if (els.selectAll) els.selectAll.addEventListener('change', onSelectAllChange);
 if (els.emailBtn) els.emailBtn.addEventListener('click', emailSelected);
 if (els.shareBtn) els.shareBtn.addEventListener('click', shareSelected);
+if (els.copyQuestradeBtn) els.copyQuestradeBtn.addEventListener('click', copyForQuestrade);
 if (els.exportBtn) els.exportBtn.addEventListener('click', exportSelected);
 if (els.clearSelectionBtn) els.clearSelectionBtn.addEventListener('click', clearSelection);
 updateSelectionUI();

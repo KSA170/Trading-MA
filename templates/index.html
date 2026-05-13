@@ -18,14 +18,14 @@
 
   <section class="filters">
     <div class="filter-group scope">
-      <label class="group-label">Lists / exchanges</label>
+      <label class="group-label">Exchanges</label>
       <div class="filter list-checkboxes">
         <label class="list-option list-all"><input type="checkbox" id="list_all" checked /> Select all</label>
-        <label class="list-option"><input type="checkbox" data-list-key="sp500" checked /> S&amp;P 500</label>
-        <label class="list-option"><input type="checkbox" data-list-key="dow" checked /> Dow 30</label>
-        <label class="list-option"><input type="checkbox" data-list-key="nasdaq" checked /> Nasdaq</label>
-        <label class="list-option"><input type="checkbox" data-list-key="russell2000" checked /> Russell 2000</label>
-        <label class="list-option"><input type="checkbox" data-list-key="tsx" checked /> TSX (Canada)</label>
+        <label class="list-option"><input type="checkbox" data-list-key="nyse" checked /> NYSE</label>
+        <label class="list-option"><input type="checkbox" data-list-key="nasdaq" checked /> NASDAQ</label>
+        <label class="list-option"><input type="checkbox" data-list-key="amex" checked /> NYSE American (AMEX)</label>
+        <label class="list-option"><input type="checkbox" data-list-key="tsx" checked /> TSX</label>
+        <label class="list-option"><input type="checkbox" data-list-key="tsxv" checked /> TSX Venture</label>
       </div>
     </div>
 
@@ -144,6 +144,7 @@
         <span id="selection-count" class="muted">0 selected</span>
         <button id="email-btn" type="button" disabled>Email</button>
         <button id="share-btn" type="button" disabled>Share</button>
+        <button id="copy-questrade-btn" type="button" disabled title="Copy selected tickers to clipboard — paste into Questrade Pro's watchlist input">Copy for Questrade</button>
         <button id="export-btn" type="button" disabled>Export to Excel</button>
         <button id="clear-selection-btn" type="button" disabled>Clear</button>
       </div>

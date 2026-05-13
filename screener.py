@@ -342,7 +342,7 @@ def run_screen(
     as_of_offset: int = 0,
     lists: list[str] | None = None,
     universe: Iterable[str] | None = None,
-    max_workers: int = 16,
+    max_workers: int = 32,
 ) -> list[ScreenHit]:
     if universe is not None:
         tickers = list(universe)
