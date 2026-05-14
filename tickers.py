@@ -556,16 +556,18 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
 
     out: dict[str, list[str]] = {"nyse": [], "nasdaq": [], "amex": []}
     seen: set[str] = set()
+    exch_values: dict[str, int] = {}
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) <= max(ti, ei):
             continue
         ticker = str(row[ti] or "").strip().upper()
         exchange = str(row[ei] or "").strip().lower()
+        exch_values[exchange] = exch_values.get(exchange, 0) + 1
         if not ticker or ticker in seen or not _is_clean_symbol(ticker):
             continue
         if "nasdaq" in exchange:
             bucket = "nasdaq"
-        elif "american" in exchange or "amex" in exchange:
+        elif "american" in exchange or "amex" in exchange or "mkt" in exchange:
             bucket = "amex"
         elif "arca" in exchange:
             continue  # NYSE Arca is mostly ETFs
@@ -575,6 +577,12 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
             continue  # OTC, CBOE, blank, etc.
         seen.add(ticker)
         out[bucket].append(ticker)
+    # Log the distinct exchange labels SEC uses so a future mismatch is
+    # diagnosable from Render's logs.
+    log.info(
+        "SEC exchange field values: %s",
+        ", ".join(f"{k or '(blank)'}={v}" for k, v in sorted(exch_values.items())),
+    )
     return out
 
 
@@ -682,6 +690,16 @@ def fetch_us_exchanges() -> dict[str, list[str]]:
 
     sec = _fetch_sec_exchanges()
     if sec and (sec.get("nyse") or sec.get("nasdaq")):
+        # SEC's file doesn't reliably break out NYSE American — its AMEX
+        # names are tagged plain "NYSE" (so already in that bucket) or
+        # absent. If the AMEX bucket is empty, supplement it from NASDAQ
+        # Trader's otherlisted.txt, which has a distinct "A" exchange code.
+        if not sec.get("amex"):
+            oth_text = _fetch_with_cache(_OTHER_LISTED_URL, "otherlisted.txt")
+            if oth_text:
+                other = _parse_otherlisted(oth_text)
+                known = set(sec["nyse"]) | set(sec["nasdaq"])
+                sec["amex"] = [t for t in other.get("amex", []) if t not in known]
         _US_EXCHANGE_CACHE = sec
         log.info(
             "loaded US exchanges from SEC — NYSE %d, NASDAQ %d, AMEX %d",
