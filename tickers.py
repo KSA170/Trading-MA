@@ -450,9 +450,20 @@ def _fetch_with_cache(url: str, cache_name: str) -> str | None:
             r = requests.get(candidate, timeout=20, headers=_FETCH_HEADERS)
             log.info("fetch %s -> %d (%d bytes)", candidate, r.status_code, len(r.content))
             r.raise_for_status()
-            cache_path.write_text(r.text, encoding="utf-8")
+            text = r.text
+            # Validate: the directory files are pipe-delimited and the first
+            # line is a header containing "Symbol". A CDN bot-check page
+            # returns HTTP 200 with HTML, which would otherwise be cached and
+            # silently parsed to zero rows.
+            first_line = text.splitlines()[0] if text.splitlines() else ""
+            if "|" not in first_line or "Symbol" not in first_line:
+                raise ValueError(
+                    f"unexpected content — not a pipe-delimited directory "
+                    f"(first 80 chars: {text[:80]!r})"
+                )
+            cache_path.write_text(text, encoding="utf-8")
             _LAST_FETCH_ERROR.pop(cache_name, None)
-            return r.text
+            return text
         except Exception as exc:
             last_err = f"{candidate}: {exc}"
             log.warning("directory fetch failed for %s", last_err)
@@ -471,6 +482,100 @@ def _fetch_with_cache(url: str, cache_name: str) -> str | None:
 def last_fetch_errors() -> dict[str, str]:
     """Return the most recent fetch error per cached filename, for debug."""
     return dict(_LAST_FETCH_ERROR)
+
+
+# --- SEC company_tickers_exchange.json (primary US source) ------------------
+# The SEC publishes a stable, government-hosted JSON of every SEC-registered
+# company with its ticker AND exchange. It's designed for programmatic bulk
+# access — far more reliable than nasdaqtrader.com's bot-protected CDN.
+# SEC's fair-access policy requires a descriptive User-Agent.
+_SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
+_SEC_CACHE_NAME = "sec_company_tickers_exchange.json"
+_SEC_HEADERS = {
+    "User-Agent": "Trading-MA screener (contact: trading-ma-screener@example.com)",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Encoding": "gzip, deflate",
+}
+
+
+def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
+    """Fetch + parse the SEC's company_tickers_exchange.json into
+    {'nyse': [...], 'nasdaq': [...], 'amex': [...]}. Returns None on failure."""
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+    except Exception:
+        pass
+    cache_path = _CACHE_DIR / _SEC_CACHE_NAME
+    fresh = cache_path.exists() and (time.time() - cache_path.stat().st_mtime) < _CACHE_TTL_SEC
+    text: str | None = None
+    if fresh:
+        try:
+            text = cache_path.read_text(encoding="utf-8")
+        except Exception:
+            text = None
+    if text is None:
+        try:
+            import requests
+            r = requests.get(_SEC_TICKERS_URL, timeout=20, headers=_SEC_HEADERS)
+            log.info("fetch %s -> %d (%d bytes)", _SEC_TICKERS_URL, r.status_code, len(r.content))
+            r.raise_for_status()
+            text = r.text
+            if not text.lstrip().startswith("{"):
+                raise ValueError(f"unexpected content (first 80 chars: {text[:80]!r})")
+            try:
+                cache_path.write_text(text, encoding="utf-8")
+            except Exception:
+                pass
+            _LAST_FETCH_ERROR.pop(_SEC_CACHE_NAME, None)
+        except Exception as exc:
+            _LAST_FETCH_ERROR[_SEC_CACHE_NAME] = f"{_SEC_TICKERS_URL}: {exc}"
+            log.warning("SEC fetch failed: %s", exc)
+            if cache_path.exists():
+                try:
+                    text = cache_path.read_text(encoding="utf-8")
+                except Exception:
+                    return None
+            else:
+                return None
+
+    import json
+    try:
+        data = json.loads(text)
+    except Exception as exc:
+        _LAST_FETCH_ERROR[_SEC_CACHE_NAME] = f"JSON parse error: {exc}"
+        return None
+
+    fields = data.get("fields") or []
+    rows = data.get("data") or []
+    try:
+        ti = fields.index("ticker")
+        ei = fields.index("exchange")
+    except ValueError:
+        _LAST_FETCH_ERROR[_SEC_CACHE_NAME] = f"unexpected schema, fields={fields}"
+        return None
+
+    out: dict[str, list[str]] = {"nyse": [], "nasdaq": [], "amex": []}
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) <= max(ti, ei):
+            continue
+        ticker = str(row[ti] or "").strip().upper()
+        exchange = str(row[ei] or "").strip().lower()
+        if not ticker or ticker in seen or not _is_clean_symbol(ticker):
+            continue
+        if "nasdaq" in exchange:
+            bucket = "nasdaq"
+        elif "american" in exchange or "amex" in exchange:
+            bucket = "amex"
+        elif "arca" in exchange:
+            continue  # NYSE Arca is mostly ETFs
+        elif "nyse" in exchange:
+            bucket = "nyse"
+        else:
+            continue  # OTC, CBOE, blank, etc.
+        seen.add(ticker)
+        out[bucket].append(ticker)
+    return out
 
 
 def _is_clean_symbol(symbol: str) -> bool:
@@ -546,7 +651,7 @@ def refresh_universe() -> dict[str, int]:
     _LISTS = None
     _MEMBERSHIP = None
     try:
-        for name in ("nasdaqlisted.txt", "otherlisted.txt"):
+        for name in ("nasdaqlisted.txt", "otherlisted.txt", _SEC_CACHE_NAME):
             p = _CACHE_DIR / name
             if p.exists():
                 try:
@@ -565,10 +670,26 @@ def refresh_universe() -> dict[str, int]:
 
 
 def fetch_us_exchanges() -> dict[str, list[str]]:
-    """Return {'nyse': [...], 'nasdaq': [...], 'amex': [...]}, lazily."""
+    """Return {'nyse': [...], 'nasdaq': [...], 'amex': [...]}, lazily.
+
+    Primary source: SEC company_tickers_exchange.json (stable, government-
+    hosted, built for bulk access). Falls back to nasdaqtrader.com's symbol-
+    directory files only if the SEC source yields nothing usable.
+    """
     global _US_EXCHANGE_CACHE
     if _US_EXCHANGE_CACHE is not None:
         return _US_EXCHANGE_CACHE
+
+    sec = _fetch_sec_exchanges()
+    if sec and (sec.get("nyse") or sec.get("nasdaq")):
+        _US_EXCHANGE_CACHE = sec
+        log.info(
+            "loaded US exchanges from SEC — NYSE %d, NASDAQ %d, AMEX %d",
+            len(sec["nyse"]), len(sec["nasdaq"]), len(sec["amex"]),
+        )
+        return _US_EXCHANGE_CACHE
+
+    # Fallback: nasdaqtrader.com symbol directory.
     nas_text = _fetch_with_cache(_NASDAQ_LISTED_URL, "nasdaqlisted.txt")
     oth_text = _fetch_with_cache(_OTHER_LISTED_URL, "otherlisted.txt")
     nasdaq = _parse_nasdaqlisted(nas_text) if nas_text else []
@@ -579,7 +700,7 @@ def fetch_us_exchanges() -> dict[str, list[str]]:
         "amex": other.get("amex", []),
     }
     log.info(
-        "loaded US exchanges — NYSE %d, NASDAQ %d, AMEX %d",
+        "loaded US exchanges from nasdaqtrader (fallback) — NYSE %d, NASDAQ %d, AMEX %d",
         len(_US_EXCHANGE_CACHE["nyse"]),
         len(_US_EXCHANGE_CACHE["nasdaq"]),
         len(_US_EXCHANGE_CACHE["amex"]),

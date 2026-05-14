@@ -11,13 +11,19 @@ bulk.
 
 | key      | exchange                            | size       | source |
 |----------|-------------------------------------|------------|--------|
-| `nyse`   | New York Stock Exchange             | ~2,400     | NASDAQ Trader symbol directory (auto-refreshed daily) |
-| `nasdaq` | NASDAQ Stock Market                 | ~3,500     | NASDAQ Trader symbol directory (auto-refreshed daily) |
-| `amex`   | NYSE American (AMEX)                | ~250       | NASDAQ Trader symbol directory (auto-refreshed daily) |
+| `nyse`   | New York Stock Exchange             | ~2,400     | SEC `company_tickers_exchange.json` (fallback: NASDAQ Trader) |
+| `nasdaq` | NASDAQ Stock Market                 | ~3,500     | SEC `company_tickers_exchange.json` (fallback: NASDAQ Trader) |
+| `amex`   | NYSE American (AMEX)                | ~250       | SEC `company_tickers_exchange.json` (fallback: NASDAQ Trader) |
 | `tsx`    | Toronto Stock Exchange (`.TO`)      | ~160       | Curated — TMX does not publish a free directory       |
 | `tsxv`   | TSX Venture Exchange (`.V`)         | ~95        | Curated — most-traded subset                          |
 
 Total: ~6,400 deduped tickers when every exchange is selected.
+
+US tickers come from the SEC's government-hosted, programmatic-access
+`company_tickers_exchange.json` (which carries the exchange field). If the
+SEC source is unreachable the screener falls back to NASDAQ Trader's
+symbol-directory files. Both are cached on disk for 24h; the ↻ button next
+to "Exchanges" force-refreshes and reports any fetch error inline.
 
 **Cold-cache cost.** A first run against the full US+CA universe takes
 **5–8 minutes** on Render's free tier while yfinance fetches 6 months of
