@@ -40,6 +40,7 @@ _VALID_LISTS = set(LIST_LABELS.keys())
 
 DEFAULT_PARAMS: dict = {
     "high_lookback": 2,
+    "streak_mode": "high",
     "rsi_min": 45.0,
     "rsi_max": 65.0,
     "rsi_dev_min_pct": 0.0,
@@ -71,7 +72,7 @@ DEFAULT_PARAMS: dict = {
 def _cache_key(params: dict) -> tuple:
     # When a filter is disabled, its threshold values don't matter — collapse
     # them to a sentinel so the cache hits regardless of slider position.
-    high = (int(params["high_lookback"]),) if params["apply_high"] else ("off",)
+    high = (int(params["high_lookback"]), str(params["streak_mode"])) if params["apply_high"] else ("off",)
     rsi = (round(float(params["rsi_min"]), 3), round(float(params["rsi_max"]), 3)) if params["apply_rsi"] else ("off",)
     rsi_dev = (round(float(params["rsi_dev_min_pct"]), 3), round(float(params["rsi_dev_max_pct"]), 3)) if params["apply_rsi_dev"] else ("off",)
     rvol = (int(params["rvol_lookback"]), round(float(params["rvol_min"]), 3)) if params["apply_rvol"] else ("off",)
@@ -117,6 +118,9 @@ def _parse_params() -> dict:
         as_of_offset = screener.MAX_AS_OF_OFFSET
     return {
         "high_lookback": int(request.args.get("high_lookback", 2)),
+        "streak_mode": (request.args.get("streak_mode", "high") or "high").strip().lower()
+                       if (request.args.get("streak_mode", "high") or "high").strip().lower()
+                       in ("high", "close", "green") else "high",
         "rsi_min": float(request.args.get("rsi_min", 45)),
         "rsi_max": float(request.args.get("rsi_max", 65)),
         "rsi_dev_min_pct": float(request.args.get("rsi_dev_min_pct", 0)),
@@ -172,6 +176,7 @@ def api_screen():
     started = time.time()
     hits = screener.run_screen(
         high_lookback=params["high_lookback"],
+        streak_mode=params["streak_mode"],
         rsi_min=params["rsi_min"],
         rsi_max=params["rsi_max"],
         rsi_dev_min_pct=params["rsi_dev_min_pct"],
@@ -266,6 +271,7 @@ def api_debug(ticker: str):
     result = screener.diagnose_ticker(
         ticker.upper().strip(),
         high_lookback=params["high_lookback"],
+        streak_mode=params["streak_mode"],
         rsi_min=params["rsi_min"],
         rsi_max=params["rsi_max"],
         rsi_dev_min_pct=params["rsi_dev_min_pct"],

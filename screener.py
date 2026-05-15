@@ -127,12 +127,13 @@ def _company_name(ticker: str) -> str:
 
 # --- core screening --------------------------------------------------------
 
-MAX_AS_OF_OFFSET = 10
+MAX_AS_OF_OFFSET = 20
 
 
 def evaluate_ticker(
     ticker: str,
     high_lookback: int = 2,
+    streak_mode: str = "high",
     rsi_period: int = 14,
     rsi_min: float = 45.0,
     rsi_max: float = 65.0,
@@ -194,20 +195,37 @@ def evaluate_ticker(
     if apply_price and not (price_min <= prev_close <= price_max):
         return None
 
-    # Higher-high streak: each of the last `high_lookback` bars must have a
-    # daily high strictly greater than the bar before it. That's N consecutive
-    # comparisons across N+1 bars (eval bar plus the N preceding).
-    highs = df["High"]
-    hh_start = eval_idx - high_lookback
-    if eval_idx + 1 < 0:
-        hh_window = highs.iloc[hh_start:eval_idx + 1]
+    # Streak check. `streak_mode` decides what makes a streak:
+    #   "high"  — each bar's high  strictly above the prior bar's high
+    #   "close" — each bar's close strictly above the prior bar's close
+    #   "green" — each bar closes above its own open (green candle)
+    # high/close compare N+1 bars (N day-over-day diffs); green just needs
+    # the N bars ending at the eval bar.
+    if streak_mode == "green":
+        g_start = eval_idx - high_lookback + 1
+        if eval_idx + 1 < 0:
+            open_win = df["Open"].iloc[g_start:eval_idx + 1]
+            close_win = closes.iloc[g_start:eval_idx + 1]
+        else:
+            open_win = df["Open"].iloc[g_start:]
+            close_win = closes.iloc[g_start:]
+        if len(close_win) < high_lookback:
+            return None
+        streak_ok = bool((close_win.values > open_win.values).all())
+        eval_streak_val = float(close_win.iloc[-1])
+        streak_start_val = float(close_win.iloc[0])
     else:
-        hh_window = highs.iloc[hh_start:]
-    if len(hh_window) < high_lookback + 1:
-        return None
-    eval_high = float(hh_window.iloc[-1])
-    streak_start_high = float(hh_window.iloc[0])
-    streak_ok = bool(hh_window.diff().iloc[1:].gt(0).all())
+        series = df["High"] if streak_mode == "high" else closes
+        s_start = eval_idx - high_lookback
+        if eval_idx + 1 < 0:
+            streak_win = series.iloc[s_start:eval_idx + 1]
+        else:
+            streak_win = series.iloc[s_start:]
+        if len(streak_win) < high_lookback + 1:
+            return None
+        eval_streak_val = float(streak_win.iloc[-1])
+        streak_start_val = float(streak_win.iloc[0])
+        streak_ok = bool(streak_win.diff().iloc[1:].gt(0).all())
     if apply_high and not streak_ok:
         return None
 
@@ -282,7 +300,7 @@ def evaluate_ticker(
 
     pct_change = (prev_close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
-    breakout = (eval_high - streak_start_high) / streak_start_high if streak_start_high else 0.0
+    breakout = (eval_streak_val - streak_start_val) / streak_start_val if streak_start_val else 0.0
     score = max(rel_vol, 0.01) * (1 + max(0.0, breakout))
 
     membership = lists_for(ticker)
@@ -296,7 +314,7 @@ def evaluate_ticker(
         close=round(prev_close, 4),
         prev_close=round(prior_close, 4),
         pct_change=round(pct_change, 2),
-        high_lookback=round(eval_high, 4),
+        high_lookback=round(eval_streak_val, 4),
         rsi=round(float(rsi_val), 2),
         rsi_sma9=round(float(rsi_sma_val), 2),
         rsi_dev_pct=round(rsi_dev_pct, 2),
@@ -317,6 +335,7 @@ def evaluate_ticker(
 
 def run_screen(
     high_lookback: int = 2,
+    streak_mode: str = "high",
     rsi_min: float = 45.0,
     rsi_max: float = 65.0,
     rsi_dev_min_pct: float = 0.0,
@@ -366,6 +385,7 @@ def run_screen(
             return evaluate_ticker(
                 t,
                 high_lookback=high_lookback,
+                streak_mode=streak_mode,
                 rsi_min=rsi_min,
                 rsi_max=rsi_max,
                 rsi_dev_min_pct=rsi_dev_min_pct,
@@ -404,14 +424,26 @@ def run_screen(
     return hits
 
 
-def reference_dates(n: int = 11) -> list[dict]:
-    """Last `n` US trading-day dates from a reference ticker (SPY).
+def reference_dates(n: int = 21) -> list[dict]:
+    """Last `n` US trading-day dates for the as-of date picker.
 
     Returns a list of {"offset": k, "date": "YYYY-MM-DD"} most recent first.
-    The dropdown uses these as anchors; per-ticker actual dates may differ on
-    Canadian holidays (each row's `as_of_date` reports what was actually used).
+    Tries several liquid reference tickers, then falls back to any ticker
+    already in the price cache (warm after a screen run) so the picker still
+    populates even if the reference fetches fail. Per-ticker actual dates may
+    differ on Canadian holidays (each row's `as_of_date` reports the real one).
     """
-    df = _cached_history("SPY", period="3mo")
+    df = None
+    for ref in ("SPY", "QQQ", "DIA", "AAPL", "MSFT"):
+        df = _cached_history(ref, period="6mo")
+        if df is not None and not df.empty:
+            break
+    if df is None or df.empty:
+        # Fall back to any cached ticker — US trading calendars match.
+        for _, (_, cached_df) in list(_PRICE_CACHE.items()):
+            if cached_df is not None and not cached_df.empty:
+                df = cached_df
+                break
     if df is None or df.empty:
         return []
     dates = [idx.strftime("%Y-%m-%d") for idx in df.index][-n:]
@@ -473,6 +505,7 @@ def _safe(v):
 def diagnose_ticker(
     ticker: str,
     high_lookback: int = 2,
+    streak_mode: str = "high",
     rsi_period: int = 14,
     rsi_min: float = 45.0,
     rsi_max: float = 65.0,
@@ -561,21 +594,41 @@ def diagnose_ticker(
     add("price", f"Price ∈ [${price_min}, ${price_max}]", round(prev_close, 4),
         apply_price, price_ok, [price_min, price_max])
 
-    # 2. Higher-high streak
-    highs = df["High"]
-    hh_start = eval_idx - high_lookback
-    if eval_idx + 1 < 0:
-        hh_window = highs.iloc[hh_start:eval_idx + 1]
+    # 2. Streak (mode: high / close / green)
+    if streak_mode == "green":
+        g_start = eval_idx - high_lookback + 1
+        if eval_idx + 1 < 0:
+            open_win = df["Open"].iloc[g_start:eval_idx + 1]
+            close_win = closes.iloc[g_start:eval_idx + 1]
+        else:
+            open_win = df["Open"].iloc[g_start:]
+            close_win = closes.iloc[g_start:]
+        green_flags = [bool(c > o) for c, o in zip(close_win.tolist(), open_win.tolist())]
+        streak_ok = len(close_win) >= high_lookback and all(green_flags)
+        add("streak",
+            f"Green-candle streak ({high_lookback} days)",
+            round(float(close_win.iloc[-1]), 4) if len(close_win) else None,
+            apply_high, streak_ok, None,
+            {"opens": [round(float(o), 4) for o in open_win.tolist()],
+             "closes": [round(float(c), 4) for c in close_win.tolist()],
+             "green": green_flags})
     else:
-        hh_window = highs.iloc[hh_start:]
-    diffs = hh_window.diff().iloc[1:].tolist() if len(hh_window) >= 2 else []
-    streak_ok = len(hh_window) >= high_lookback + 1 and all(d > 0 for d in diffs if d is not None and not (isinstance(d, float) and (d != d)))
-    add("higher_high_streak",
-        f"Higher-high streak ({high_lookback} days)",
-        round(float(hh_window.iloc[-1]), 4) if len(hh_window) else None,
-        apply_high, streak_ok, None,
-        {"highs": [round(float(h), 4) for h in hh_window.tolist()],
-         "diffs": [round(float(d), 4) for d in diffs if d is not None and not (isinstance(d, float) and (d != d))]})
+        series = df["High"] if streak_mode == "high" else closes
+        s_start = eval_idx - high_lookback
+        if eval_idx + 1 < 0:
+            streak_win = series.iloc[s_start:eval_idx + 1]
+        else:
+            streak_win = series.iloc[s_start:]
+        diffs = streak_win.diff().iloc[1:].tolist() if len(streak_win) >= 2 else []
+        clean_diffs = [d for d in diffs if d is not None and not (isinstance(d, float) and (d != d))]
+        streak_ok = len(streak_win) >= high_lookback + 1 and all(d > 0 for d in clean_diffs)
+        label = "Higher-high" if streak_mode == "high" else "Higher-close"
+        add("streak",
+            f"{label} streak ({high_lookback} days)",
+            round(float(streak_win.iloc[-1]), 4) if len(streak_win) else None,
+            apply_high, streak_ok, None,
+            {"values": [round(float(v), 4) for v in streak_win.tolist()],
+             "diffs": [round(float(d), 4) for d in clean_diffs]})
 
     # 3. RSI(14) band
     closes_to_eval = closes.iloc[: len(closes) + eval_idx + 1] if eval_idx < -1 else closes

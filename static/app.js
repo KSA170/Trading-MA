@@ -32,6 +32,7 @@ let sortState = { key: null, dir: null }; // dir: 'asc' | 'desc'
 
 const inputs = {
   high_lookback: $('#high_lookback'),
+  streak_mode: $('#streak_mode'),
   rsi_min: $('#rsi_min'),
   rsi_max: $('#rsi_max'),
   rsi_dev_min_pct: $('#rsi_dev_min_pct'),
@@ -186,6 +187,9 @@ async function runScreen() {
       els.asOfLabel.textContent = d ? `as of ${d}` : '';
     }
     setStatus(data.cached ? 'cached' : `done in ${data.elapsed_sec || '?'}s`);
+    // The price cache is warm now — refresh the date picker in case the
+    // page-load fetch came back empty.
+    if (asOfSelect && asOfSelect.options.length <= 1) loadDates();
   } catch (err) {
     console.error(err);
     setStatus('error');
@@ -198,7 +202,9 @@ async function runScreen() {
 function updateHighHeader() {
   if (!els.thHigh) return;
   const n = parseInt(inputs.high_lookback.value, 10);
-  els.thHigh.textContent = (Number.isFinite(n) && n > 0) ? `${n}d HH` : 'HH';
+  const mode = inputs.streak_mode ? inputs.streak_mode.value : 'high';
+  const suffix = mode === 'close' ? 'HC' : mode === 'green' ? 'green' : 'HH';
+  els.thHigh.textContent = (Number.isFinite(n) && n > 0) ? `${n}d ${suffix}` : suffix;
 }
 
 function applySortIndicators() {
@@ -737,6 +743,7 @@ syncDisabledStates();
 
 if (els.thead) els.thead.addEventListener('click', onSortHeaderClick);
 if (inputs.high_lookback) inputs.high_lookback.addEventListener('input', updateHighHeader);
+if (inputs.streak_mode) inputs.streak_mode.addEventListener('change', updateHighHeader);
 updateHighHeader();
 
 if (listAllCb) listAllCb.addEventListener('change', onListAllChange);

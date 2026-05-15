@@ -61,10 +61,18 @@
     </div>
 
     <div class="filter-group" data-group="high">
-      <label class="group-toggle"><input type="checkbox" id="apply_high" checked /> Higher-high streak</label>
+      <label class="group-toggle"><input type="checkbox" id="apply_high" checked /> Price streak</label>
       <div class="filter">
         <label>Streak length (days)</label>
         <input id="high_lookback" type="number" min="2" max="60" value="2" />
+      </div>
+      <div class="filter">
+        <label>Mode</label>
+        <select id="streak_mode">
+          <option value="high">Higher highs</option>
+          <option value="close">Higher closes</option>
+          <option value="green">Green candles</option>
+        </select>
       </div>
     </div>
 
