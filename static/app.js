@@ -207,7 +207,10 @@ function updateHighHeader() {
   if (!els.thHigh) return;
   const n = parseInt(inputs.high_lookback.value, 10);
   const mode = inputs.streak_mode ? inputs.streak_mode.value : 'high';
-  const suffix = mode === 'close' ? 'HC' : mode === 'green' ? 'green' : 'HH';
+  const suffix = mode === 'close' ? 'HC'
+    : mode === 'green' ? 'green'
+    : mode === 'close_green' ? 'HC+G'
+    : 'HH';
   els.thHigh.textContent = (Number.isFinite(n) && n > 0) ? `${n}d ${suffix}` : suffix;
 }
 

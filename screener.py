@@ -416,11 +416,13 @@ def evaluate_ticker(
         return None
 
     # Streak check. `streak_mode` decides what makes a streak:
-    #   "high"  — each bar's high  strictly above the prior bar's high
-    #   "close" — each bar's close strictly above the prior bar's close
-    #   "green" — each bar closes above its own open (green candle)
-    # high/close compare N+1 bars (N day-over-day diffs); green just needs
-    # the N bars ending at the eval bar.
+    #   "high"        — each bar's high  strictly above the prior bar's high
+    #   "close"       — each bar's close strictly above the prior bar's close
+    #   "green"       — each bar closes above its own open (green candle)
+    #   "close_green" — both of the above: each bar closes above the prior
+    #                   bar's close AND above its own open.
+    # high / close / close_green all compare N+1 bars (N day-over-day diffs);
+    # green / close_green also use the N bars' opens.
     if streak_mode == "green":
         g_start = eval_idx - high_lookback + 1
         if eval_idx + 1 < 0:
@@ -432,6 +434,23 @@ def evaluate_ticker(
         if len(close_win) < high_lookback:
             return None
         streak_ok = bool((close_win.values > open_win.values).all())
+        eval_streak_val = float(close_win.iloc[-1])
+        streak_start_val = float(close_win.iloc[0])
+    elif streak_mode == "close_green":
+        # N+1 closes for the higher-close check, plus the matching N opens
+        # for the body-green check.
+        s_start = eval_idx - high_lookback
+        if eval_idx + 1 < 0:
+            close_win = closes.iloc[s_start:eval_idx + 1]
+            open_win = df["Open"].iloc[s_start + 1:eval_idx + 1]
+        else:
+            close_win = closes.iloc[s_start:]
+            open_win = df["Open"].iloc[s_start + 1:]
+        if len(close_win) < high_lookback + 1 or len(open_win) < high_lookback:
+            return None
+        rising = bool(close_win.diff().iloc[1:].gt(0).all())
+        green = bool((close_win.iloc[1:].values > open_win.values).all())
+        streak_ok = rising and green
         eval_streak_val = float(close_win.iloc[-1])
         streak_start_val = float(close_win.iloc[0])
     else:
@@ -822,7 +841,7 @@ def diagnose_ticker(
     add("price", f"Price ∈ [${price_min}, ${price_max}]", round(prev_close, 4),
         apply_price, price_ok, [price_min, price_max])
 
-    # 2. Streak (mode: high / close / green)
+    # 2. Streak (mode: high / close / green / close_green)
     if streak_mode == "green":
         g_start = eval_idx - high_lookback + 1
         if eval_idx + 1 < 0:
@@ -839,6 +858,29 @@ def diagnose_ticker(
             apply_high, streak_ok, None,
             {"opens": [round(float(o), 4) for o in open_win.tolist()],
              "closes": [round(float(c), 4) for c in close_win.tolist()],
+             "green": green_flags})
+    elif streak_mode == "close_green":
+        s_start = eval_idx - high_lookback
+        if eval_idx + 1 < 0:
+            close_win = closes.iloc[s_start:eval_idx + 1]
+            open_win = df["Open"].iloc[s_start + 1:eval_idx + 1]
+        else:
+            close_win = closes.iloc[s_start:]
+            open_win = df["Open"].iloc[s_start + 1:]
+        diffs = close_win.diff().iloc[1:].tolist() if len(close_win) >= 2 else []
+        clean_diffs = [d for d in diffs if d is not None and not (isinstance(d, float) and (d != d))]
+        streak_closes = close_win.iloc[1:]  # the N "streak" bars
+        green_flags = [bool(c > o) for c, o in zip(streak_closes.tolist(), open_win.tolist())]
+        ok_close = len(close_win) >= high_lookback + 1 and all(d > 0 for d in clean_diffs)
+        ok_green = len(open_win) >= high_lookback and all(green_flags)
+        streak_ok = ok_close and ok_green
+        add("streak",
+            f"Higher-close + green-body streak ({high_lookback} days)",
+            round(float(close_win.iloc[-1]), 4) if len(close_win) else None,
+            apply_high, streak_ok, None,
+            {"closes": [round(float(c), 4) for c in close_win.tolist()],
+             "diffs": [round(float(d), 4) for d in clean_diffs],
+             "opens": [round(float(o), 4) for o in open_win.tolist()],
              "green": green_flags})
     else:
         series = df["High"] if streak_mode == "high" else closes
