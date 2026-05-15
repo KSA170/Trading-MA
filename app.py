@@ -96,6 +96,29 @@ def _parse_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _flt(name: str, default: float) -> float:
+    """float() query param with fallback — handles empty strings & nonsense."""
+    raw = (request.args.get(name) or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _int(name: str, default: int) -> int:
+    """int() query param with fallback — handles empty strings & nonsense.
+    Accepts "5000.0" or "5e3" too via the intermediate float()."""
+    raw = (request.args.get(name) or "").strip()
+    if not raw:
+        return int(default)
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def _parse_params() -> dict:
     raw_lists = request.args.get("lists", "")
     if raw_lists.strip():
@@ -114,30 +137,30 @@ def _parse_params() -> dict:
             if t and t not in seen:
                 seen.add(t)
                 extras.append(t)
-    as_of_offset = int(request.args.get("as_of_offset", 0))
+    as_of_offset = _int("as_of_offset", 0)
     if as_of_offset < 0:
         as_of_offset = 0
     if as_of_offset > screener.MAX_AS_OF_OFFSET:
         as_of_offset = screener.MAX_AS_OF_OFFSET
     return {
-        "high_lookback": int(request.args.get("high_lookback", 2)),
+        "high_lookback": _int("high_lookback", 2),
         "streak_mode": (request.args.get("streak_mode", "high") or "high").strip().lower()
                        if (request.args.get("streak_mode", "high") or "high").strip().lower()
                        in ("high", "close", "green", "close_green") else "high",
-        "rsi_min": float(request.args.get("rsi_min", 45)),
-        "rsi_max": float(request.args.get("rsi_max", 65)),
-        "rsi_dev_min_pct": float(request.args.get("rsi_dev_min_pct", 0)),
-        "rsi_dev_max_pct": float(request.args.get("rsi_dev_max_pct", 10)),
-        "rvol_lookback": int(request.args.get("rvol_lookback", 10)),
-        "rvol_min": float(request.args.get("rvol_min", 1.2)),
-        "avg_volume_min": int(float(request.args.get("avg_volume_min", 50000))),
-        "price_min": float(request.args.get("price_min", 1)),
-        "price_max": float(request.args.get("price_max", 1000)),
-        "price_dev_min_pct": float(request.args.get("price_dev_min_pct", -1)),
-        "price_dev_max_pct": float(request.args.get("price_dev_max_pct", 4)),
-        "ema_dev_min_pct": float(request.args.get("ema_dev_min_pct", -3)),
-        "ema_dev_max_pct": float(request.args.get("ema_dev_max_pct", 3)),
-        "macd_hist_min": float(request.args.get("macd_hist_min", 0)),
+        "rsi_min": _flt("rsi_min", 45),
+        "rsi_max": _flt("rsi_max", 65),
+        "rsi_dev_min_pct": _flt("rsi_dev_min_pct", 0),
+        "rsi_dev_max_pct": _flt("rsi_dev_max_pct", 10),
+        "rvol_lookback": _int("rvol_lookback", 10),
+        "rvol_min": _flt("rvol_min", 1.2),
+        "avg_volume_min": _int("avg_volume_min", 50000),
+        "price_min": _flt("price_min", 1),
+        "price_max": _flt("price_max", 1000),
+        "price_dev_min_pct": _flt("price_dev_min_pct", -1),
+        "price_dev_max_pct": _flt("price_dev_max_pct", 4),
+        "ema_dev_min_pct": _flt("ema_dev_min_pct", -3),
+        "ema_dev_max_pct": _flt("ema_dev_max_pct", 3),
+        "macd_hist_min": _flt("macd_hist_min", 0),
         "macd_require_rising": _parse_bool("macd_require_rising", True),
         "apply_high": _parse_bool("apply_high", True),
         "apply_rsi": _parse_bool("apply_rsi", True),
@@ -163,6 +186,15 @@ def index():
 
 @app.route("/api/screen")
 def api_screen():
+    try:
+        return _api_screen_impl()
+    except Exception as exc:
+        import traceback
+        log.error("api_screen failed: %s\n%s", exc, traceback.format_exc())
+        return jsonify({"error": str(exc), "type": type(exc).__name__}), 500
+
+
+def _api_screen_impl():
     params = _parse_params()
     key = _cache_key(params)
     now = time.time()
@@ -247,7 +279,7 @@ def api_lists():
 @app.route("/api/dates")
 def api_dates():
     """Last N US trading-day dates (anchored on SPY) for the date picker."""
-    n = int(request.args.get("n", screener.MAX_AS_OF_OFFSET + 1))
+    n = _int("n", screener.MAX_AS_OF_OFFSET + 1)
     n = max(1, min(n, screener.MAX_AS_OF_OFFSET + 1))
     return jsonify({"dates": screener.reference_dates(n=n)})
 
