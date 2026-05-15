@@ -360,6 +360,7 @@ def evaluate_ticker(
     rsi_dev_max_pct: float = 10.0,
     rvol_lookback: int = 10,
     rvol_min: float = 1.2,
+    avg_volume_min: int = 50000,
     price_min: float = 1.0,
     price_max: float = 1000.0,
     ema_period: int = 21,
@@ -374,6 +375,7 @@ def evaluate_ticker(
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
     apply_rvol: bool = True,
+    apply_avg_volume: bool = True,
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
@@ -515,6 +517,8 @@ def evaluate_ticker(
     rel_vol = volume / avg_volume
     if apply_rvol and rel_vol <= rvol_min:
         return None
+    if apply_avg_volume and avg_volume < avg_volume_min:
+        return None
 
     pct_change = (prev_close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
@@ -560,6 +564,7 @@ def run_screen(
     rsi_dev_max_pct: float = 10.0,
     rvol_lookback: int = 10,
     rvol_min: float = 1.2,
+    avg_volume_min: int = 50000,
     price_min: float = 1.0,
     price_max: float = 1000.0,
     price_dev_min_pct: float = -1.0,
@@ -572,6 +577,7 @@ def run_screen(
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
     apply_rvol: bool = True,
+    apply_avg_volume: bool = True,
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
@@ -610,6 +616,7 @@ def run_screen(
                 rsi_dev_max_pct=rsi_dev_max_pct,
                 rvol_lookback=rvol_lookback,
                 rvol_min=rvol_min,
+                avg_volume_min=avg_volume_min,
                 price_min=price_min,
                 price_max=price_max,
                 price_dev_min_pct=price_dev_min_pct,
@@ -622,6 +629,7 @@ def run_screen(
                 apply_rsi=apply_rsi,
                 apply_rsi_dev=apply_rsi_dev,
                 apply_rvol=apply_rvol,
+                apply_avg_volume=apply_avg_volume,
                 apply_price=apply_price,
                 apply_price_dev=apply_price_dev,
                 apply_ema_dev=apply_ema_dev,
@@ -732,6 +740,7 @@ def diagnose_ticker(
     rsi_dev_max_pct: float = 10.0,
     rvol_lookback: int = 10,
     rvol_min: float = 1.2,
+    avg_volume_min: int = 50000,
     price_min: float = 1.0,
     price_max: float = 1000.0,
     ema_period: int = 21,
@@ -746,6 +755,7 @@ def diagnose_ticker(
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
     apply_rvol: bool = True,
+    apply_avg_volume: bool = True,
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
@@ -920,11 +930,18 @@ def diagnose_ticker(
     if len(vol_window) and vol_window.mean() > 0:
         rvol = volume / float(vol_window.mean())
     rvol_ok = rvol is not None and rvol > rvol_min
+    avg_vol = float(vol_window.mean()) if len(vol_window) else None
     add("rvol", f"RVol({rvol_lookback}d) > {rvol_min}",
         round(rvol, 2) if rvol is not None else None,
         apply_rvol, rvol_ok, [rvol_min, None],
-        {"avg_volume": round(float(vol_window.mean()), 0) if len(vol_window) else None,
+        {"avg_volume": round(avg_vol, 0) if avg_vol is not None else None,
          "volume": round(volume, 0)})
+
+    # 9. Average volume floor
+    avg_vol_ok = avg_vol is not None and avg_vol >= avg_volume_min
+    add("avg_volume", f"Avg volume ({rvol_lookback}d) ≥ {avg_volume_min:,}",
+        round(avg_vol, 0) if avg_vol is not None else None,
+        apply_avg_volume, avg_vol_ok, [avg_volume_min, None])
 
     out["all_pass"] = all(c["pass"] for c in out["checks"])
     return out

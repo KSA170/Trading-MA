@@ -47,6 +47,7 @@ DEFAULT_PARAMS: dict = {
     "rsi_dev_max_pct": 10.0,
     "rvol_lookback": 10,
     "rvol_min": 1.2,
+    "avg_volume_min": 50000,
     "price_min": 1.0,
     "price_max": 1000.0,
     "price_dev_min_pct": -1.0,
@@ -59,6 +60,7 @@ DEFAULT_PARAMS: dict = {
     "apply_rsi": True,
     "apply_rsi_dev": True,
     "apply_rvol": True,
+    "apply_avg_volume": True,
     "apply_price": True,
     "apply_price_dev": True,
     "apply_ema_dev": True,
@@ -76,6 +78,7 @@ def _cache_key(params: dict) -> tuple:
     rsi = (round(float(params["rsi_min"]), 3), round(float(params["rsi_max"]), 3)) if params["apply_rsi"] else ("off",)
     rsi_dev = (round(float(params["rsi_dev_min_pct"]), 3), round(float(params["rsi_dev_max_pct"]), 3)) if params["apply_rsi_dev"] else ("off",)
     rvol = (int(params["rvol_lookback"]), round(float(params["rvol_min"]), 3)) if params["apply_rvol"] else ("off",)
+    avg_vol = (int(params["avg_volume_min"]),) if params["apply_avg_volume"] else ("off",)
     price = (round(float(params["price_min"]), 4), round(float(params["price_max"]), 4)) if params["apply_price"] else ("off",)
     price_dev = (round(float(params["price_dev_min_pct"]), 3), round(float(params["price_dev_max_pct"]), 3)) if params["apply_price_dev"] else ("off",)
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
@@ -83,7 +86,7 @@ def _cache_key(params: dict) -> tuple:
     lists = tuple(sorted(params["lists"]))
     extras = tuple(sorted(params.get("extras") or ()))
     as_of = int(params["as_of_offset"])
-    return ("v8", as_of, price, price_dev, ema_dev, macd, high, rsi, rsi_dev, rvol, lists, extras)
+    return ("v9", as_of, price, price_dev, ema_dev, macd, high, rsi, rsi_dev, rvol, avg_vol, lists, extras)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -127,6 +130,7 @@ def _parse_params() -> dict:
         "rsi_dev_max_pct": float(request.args.get("rsi_dev_max_pct", 10)),
         "rvol_lookback": int(request.args.get("rvol_lookback", 10)),
         "rvol_min": float(request.args.get("rvol_min", 1.2)),
+        "avg_volume_min": int(float(request.args.get("avg_volume_min", 50000))),
         "price_min": float(request.args.get("price_min", 1)),
         "price_max": float(request.args.get("price_max", 1000)),
         "price_dev_min_pct": float(request.args.get("price_dev_min_pct", -1)),
@@ -139,6 +143,7 @@ def _parse_params() -> dict:
         "apply_rsi": _parse_bool("apply_rsi", True),
         "apply_rsi_dev": _parse_bool("apply_rsi_dev", True),
         "apply_rvol": _parse_bool("apply_rvol", True),
+        "apply_avg_volume": _parse_bool("apply_avg_volume", True),
         "apply_price": _parse_bool("apply_price", True),
         "apply_price_dev": _parse_bool("apply_price_dev", True),
         "apply_ema_dev": _parse_bool("apply_ema_dev", True),
@@ -183,6 +188,7 @@ def api_screen():
         rsi_dev_max_pct=params["rsi_dev_max_pct"],
         rvol_lookback=params["rvol_lookback"],
         rvol_min=params["rvol_min"],
+        avg_volume_min=params["avg_volume_min"],
         price_min=params["price_min"],
         price_max=params["price_max"],
         price_dev_min_pct=params["price_dev_min_pct"],
@@ -195,6 +201,7 @@ def api_screen():
         apply_rsi=params["apply_rsi"],
         apply_rsi_dev=params["apply_rsi_dev"],
         apply_rvol=params["apply_rvol"],
+        apply_avg_volume=params["apply_avg_volume"],
         apply_price=params["apply_price"],
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
@@ -295,6 +302,7 @@ def api_debug(ticker: str):
         rsi_dev_max_pct=params["rsi_dev_max_pct"],
         rvol_lookback=params["rvol_lookback"],
         rvol_min=params["rvol_min"],
+        avg_volume_min=params["avg_volume_min"],
         price_min=params["price_min"],
         price_max=params["price_max"],
         price_dev_min_pct=params["price_dev_min_pct"],
@@ -307,6 +315,7 @@ def api_debug(ticker: str):
         apply_rsi=params["apply_rsi"],
         apply_rsi_dev=params["apply_rsi_dev"],
         apply_rvol=params["apply_rvol"],
+        apply_avg_volume=params["apply_avg_volume"],
         apply_price=params["apply_price"],
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
