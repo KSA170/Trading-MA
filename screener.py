@@ -19,12 +19,19 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
+from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Iterable
+
+try:
+    from zoneinfo import ZoneInfo  # py3.9+
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 
 import numpy as np
 import pandas as pd
@@ -230,6 +237,93 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
 
     threading.Thread(target=_run, daemon=True, name="warm-cache").start()
     return True
+
+
+# --- daily auto-warm scheduler ---------------------------------------------
+# A daemon thread wakes every 30 minutes and triggers a warm if it's after
+# the configured trigger time (default 4:30pm ET, US weekdays only) and we
+# haven't already warmed today. Trigger time is overridable via the
+# AUTO_WARM_AFTER_ET env var, e.g. "16:30" or "17:00". Set DISABLE_AUTO_WARM
+# to "1" to turn the scheduler off.
+#
+# Caveat for free-tier hosts that idle the service after no traffic: the
+# thread can only fire while the worker process is alive. An external ping
+# near the trigger time (e.g. UptimeRobot hitting "/" at 4:25pm ET) keeps
+# the service awake long enough for the auto-warm to kick in.
+
+_AUTO_WARM_STATE: dict = {
+    "last_run_date": None,   # YYYY-MM-DD of the last successful auto-trigger
+    "next_check_at": None,   # unix ts of the next periodic check
+    "trigger_time": "16:30",
+    "started": False,
+}
+_auto_warm_lock = threading.Lock()
+
+
+def _now_et() -> datetime:
+    if ZoneInfo is not None:
+        try:
+            return datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            pass
+    # Fallback: treat server time as UTC and subtract 4h (closer to EDT than
+    # EST). Not perfect across DST, but the warm only needs to fire roughly
+    # after market close — minor offset is harmless.
+    import datetime as _dt
+    return datetime.utcnow() - _dt.timedelta(hours=4)
+
+
+def _parse_trigger_time() -> dt_time:
+    raw = os.environ.get("AUTO_WARM_AFTER_ET", "16:30").strip()
+    try:
+        hh, mm = raw.split(":")
+        return dt_time(int(hh), int(mm))
+    except Exception:
+        return dt_time(16, 30)
+
+
+def auto_warm_status() -> dict:
+    with _auto_warm_lock:
+        return dict(_AUTO_WARM_STATE)
+
+
+def _auto_warm_loop() -> None:
+    trigger = _parse_trigger_time()
+    interval_sec = 30 * 60  # check every 30 minutes
+    with _auto_warm_lock:
+        _AUTO_WARM_STATE["trigger_time"] = trigger.strftime("%H:%M")
+    log.info("auto-warm scheduler started (trigger %s ET, weekdays)", trigger.strftime("%H:%M"))
+    while True:
+        try:
+            now = _now_et()
+            today = now.strftime("%Y-%m-%d")
+            already = False
+            with _auto_warm_lock:
+                already = _AUTO_WARM_STATE["last_run_date"] == today
+                _AUTO_WARM_STATE["next_check_at"] = time.time() + interval_sec
+            is_weekday = now.weekday() < 5
+            is_after_trigger = now.time() >= trigger
+            if is_weekday and is_after_trigger and not already and not warm_status()["running"]:
+                log.info("auto-warm: triggering cache warm for %s", today)
+                if warm_cache():
+                    with _auto_warm_lock:
+                        _AUTO_WARM_STATE["last_run_date"] = today
+        except Exception as exc:
+            log.warning("auto-warm loop error: %s", exc)
+        time.sleep(interval_sec)
+
+
+def start_auto_warm() -> None:
+    """Start the daily auto-warm scheduler (idempotent). Honors
+    DISABLE_AUTO_WARM env var."""
+    if os.environ.get("DISABLE_AUTO_WARM"):
+        log.info("auto-warm scheduler disabled by DISABLE_AUTO_WARM env var")
+        return
+    with _auto_warm_lock:
+        if _AUTO_WARM_STATE["started"]:
+            return
+        _AUTO_WARM_STATE["started"] = True
+    threading.Thread(target=_auto_warm_loop, daemon=True, name="auto-warm").start()
 
 
 # Company names come from the SEC dataset (already loaded for the universe) —

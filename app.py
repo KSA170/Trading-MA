@@ -256,7 +256,10 @@ def api_warm_cache():
 
 @app.route("/api/admin/warm-status")
 def api_warm_status():
-    return jsonify(screener.warm_status())
+    return jsonify({
+        **screener.warm_status(),
+        "auto": screener.auto_warm_status(),
+    })
 
 
 @app.route("/api/admin/refresh-universe", methods=["POST"])
@@ -368,6 +371,12 @@ def api_export_xlsx():
         download_name="trading-ma-export.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+# Kick off the daily auto-warm scheduler. Runs in a daemon thread, no-ops
+# if DISABLE_AUTO_WARM is set. Safe to call at module load — gunicorn
+# imports app:app exactly once per worker (we run 1 worker).
+screener.start_auto_warm()
 
 
 if __name__ == "__main__":
