@@ -42,6 +42,15 @@ a { color: var(--accent); }
   color: var(--muted);
 }
 
+.status .cache-status {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--green);
+}
+.status .cache-status.warn { color: var(--yellow); }
+.status .cache-status.cold { color: var(--red); }
+.status .cache-status:empty { display: none; }
+
 button {
   border-radius: 6px;
   border: 1px solid var(--border);

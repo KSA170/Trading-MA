@@ -127,6 +127,34 @@ def _price_file(ticker: str) -> Path:
     return _PRICE_DIR / f"{safe}.pkl"
 
 
+def cache_status(tickers: list[str]) -> dict:
+    """Summarise the on-disk price cache for `tickers`. A ticker is "warm"
+    if its pickle exists and is younger than _PRICE_FILE_TTL_SEC; "stale"
+    if the file exists but is older; "missing" if no file at all."""
+    now = time.time()
+    warm = stale = missing = 0
+    for t in tickers:
+        pf = _price_file(t)
+        try:
+            mtime = pf.stat().st_mtime
+        except FileNotFoundError:
+            missing += 1
+            continue
+        except Exception:
+            missing += 1
+            continue
+        if now - mtime < _PRICE_FILE_TTL_SEC:
+            warm += 1
+        else:
+            stale += 1
+    return {
+        "total": len(tickers),
+        "warm": warm,
+        "stale": stale,
+        "missing": missing,
+    }
+
+
 def _remember(ticker: str, ts: float, df: pd.DataFrame) -> None:
     """Put a ticker's frame into the in-memory LRU and evict overflow."""
     with _PRICE_CACHE_LOCK:

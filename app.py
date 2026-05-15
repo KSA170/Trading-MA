@@ -309,6 +309,33 @@ def api_warm_status():
     })
 
 
+@app.route("/api/admin/cache-status")
+def api_cache_status():
+    """Report disk-cache freshness for the currently-selected universe.
+    Lets the UI tell the user whether a screen will be warm (fast, disk)
+    or cold (slow, will hit Yahoo for thousands of tickers)."""
+    from tickers import universe as build_universe
+
+    raw_lists = request.args.get("lists", "")
+    if raw_lists.strip():
+        wanted = [s.strip() for s in raw_lists.split(",") if s.strip()]
+        wanted = [s for s in wanted if s in _VALID_LISTS]
+    else:
+        wanted = sorted(_VALID_LISTS)
+    if not wanted:
+        wanted = sorted(_VALID_LISTS)
+    tickers = build_universe(wanted)
+    raw_extras = request.args.get("extras", "")
+    if raw_extras.strip():
+        seen = set(tickers)
+        for s in raw_extras.split(","):
+            t = s.strip().upper()
+            if t and t not in seen:
+                seen.add(t)
+                tickers.append(t)
+    return jsonify(screener.cache_status(tickers))
+
+
 @app.route("/api/admin/refresh-universe", methods=["POST"])
 def api_refresh_universe():
     """Drop the disk + in-memory caches of the US symbol directory and

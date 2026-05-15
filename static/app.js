@@ -3,6 +3,7 @@ const $ = (sel) => document.querySelector(sel);
 const els = {
   runBtn: $('#run-btn'),
   warmBtn: $('#warm-btn'),
+  cacheStatus: $('#cache-status'),
   status: $('#status-text'),
   matchCount: $('#match-count'),
   asOfLabel: $('#as-of-label'),
@@ -91,6 +92,46 @@ function fmtVol(n) {
 
 function getSelectedListKeys() {
   return listCheckboxes.filter((cb) => cb.checked).map((cb) => cb.dataset.listKey);
+}
+
+// --- cache-status indicator -----------------------------------------------
+// Shows next to Run: "cache: 7950/8126 warm" — colour-coded so the user knows
+// whether the next screen will be fast (disk) or slow (cold, hits Yahoo).
+let _cacheStatusTimer = null;
+
+async function refreshCacheStatus() {
+  if (!els.cacheStatus) return;
+  const sel = getSelectedListKeys();
+  const qs = new URLSearchParams();
+  if (sel.length && listCheckboxes.length && sel.length < listCheckboxes.length) {
+    qs.set('lists', sel.join(','));
+  }
+  if (inputs.extras && inputs.extras.value.trim()) {
+    qs.set('extras', inputs.extras.value.trim());
+  }
+  try {
+    const res = await fetch('/api/admin/cache-status?' + qs.toString());
+    if (!res.ok) return;
+    const s = await res.json();
+    if (!s.total) {
+      els.cacheStatus.textContent = '';
+      els.cacheStatus.classList.remove('warn', 'cold');
+      return;
+    }
+    const pct = Math.round((100 * s.warm) / s.total);
+    els.cacheStatus.textContent = `cache: ${s.warm.toLocaleString()}/${s.total.toLocaleString()} warm`;
+    els.cacheStatus.classList.toggle('cold', pct < 10);
+    els.cacheStatus.classList.toggle('warn', pct >= 10 && pct < 80);
+    const tip = pct >= 80
+      ? `${pct}% cached — screen will be fast.`
+      : `${pct}% cached. A cold run on the rest (~${(s.total - s.warm).toLocaleString()} tickers) hits Yahoo and may take minutes — risks a gateway timeout. Click Warm cache first for a smooth run.`;
+    els.cacheStatus.title = tip;
+  } catch (_) { /* silent */ }
+}
+
+function scheduleCacheStatus(delayMs = 350) {
+  if (_cacheStatusTimer) clearTimeout(_cacheStatusTimer);
+  _cacheStatusTimer = setTimeout(refreshCacheStatus, delayMs);
 }
 
 function buildQuery() {
@@ -230,6 +271,7 @@ async function runScreen() {
   } finally {
     _screenAbort = null;
     setRunButtonState(false);
+    scheduleCacheStatus();  // a run warmed many ticker files; reflect that
   }
 }
 
@@ -583,6 +625,7 @@ async function pollWarmStatus() {
       _warmPollTimer = setTimeout(pollWarmStatus, 3000);
     } else {
       setWarmButtonState(false);
+      scheduleCacheStatus(100);  // cache just got warm — refresh indicator
       if (s.total) {
         const dur = s.finished_at && s.started_at
           ? Math.round(s.finished_at - s.started_at) + 's'
@@ -888,7 +931,14 @@ if (inputs.streak_mode) inputs.streak_mode.addEventListener('change', updateHigh
 updateHighHeader();
 
 if (listAllCb) listAllCb.addEventListener('change', onListAllChange);
-listCheckboxes.forEach((cb) => cb.addEventListener('change', updateListAllState));
+listCheckboxes.forEach((cb) => cb.addEventListener('change', () => {
+  updateListAllState();
+  scheduleCacheStatus();
+}));
+if (inputs.extras) inputs.extras.addEventListener('input', () => scheduleCacheStatus(700));
+if (listAllCb) listAllCb.addEventListener('change', () => scheduleCacheStatus());
+// Initial cache snapshot.
+scheduleCacheStatus(50);
 updateListAllState();
 
 if (refreshUniverseBtn) refreshUniverseBtn.addEventListener('click', refreshUniverse);
