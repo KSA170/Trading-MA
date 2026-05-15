@@ -2,6 +2,7 @@ const $ = (sel) => document.querySelector(sel);
 
 const els = {
   runBtn: $('#run-btn'),
+  warmBtn: $('#warm-btn'),
   status: $('#status-text'),
   matchCount: $('#match-count'),
   asOfLabel: $('#as-of-label'),
@@ -491,6 +492,51 @@ function renderDiagnose(d) {
   out.innerHTML = header + `<div class="diagnose-checks">${checks}</div>`;
 }
 
+// --- warm-cache button + status polling ----------------------------------
+
+let _warmPollTimer = null;
+
+async function pollWarmStatus() {
+  try {
+    const res = await fetch('/api/admin/warm-status');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const s = await res.json();
+    if (s.running) {
+      const pct = s.total ? Math.round((100 * s.done) / s.total) : 0;
+      setStatus(`warming cache… ${s.done}/${s.total} (${pct}%)`);
+      if (els.warmBtn) els.warmBtn.disabled = true;
+      _warmPollTimer = setTimeout(pollWarmStatus, 3000);
+    } else {
+      if (els.warmBtn) els.warmBtn.disabled = false;
+      if (s.total) {
+        const dur = s.finished_at && s.started_at
+          ? Math.round(s.finished_at - s.started_at) + 's'
+          : '';
+        const errs = s.errors ? `, ${s.errors} errors` : '';
+        setStatus(`cache warmed: ${s.done}/${s.total}${errs}${dur ? ` in ${dur}` : ''}`);
+      }
+    }
+  } catch (err) {
+    if (els.warmBtn) els.warmBtn.disabled = false;
+    console.warn('warm-status poll failed:', err);
+  }
+}
+
+async function warmCache() {
+  if (!els.warmBtn) return;
+  els.warmBtn.disabled = true;
+  setStatus('starting warm cache…');
+  try {
+    const res = await fetch('/api/admin/warm-cache', { method: 'POST' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    await res.json();
+    pollWarmStatus();
+  } catch (err) {
+    setStatus('warm cache failed: ' + err.message);
+    els.warmBtn.disabled = false;
+  }
+}
+
 async function refreshUniverse() {
   if (!refreshUniverseBtn) return;
   refreshUniverseBtn.disabled = true;
@@ -751,5 +797,11 @@ listCheckboxes.forEach((cb) => cb.addEventListener('change', updateListAllState)
 updateListAllState();
 
 if (refreshUniverseBtn) refreshUniverseBtn.addEventListener('click', refreshUniverse);
+if (els.warmBtn) els.warmBtn.addEventListener('click', warmCache);
+// If a warm job is already running (page reload mid-warm), pick up its
+// progress.
+fetch('/api/admin/warm-status').then((r) => r.json()).then((s) => {
+  if (s && s.running) pollWarmStatus();
+}).catch(() => {});
 
 loadDates();

@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
+from pathlib import Path
 from typing import Iterable
 
 import numpy as np
@@ -85,24 +87,67 @@ def ema(series: pd.Series, period: int) -> pd.Series:
 
 
 # --- data fetching ---------------------------------------------------------
+#
+# Two-layer cache:
+#  1. Disk: one small pickled DataFrame per ticker in .cache/prices/. Lives
+#     ~20h (one trading day), so a "warm cache" run done after market close
+#     covers the rest of the day's screens without re-fetching from Yahoo.
+#     This is what makes the screen reusable and keeps peak RAM bounded
+#     (the screen worker reads one ticker's frame at a time off disk).
+#  2. In-memory: a small LRU (~2k entries) for hot tickers — covers the
+#     ticker hover-chart workflow right after a screen.
+#
+# Together, the disk cache makes a fresh screen run cost only the cumulative
+# disk-read time (a few seconds for the full universe), and a warm-cache
+# button does the slow Yahoo fetch up front so it doesn't happen inside the
+# /api/screen request.
 
-# Module-level price-history cache so repeated requests within a short window
-# don't hammer Yahoo. Keyed by ticker -> (timestamp, DataFrame). Capped to
-# keep the in-memory footprint inside a 512MB host — a full US+CA screen
-# touches ~8k tickers, so cache entries must stay small.
+_CACHE_DIR = Path(__file__).resolve().parent / ".cache"
+_PRICE_DIR = _CACHE_DIR / "prices"
+_PRICE_FILE_TTL_SEC = 20 * 3600   # ~one trading day
+_PRICE_TTL_SEC = 60 * 30          # in-memory TTL (intra-session)
+_PRICE_CACHE_MAX = 2000           # tight cap; disk is the persistence layer
+
 _PRICE_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
-_PRICE_TTL_SEC = 60 * 30  # 30 minutes
-_PRICE_CACHE_MAX = 10000  # evict oldest entries past this many
+_PRICE_CACHE_LOCK = threading.Lock()
 
 # Only these columns are ever read by the screener / chart payload.
 _KEEP_COLS = ("Open", "High", "Low", "Close", "Volume")
 
 
+def _price_file(ticker: str) -> Path:
+    safe = ticker.replace("/", "_").replace("\\", "_")
+    return _PRICE_DIR / f"{safe}.pkl"
+
+
+def _remember(ticker: str, ts: float, df: pd.DataFrame) -> None:
+    """Put a ticker's frame into the in-memory LRU and evict overflow."""
+    with _PRICE_CACHE_LOCK:
+        _PRICE_CACHE[ticker] = (ts, df)
+        if len(_PRICE_CACHE) > _PRICE_CACHE_MAX:
+            # Drop the oldest 20% by insertion order — keeps the working set
+            # warm without scanning on every insert.
+            drop_n = _PRICE_CACHE_MAX // 5
+            for old_key in list(_PRICE_CACHE.keys())[:drop_n]:
+                _PRICE_CACHE.pop(old_key, None)
+
+
 def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
     now = time.time()
+    # 1. In-memory hot cache.
     cached = _PRICE_CACHE.get(ticker)
     if cached and now - cached[0] < _PRICE_TTL_SEC:
         return cached[1]
+    # 2. Disk cache — the once-per-day store.
+    pf = _price_file(ticker)
+    try:
+        if pf.exists() and (now - pf.stat().st_mtime) < _PRICE_FILE_TTL_SEC:
+            df = pd.read_pickle(pf)
+            _remember(ticker, now, df)
+            return df
+    except Exception as exc:
+        log.warning("price cache read failed for %s: %s", ticker, exc)
+    # 3. Fresh fetch.
     try:
         df = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
     except Exception as exc:
@@ -111,17 +156,80 @@ def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
     if df is None or df.empty:
         return None
     df = df.dropna(subset=["Close", "Volume"])
-    # Trim to the columns we use and downcast to float32 — cuts the cached
-    # DataFrame's memory roughly 3-4x vs the raw 8-column float64 frame.
+    # Trim columns and downcast to float32 to keep the cached frame small.
     keep = [c for c in _KEEP_COLS if c in df.columns]
     df = df[keep].astype("float32")
-    _PRICE_CACHE[ticker] = (now, df)
-    # LRU-ish cap: when the cache overgrows, drop the oldest ~10% by
-    # insertion order (dict preserves insertion order in py3.7+).
-    if len(_PRICE_CACHE) > _PRICE_CACHE_MAX:
-        for old_key in list(_PRICE_CACHE.keys())[: _PRICE_CACHE_MAX // 10]:
-            _PRICE_CACHE.pop(old_key, None)
+    # Persist to disk for reuse across screen runs / restarts within the
+    # session. Best-effort; ignore failures.
+    try:
+        _PRICE_DIR.mkdir(parents=True, exist_ok=True)
+        df.to_pickle(pf)
+    except Exception as exc:
+        log.warning("price cache write failed for %s: %s", ticker, exc)
+    _remember(ticker, now, df)
     return df
+
+
+# --- background "warm cache" job -------------------------------------------
+# The user can kick off a warm of the whole universe to disk via the
+# /api/admin/warm-cache endpoint; subsequent screen runs then read from
+# disk instead of hammering Yahoo inside the request.
+
+_warm_state: dict = {
+    "running": False,
+    "done": 0,
+    "total": 0,
+    "errors": 0,
+    "started_at": None,
+    "finished_at": None,
+}
+_warm_lock = threading.Lock()
+
+
+def warm_status() -> dict:
+    with _warm_lock:
+        return dict(_warm_state)
+
+
+def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
+    """Start a background fetch of `tickers` (or the full universe) into the
+    disk price cache. Returns False if a warm job is already running."""
+    with _warm_lock:
+        if _warm_state["running"]:
+            return False
+        _warm_state.update(
+            running=True, done=0, total=0, errors=0,
+            started_at=time.time(), finished_at=None,
+        )
+
+    def _run() -> None:
+        try:
+            tk = tickers if tickers is not None else all_tickers()
+            with _warm_lock:
+                _warm_state["total"] = len(tk)
+
+            def _one(t: str) -> None:
+                try:
+                    _cached_history(t)
+                except Exception:
+                    with _warm_lock:
+                        _warm_state["errors"] += 1
+                finally:
+                    with _warm_lock:
+                        _warm_state["done"] += 1
+
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                for _ in pool.map(_one, tk):
+                    pass
+        except Exception as exc:
+            log.warning("warm-cache job failed: %s", exc)
+        finally:
+            with _warm_lock:
+                _warm_state["running"] = False
+                _warm_state["finished_at"] = time.time()
+
+    threading.Thread(target=_run, daemon=True, name="warm-cache").start()
+    return True
 
 
 # Company names come from the SEC dataset (already loaded for the universe) —

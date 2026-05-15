@@ -245,6 +245,20 @@ def api_dates():
     return jsonify({"dates": screener.reference_dates(n=n)})
 
 
+@app.route("/api/admin/warm-cache", methods=["POST"])
+def api_warm_cache():
+    """Kick off a background fetch of the full universe into the disk
+    price cache. Returns immediately; poll /api/admin/warm-status for
+    progress."""
+    started = screener.warm_cache()
+    return jsonify({"started": started, "status": screener.warm_status()})
+
+
+@app.route("/api/admin/warm-status")
+def api_warm_status():
+    return jsonify(screener.warm_status())
+
+
 @app.route("/api/admin/refresh-universe", methods=["POST"])
 def api_refresh_universe():
     """Drop the disk + in-memory caches of the US symbol directory and
