@@ -554,7 +554,7 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
         _LAST_FETCH_ERROR[_SEC_CACHE_NAME] = f"unexpected schema, fields={fields}"
         return None
 
-    out: dict[str, list[str]] = {"nyse": [], "nasdaq": [], "amex": []}
+    out: dict[str, list[str]] = {"nyse": [], "nasdaq": []}
     seen: set[str] = set()
     exch_values: dict[str, int] = {}
     for row in rows:
@@ -567,11 +567,12 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
             continue
         if "nasdaq" in exchange:
             bucket = "nasdaq"
-        elif "american" in exchange or "amex" in exchange or "mkt" in exchange:
-            bucket = "amex"
         elif "arca" in exchange:
             continue  # NYSE Arca is mostly ETFs
-        elif "nyse" in exchange:
+        elif ("nyse" in exchange or "amex" in exchange
+              or "american" in exchange or "mkt" in exchange):
+            # NYSE + NYSE American (formerly AMEX / NYSE MKT) share one
+            # bucket — SEC tags NYSE American names plain "NYSE" anyway.
             bucket = "nyse"
         else:
             continue  # OTC, CBOE, blank, etc.
@@ -690,38 +691,27 @@ def fetch_us_exchanges() -> dict[str, list[str]]:
 
     sec = _fetch_sec_exchanges()
     if sec and (sec.get("nyse") or sec.get("nasdaq")):
-        # SEC's file doesn't reliably break out NYSE American — its AMEX
-        # names are tagged plain "NYSE" (so already in that bucket) or
-        # absent. If the AMEX bucket is empty, supplement it from NASDAQ
-        # Trader's otherlisted.txt, which has a distinct "A" exchange code.
-        if not sec.get("amex"):
-            oth_text = _fetch_with_cache(_OTHER_LISTED_URL, "otherlisted.txt")
-            if oth_text:
-                other = _parse_otherlisted(oth_text)
-                known = set(sec["nyse"]) | set(sec["nasdaq"])
-                sec["amex"] = [t for t in other.get("amex", []) if t not in known]
         _US_EXCHANGE_CACHE = sec
         log.info(
-            "loaded US exchanges from SEC — NYSE %d, NASDAQ %d, AMEX %d",
-            len(sec["nyse"]), len(sec["nasdaq"]), len(sec["amex"]),
+            "loaded US exchanges from SEC — NYSE %d, NASDAQ %d",
+            len(sec["nyse"]), len(sec["nasdaq"]),
         )
         return _US_EXCHANGE_CACHE
 
-    # Fallback: nasdaqtrader.com symbol directory.
+    # Fallback: nasdaqtrader.com symbol directory. NYSE American is folded
+    # into the NYSE bucket to mirror the SEC source's grouping.
     nas_text = _fetch_with_cache(_NASDAQ_LISTED_URL, "nasdaqlisted.txt")
     oth_text = _fetch_with_cache(_OTHER_LISTED_URL, "otherlisted.txt")
     nasdaq = _parse_nasdaqlisted(nas_text) if nas_text else []
     other = _parse_otherlisted(oth_text) if oth_text else {"nyse": [], "amex": []}
     _US_EXCHANGE_CACHE = {
-        "nyse": other.get("nyse", []),
+        "nyse": other.get("nyse", []) + other.get("amex", []),
         "nasdaq": nasdaq,
-        "amex": other.get("amex", []),
     }
     log.info(
-        "loaded US exchanges from nasdaqtrader (fallback) — NYSE %d, NASDAQ %d, AMEX %d",
+        "loaded US exchanges from nasdaqtrader (fallback) — NYSE %d, NASDAQ %d",
         len(_US_EXCHANGE_CACHE["nyse"]),
         len(_US_EXCHANGE_CACHE["nasdaq"]),
-        len(_US_EXCHANGE_CACHE["amex"]),
     )
     return _US_EXCHANGE_CACHE
 
@@ -729,9 +719,8 @@ def fetch_us_exchanges() -> dict[str, list[str]]:
 # --- list registry (lazy) ---------------------------------------------------
 
 LIST_LABELS: dict[str, str] = {
-    "nyse": "NYSE",
+    "nyse": "NYSE (incl. NYSE American)",
     "nasdaq": "NASDAQ",
-    "amex": "NYSE American",
     "tsx": "TSX",
     "tsxv": "TSX Venture",
 }
@@ -743,9 +732,8 @@ _MEMBERSHIP: dict[str, set[str]] | None = None
 def _build_lists() -> dict[str, list[str]]:
     us = fetch_us_exchanges()
     return {
-        "nyse": us["nyse"],
-        "nasdaq": us["nasdaq"],
-        "amex": us["amex"],
+        "nyse": us.get("nyse", []),
+        "nasdaq": us.get("nasdaq", []),
         "tsx": TSX,
         "tsxv": TSXV,
     }
