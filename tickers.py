@@ -553,12 +553,14 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
     except ValueError:
         _LAST_FETCH_ERROR[_SEC_CACHE_NAME] = f"unexpected schema, fields={fields}"
         return None
+    ni = fields.index("name") if "name" in fields else -1
 
     out: dict[str, list[str]] = {"nyse": [], "nasdaq": []}
     seen: set[str] = set()
     exch_values: dict[str, int] = {}
+    need_len = max(ti, ei, ni) + 1
     for row in rows:
-        if not isinstance(row, (list, tuple)) or len(row) <= max(ti, ei):
+        if not isinstance(row, (list, tuple)) or len(row) < need_len:
             continue
         ticker = str(row[ti] or "").strip().upper()
         exchange = str(row[ei] or "").strip().lower()
@@ -578,6 +580,12 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
             continue  # OTC, CBOE, blank, etc.
         seen.add(ticker)
         out[bucket].append(ticker)
+        # Capture the company name for free — saves a heavy yfinance
+        # get_info() call per match in the screener.
+        if ni >= 0:
+            name = str(row[ni] or "").strip()
+            if name:
+                _TICKER_NAMES[ticker] = name
     # Log the distinct exchange labels SEC uses so a future mismatch is
     # diagnosable from Render's logs.
     log.info(
@@ -651,6 +659,15 @@ def _parse_otherlisted(text: str) -> dict[str, list[str]]:
 
 _US_EXCHANGE_CACHE: dict[str, list[str]] | None = None
 
+# ticker -> company name, populated from the SEC dataset during the fetch.
+_TICKER_NAMES: dict[str, str] = {}
+
+
+def company_name(ticker: str) -> str:
+    """Best-effort company name for a ticker (US names come from the SEC
+    dataset loaded for the universe). Returns the symbol if unknown."""
+    return _TICKER_NAMES.get((ticker or "").strip().upper(), ticker)
+
 
 def refresh_universe() -> dict[str, int]:
     """Invalidate the in-memory + disk caches and rebuild from a fresh fetch.
@@ -659,6 +676,7 @@ def refresh_universe() -> dict[str, int]:
     _US_EXCHANGE_CACHE = None
     _LISTS = None
     _MEMBERSHIP = None
+    _TICKER_NAMES.clear()
     try:
         for name in ("nasdaqlisted.txt", "otherlisted.txt", _SEC_CACHE_NAME):
             p = _CACHE_DIR / name

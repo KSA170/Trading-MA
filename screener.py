@@ -87,9 +87,15 @@ def ema(series: pd.Series, period: int) -> pd.Series:
 # --- data fetching ---------------------------------------------------------
 
 # Module-level price-history cache so repeated requests within a short window
-# don't hammer Yahoo. Keyed by ticker -> (timestamp, DataFrame).
+# don't hammer Yahoo. Keyed by ticker -> (timestamp, DataFrame). Capped to
+# keep the in-memory footprint inside a 512MB host — a full US+CA screen
+# touches ~8k tickers, so cache entries must stay small.
 _PRICE_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _PRICE_TTL_SEC = 60 * 30  # 30 minutes
+_PRICE_CACHE_MAX = 10000  # evict oldest entries past this many
+
+# Only these columns are ever read by the screener / chart payload.
+_KEEP_COLS = ("Open", "High", "Low", "Close", "Volume")
 
 
 def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
@@ -105,11 +111,21 @@ def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
     if df is None or df.empty:
         return None
     df = df.dropna(subset=["Close", "Volume"])
+    # Trim to the columns we use and downcast to float32 — cuts the cached
+    # DataFrame's memory roughly 3-4x vs the raw 8-column float64 frame.
+    keep = [c for c in _KEEP_COLS if c in df.columns]
+    df = df[keep].astype("float32")
     _PRICE_CACHE[ticker] = (now, df)
+    # LRU-ish cap: when the cache overgrows, drop the oldest ~10% by
+    # insertion order (dict preserves insertion order in py3.7+).
+    if len(_PRICE_CACHE) > _PRICE_CACHE_MAX:
+        for old_key in list(_PRICE_CACHE.keys())[: _PRICE_CACHE_MAX // 10]:
+            _PRICE_CACHE.pop(old_key, None)
     return df
 
 
-# yfinance's `info` is slow; use a small symbol -> name cache populated lazily.
+# Company names come from the SEC dataset (already loaded for the universe) —
+# avoids a heavy per-match yfinance get_info() call. Falls back to the symbol.
 _NAME_CACHE: dict[str, str] = {}
 
 
@@ -117,8 +133,8 @@ def _company_name(ticker: str) -> str:
     if ticker in _NAME_CACHE:
         return _NAME_CACHE[ticker]
     try:
-        info = yf.Ticker(ticker).get_info()
-        name = info.get("shortName") or info.get("longName") or ticker
+        from tickers import company_name as _list_company_name
+        name = _list_company_name(ticker) or ticker
     except Exception:
         name = ticker
     _NAME_CACHE[ticker] = name
@@ -362,7 +378,7 @@ def run_screen(
     lists: list[str] | None = None,
     extras: list[str] | None = None,
     universe: Iterable[str] | None = None,
-    max_workers: int = 32,
+    max_workers: int = 16,
 ) -> list[ScreenHit]:
     if universe is not None:
         tickers = list(universe)

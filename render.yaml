@@ -9,11 +9,12 @@ services:
     branch: claude/stock-filter-builder-PrUrK
     buildCommand: pip install -r requirements.txt
     # 1 worker keeps the in-memory price/screen caches consistent.
-    # 8 threads lets the UI fetch chart data while a screen is running.
-    # 600s timeout covers cold-cache screen runs against the full ~10k
-    # ticker universe (NYSE + NASDAQ + AMEX + TSX + TSX Venture). Warm
-    # cache hits return in milliseconds.
-    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 600 --bind 0.0.0.0:$PORT
+    # 4 threads lets the UI fetch chart data while a screen runs, without
+    # multiplying peak memory on the 512MB free tier.
+    # 600s timeout covers cold-cache screen runs against the full ~8k
+    # ticker universe (NYSE + NASDAQ + TSX + TSX Venture). Warm cache hits
+    # return in milliseconds.
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 600 --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
