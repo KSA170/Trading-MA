@@ -18,8 +18,13 @@ const els = {
   clearSelectionBtn: $('#clear-selection-btn'),
   diagnoseTicker: $('#diagnose-ticker'),
   diagnoseBtn: $('#diagnose-btn'),
+  diagnoseClearBtn: $('#diagnose-clear-btn'),
   diagnoseStatus: $('#diagnose-status'),
   diagnoseOutput: $('#diagnose-output'),
+  diagnoseBody: $('#diagnose-body'),
+  diagnoseToggle: $('#diagnose-toggle'),
+  filtersSection: $('#filters-section'),
+  filtersToggle: $('#filters-toggle'),
   hoverChart: $('#hover-chart'),
   hoverChartTitle: $('#hover-chart-title'),
   hoverChartStatus: $('#hover-chart-status'),
@@ -173,15 +178,36 @@ async function loadDates() {
   }
 }
 
+let _screenAbort = null;
+
+function setRunButtonState(running) {
+  if (!els.runBtn) return;
+  if (running) {
+    els.runBtn.textContent = 'Stop';
+    els.runBtn.classList.remove('primary');
+    els.runBtn.classList.add('warn');
+  } else {
+    els.runBtn.textContent = 'Run screen';
+    els.runBtn.classList.add('primary');
+    els.runBtn.classList.remove('warn');
+  }
+}
+
 async function runScreen() {
+  if (_screenAbort) {
+    // Already running — second click acts as Stop.
+    _screenAbort.abort();
+    return;
+  }
+  _screenAbort = new AbortController();
+  setRunButtonState(true);
   setStatus('running…');
-  els.runBtn.disabled = true;
   els.body.innerHTML = '<tr class="empty"><td colspan="17">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
   els.matchCount.textContent = '';
   if (els.asOfLabel) els.asOfLabel.textContent = '';
   updateHighHeader();
   try {
-    const res = await fetch('/api/screen?' + buildQuery());
+    const res = await fetch('/api/screen?' + buildQuery(), { signal: _screenAbort.signal });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     lastResults = data.results || [];
@@ -191,15 +217,19 @@ async function runScreen() {
       els.asOfLabel.textContent = d ? `as of ${d}` : '';
     }
     setStatus(data.cached ? 'cached' : `done in ${data.elapsed_sec || '?'}s`);
-    // The price cache is warm now — refresh the date picker in case the
-    // page-load fetch came back empty.
     if (asOfSelect && asOfSelect.options.length <= 1) loadDates();
   } catch (err) {
-    console.error(err);
-    setStatus('error');
-    els.body.innerHTML = `<tr class="empty"><td colspan="17">Error: ${err.message}</td></tr>`;
+    if (err && err.name === 'AbortError') {
+      setStatus('stopped');
+      els.body.innerHTML = '<tr class="empty"><td colspan="17">Stopped.</td></tr>';
+    } else {
+      console.error(err);
+      setStatus('error');
+      els.body.innerHTML = `<tr class="empty"><td colspan="17">Error: ${err.message}</td></tr>`;
+    }
   } finally {
-    els.runBtn.disabled = false;
+    _screenAbort = null;
+    setRunButtonState(false);
   }
 }
 
@@ -434,6 +464,34 @@ async function exportSelected() {
   }
 }
 
+function clearDiagnose() {
+  if (els.diagnoseOutput) {
+    els.diagnoseOutput.classList.add('hidden');
+    els.diagnoseOutput.innerHTML = '';
+  }
+  if (els.diagnoseStatus) els.diagnoseStatus.textContent = '';
+  if (els.diagnoseTicker) els.diagnoseTicker.value = '';
+  if (els.diagnoseClearBtn) els.diagnoseClearBtn.disabled = true;
+}
+
+// --- collapsible sections (filters, diagnose) ----------------------------
+
+function wireCollapse(toggleBtn, targets, storageKey) {
+  if (!toggleBtn) return;
+  const arr = (Array.isArray(targets) ? targets : [targets]).filter(Boolean);
+  const apply = (collapsed) => {
+    toggleBtn.classList.toggle('collapsed', collapsed);
+    toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    arr.forEach((el) => el.classList.toggle('collapsed-section', collapsed));
+  };
+  apply(localStorage.getItem(storageKey) === '1');
+  toggleBtn.addEventListener('click', () => {
+    const next = !toggleBtn.classList.contains('collapsed');
+    apply(next);
+    try { localStorage.setItem(storageKey, next ? '1' : '0'); } catch (_) {}
+  });
+}
+
 async function runDiagnose() {
   if (!els.diagnoseTicker) return;
   const ticker = (els.diagnoseTicker.value || '').trim().toUpperCase();
@@ -449,6 +507,7 @@ async function runDiagnose() {
     const data = await res.json();
     renderDiagnose(data);
     els.diagnoseStatus.textContent = '';
+    if (els.diagnoseClearBtn) els.diagnoseClearBtn.disabled = false;
   } catch (err) {
     console.error(err);
     els.diagnoseStatus.textContent = 'error: ' + err.message;
@@ -501,6 +560,15 @@ function renderDiagnose(d) {
 // --- warm-cache button + status polling ----------------------------------
 
 let _warmPollTimer = null;
+let _warmIsRunning = false;
+
+function setWarmButtonState(running) {
+  if (!els.warmBtn) return;
+  _warmIsRunning = !!running;
+  els.warmBtn.textContent = running ? 'Stop warming' : 'Warm cache';
+  els.warmBtn.classList.toggle('warn', !!running);
+  els.warmBtn.disabled = false;  // we never grey it out — it just changes role
+}
 
 async function pollWarmStatus() {
   try {
@@ -509,37 +577,47 @@ async function pollWarmStatus() {
     const s = await res.json();
     if (s.running) {
       const pct = s.total ? Math.round((100 * s.done) / s.total) : 0;
-      setStatus(`warming cache… ${s.done}/${s.total} (${pct}%)`);
-      if (els.warmBtn) els.warmBtn.disabled = true;
+      const tag = s.cancelled ? ' (stopping…)' : '';
+      setStatus(`warming cache… ${s.done}/${s.total} (${pct}%)${tag}`);
+      setWarmButtonState(true);
       _warmPollTimer = setTimeout(pollWarmStatus, 3000);
     } else {
-      if (els.warmBtn) els.warmBtn.disabled = false;
+      setWarmButtonState(false);
       if (s.total) {
         const dur = s.finished_at && s.started_at
           ? Math.round(s.finished_at - s.started_at) + 's'
           : '';
         const errs = s.errors ? `, ${s.errors} errors` : '';
-        setStatus(`cache warmed: ${s.done}/${s.total}${errs}${dur ? ` in ${dur}` : ''}`);
+        const verb = s.cancelled ? 'cancelled' : 'warmed';
+        setStatus(`cache ${verb}: ${s.done}/${s.total}${errs}${dur ? ` in ${dur}` : ''}`);
       }
     }
   } catch (err) {
-    if (els.warmBtn) els.warmBtn.disabled = false;
+    setWarmButtonState(false);
     console.warn('warm-status poll failed:', err);
   }
 }
 
 async function warmCache() {
   if (!els.warmBtn) return;
-  els.warmBtn.disabled = true;
+  if (_warmIsRunning) {
+    // Second click → cancel.
+    setStatus('stopping warm cache…');
+    try {
+      await fetch('/api/admin/warm-cache/cancel', { method: 'POST' });
+    } catch (_) { /* the next poll will reflect reality */ }
+    return;
+  }
   setStatus('starting warm cache…');
   try {
     const res = await fetch('/api/admin/warm-cache', { method: 'POST' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     await res.json();
+    setWarmButtonState(true);
     pollWarmStatus();
   } catch (err) {
     setStatus('warm cache failed: ' + err.message);
-    els.warmBtn.disabled = false;
+    setWarmButtonState(false);
   }
 }
 
@@ -779,11 +857,22 @@ if (els.copyQuestradeBtn) els.copyQuestradeBtn.addEventListener('click', copyFor
 if (els.exportBtn) els.exportBtn.addEventListener('click', exportSelected);
 if (els.clearSelectionBtn) els.clearSelectionBtn.addEventListener('click', clearSelection);
 if (els.diagnoseBtn) els.diagnoseBtn.addEventListener('click', runDiagnose);
+if (els.diagnoseClearBtn) els.diagnoseClearBtn.addEventListener('click', clearDiagnose);
 if (els.diagnoseTicker) {
   els.diagnoseTicker.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); runDiagnose(); }
   });
 }
+
+// Collapse / expand the filter and diagnose sections, persisted in
+// localStorage so the user's preference survives reloads.
+wireCollapse(els.filtersToggle, els.filtersSection, 'collapse_filters');
+wireCollapse(
+  els.diagnoseToggle,
+  [els.diagnoseBody, els.diagnoseOutput],
+  'collapse_diagnose'
+);
+
 updateSelectionUI();
 
 // --- bootstrap -------------------------------------------------------------

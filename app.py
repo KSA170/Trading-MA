@@ -261,6 +261,14 @@ def api_warm_cache():
     return jsonify({"started": started, "status": screener.warm_status()})
 
 
+@app.route("/api/admin/warm-cache/cancel", methods=["POST"])
+def api_warm_cache_cancel():
+    """Ask the running warm thread to stop. Already-started fetches will
+    finish; queued ones are skipped."""
+    cancelled = screener.cancel_warm_cache()
+    return jsonify({"cancelled": cancelled, "status": screener.warm_status()})
+
+
 @app.route("/api/admin/warm-status")
 def api_warm_status():
     return jsonify({

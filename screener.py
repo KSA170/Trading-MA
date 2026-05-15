@@ -187,6 +187,7 @@ _warm_state: dict = {
     "done": 0,
     "total": 0,
     "errors": 0,
+    "cancelled": False,
     "started_at": None,
     "finished_at": None,
 }
@@ -198,6 +199,16 @@ def warm_status() -> dict:
         return dict(_warm_state)
 
 
+def cancel_warm_cache() -> bool:
+    """Ask the running warm thread to stop after the in-flight fetch.
+    Returns True if a warm was running, False otherwise."""
+    with _warm_lock:
+        if not _warm_state["running"]:
+            return False
+        _warm_state["cancelled"] = True
+        return True
+
+
 def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
     """Start a background fetch of `tickers` (or the full universe) into the
     disk price cache. Returns False if a warm job is already running."""
@@ -205,7 +216,7 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
         if _warm_state["running"]:
             return False
         _warm_state.update(
-            running=True, done=0, total=0, errors=0,
+            running=True, done=0, total=0, errors=0, cancelled=False,
             started_at=time.time(), finished_at=None,
         )
 
@@ -216,6 +227,15 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
                 _warm_state["total"] = len(tk)
 
             def _one(t: str) -> None:
+                # Cancellation check — newly-started workers see the flag
+                # and skip immediately. In-flight Yahoo fetches are allowed
+                # to finish (they're already a few hundred ms each).
+                with _warm_lock:
+                    cancelled = _warm_state["cancelled"]
+                if cancelled:
+                    with _warm_lock:
+                        _warm_state["done"] += 1
+                    return
                 try:
                     _cached_history(t)
                 except Exception:

@@ -17,7 +17,11 @@
     </div>
   </header>
 
-  <section class="filters">
+  <button id="filters-toggle" type="button" class="section-toggle" aria-controls="filters-section" aria-expanded="true">
+    <span class="chevron">▾</span> Filters
+  </button>
+
+  <section class="filters" id="filters-section">
     <div class="filter-group scope">
       <label class="group-label">
         Exchanges
@@ -169,10 +173,16 @@
         <span id="as-of-label" class="as-of-label muted"></span>
       </h2>
       <div class="diagnose-bar">
-        <label for="diagnose-ticker" class="muted">Diagnose ticker:</label>
-        <input id="diagnose-ticker" type="text" placeholder="e.g. NRGV" autocomplete="off" />
-        <button id="diagnose-btn" type="button">Run</button>
-        <span id="diagnose-status" class="muted"></span>
+        <button id="diagnose-toggle" type="button" class="section-toggle" aria-controls="diagnose-body diagnose-output" aria-expanded="true">
+          <span class="chevron">▾</span>
+        </button>
+        <div id="diagnose-body" class="diagnose-body">
+          <label for="diagnose-ticker" class="muted">Diagnose ticker:</label>
+          <input id="diagnose-ticker" type="text" placeholder="e.g. NRGV" autocomplete="off" />
+          <button id="diagnose-btn" type="button">Run</button>
+          <button id="diagnose-clear-btn" type="button" disabled>Clear</button>
+          <span id="diagnose-status" class="muted"></span>
+        </div>
       </div>
       <div id="diagnose-output" class="diagnose-output hidden"></div>
 

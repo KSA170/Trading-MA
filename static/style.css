@@ -68,6 +68,43 @@ button.primary:hover { filter: brightness(1.05); }
   background: var(--panel);
 }
 
+.section-toggle {
+  background: var(--panel);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  padding: 6px 14px;
+  text-align: left;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.section-toggle:hover { color: var(--text); }
+.section-toggle .chevron {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+.section-toggle.collapsed .chevron {
+  transform: rotate(-90deg);
+}
+.collapsed-section {
+  display: none !important;
+}
+
+button.warn {
+  background: var(--red);
+  color: #0b0f15;
+  border-color: var(--red);
+  font-weight: 600;
+}
+button.warn:hover { filter: brightness(1.05); }
+
 .filter-group {
   display: flex;
   flex-direction: row;
@@ -229,6 +266,20 @@ button.primary:hover { filter: brightness(1.05); }
   background: var(--panel-2);
   flex-wrap: wrap;
 }
+.diagnose-bar .section-toggle {
+  width: auto;
+  background: transparent;
+  border: none;
+  padding: 0 4px;
+}
+.diagnose-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+}
+.diagnose-body.hidden { display: none; }
 .diagnose-bar label { font-size: 12px; }
 .diagnose-bar input {
   background: var(--panel);
