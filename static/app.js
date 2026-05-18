@@ -213,7 +213,14 @@ async function loadDates() {
     dates.forEach((d, i) => {
       const opt = document.createElement('option');
       opt.value = String(d.offset);
-      opt.textContent = i === 0 ? `${d.date} (latest)` : d.date;
+      const head = i === 0 ? `${d.date} (latest)` : d.date;
+      const tag = d.in_snapshot ? ' • snapshot' : (data.snapshot_enabled ? ' • live' : '');
+      opt.textContent = head + tag;
+      opt.title = d.in_snapshot
+        ? 'Served from the Postgres snapshot — fast.'
+        : (data.snapshot_enabled
+            ? 'Not in snapshot — screen will fall back to the pickle cache / Yahoo fetch.'
+            : '');
       asOfSelect.appendChild(opt);
     });
   } catch (err) {

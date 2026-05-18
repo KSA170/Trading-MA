@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+import snapshots
 from tickers import all_tickers, display_symbol, lists_for, list_labels, universe as build_universe
 
 log = logging.getLogger("screener")
@@ -360,11 +361,214 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
             log.warning("warm-cache job failed: %s", exc)
         finally:
             with _warm_lock:
+                cancelled_flag = _warm_state["cancelled"]
                 _warm_state["running"] = False
                 _warm_state["finished_at"] = time.time()
+            # If the warm completed cleanly and Postgres is configured,
+            # write today's snapshot in a background thread so the warm
+            # endpoint can return promptly.
+            if not cancelled_flag and snapshots.enabled():
+                threading.Thread(
+                    target=take_snapshot, daemon=True, name="post-warm-snapshot",
+                ).start()
 
     threading.Thread(target=_run, daemon=True, name="warm-cache").start()
     return True
+
+
+# --- daily snapshot writer -------------------------------------------------
+# After a warm-cache run finishes, we extract the latest-bar indicators
+# plus the trailing 60 OHLCV bars from each ticker's pickle and write a
+# row to the Postgres `daily_snapshot` table. Subsequent screens for that
+# date serve from one bulk SELECT instead of 8k disk reads.
+
+_snapshot_state: dict = {
+    "running": False,
+    "done": 0,
+    "total": 0,
+    "errors": 0,
+    "started_at": None,
+    "finished_at": None,
+    "last_as_of": None,
+    "last_written": 0,
+    "last_trimmed": 0,
+}
+_snapshot_lock = threading.Lock()
+
+
+def snapshot_status() -> dict:
+    with _snapshot_lock:
+        return dict(_snapshot_state)
+
+
+def _row_from_df(ticker: str, df: pd.DataFrame) -> dict | None:
+    """Build a snapshot-row dict from an already-enriched price DataFrame.
+    Returns None if the frame is too short or missing indicator columns."""
+    if df is None or len(df) < 2 or "rsi14" not in df.columns:
+        return None
+    last_idx = -1
+    as_of_date = df.index[last_idx].strftime("%Y-%m-%d")
+
+    def _scalar(col: str, idx: int = last_idx):
+        try:
+            v = float(df[col].iloc[idx])
+        except (KeyError, IndexError, ValueError, TypeError):
+            return None
+        return v if np.isfinite(v) else None
+
+    close = _scalar("Close")
+    prior_close = _scalar("Close", -2)
+    volume = _scalar("Volume")
+    if close is None or volume is None:
+        return None
+
+    # Default avg_volume window matches the screener's rvol_lookback default
+    # (10 days). The screener recomputes avg_volume from recent_bars when
+    # rvol_lookback differs, so this is just a convenience field.
+    vol_window = df["Volume"].iloc[max(-11, -len(df)):-1]
+    avg_volume = float(vol_window.mean()) if len(vol_window) else None
+    if avg_volume is not None and not np.isfinite(avg_volume):
+        avg_volume = None
+
+    keep = df.iloc[max(-snapshots.RECENT_BARS_KEEP, -len(df)):]
+    bars = []
+    for idx, r in keep.iterrows():
+        bars.append({
+            "d": idx.strftime("%Y-%m-%d"),
+            "o": _safe_float(r.get("Open")),
+            "h": _safe_float(r.get("High")),
+            "l": _safe_float(r.get("Low")),
+            "c": _safe_float(r.get("Close")),
+            "v": _safe_float(r.get("Volume")),
+        })
+
+    shares_val = df.attrs.get("shares")
+    try:
+        shares_val = float(shares_val) if shares_val else None
+    except (TypeError, ValueError):
+        shares_val = None
+
+    return {
+        "ticker": ticker,
+        "as_of": as_of_date,
+        "close": close,
+        "prior_close": prior_close,
+        "volume": volume,
+        "avg_volume": avg_volume,
+        "ema21": _scalar("ema21"),
+        "ema50": _scalar("ema50"),
+        "rsi14": _scalar("rsi14"),
+        "rsi_sma9": _scalar("rsi_sma9"),
+        "macd": _scalar("macd"),
+        "macd_signal": _scalar("macd_signal"),
+        "macd_hist": _scalar("macd_hist"),
+        "macd_hist_prev": _scalar("macd_hist", -2),
+        "shares": shares_val,
+        "recent_bars": {"bars": bars},
+    }
+
+
+def _safe_float(v) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
+
+
+def take_snapshot(tickers: list[str] | None = None) -> dict:
+    """Write a snapshot row to Postgres for every ticker whose pickle is
+    fresh on disk. Skips tickers without a fresh pickle (no Yahoo re-fetch
+    in this phase — run warm_cache first). Idempotent: re-running on the
+    same trading day just upserts the existing rows."""
+    if not snapshots.enabled():
+        return {"enabled": False}
+    with _snapshot_lock:
+        if _snapshot_state["running"]:
+            return {"running": True, **_snapshot_state}
+        _snapshot_state.update(
+            running=True, done=0, total=0, errors=0,
+            started_at=time.time(), finished_at=None,
+        )
+
+    tk = list(tickers) if tickers is not None else all_tickers()
+    rows: list[dict] = []
+    errors = 0
+    try:
+        with _snapshot_lock:
+            _snapshot_state["total"] = len(tk)
+        now = time.time()
+        for t in tk:
+            try:
+                pf = _price_file(t)
+                # Don't re-fetch from Yahoo here — the snapshot phase
+                # mirrors what's already on disk. If a ticker's pickle
+                # is stale or missing, warm_cache will fix it next run.
+                if not pf.exists() or (now - pf.stat().st_mtime) > _PRICE_FILE_TTL_SEC:
+                    continue
+                df = _cached_history(t)
+                row = _row_from_df(t, df)
+                if row is None:
+                    continue
+                rows.append(row)
+            except Exception as exc:
+                errors += 1
+                log.warning("snapshot row build failed for %s: %s", t, exc)
+            finally:
+                with _snapshot_lock:
+                    _snapshot_state["done"] += 1
+
+        written = snapshots.upsert_many(rows)
+        trimmed = snapshots.trim_to_last(snapshots.RETENTION_DAYS)
+        as_of = rows[0]["as_of"] if rows else None
+        with _snapshot_lock:
+            _snapshot_state.update(
+                errors=errors,
+                last_as_of=as_of,
+                last_written=written,
+                last_trimmed=trimmed,
+            )
+        log.info("snapshot complete: as_of=%s written=%d trimmed=%d errors=%d",
+                 as_of, written, trimmed, errors)
+        return {
+            "enabled": True,
+            "as_of": as_of,
+            "written": written,
+            "trimmed": trimmed,
+            "errors": errors,
+            "skipped": len(tk) - len(rows) - errors,
+        }
+    finally:
+        with _snapshot_lock:
+            _snapshot_state["running"] = False
+            _snapshot_state["finished_at"] = time.time()
+
+
+def _resolve_as_of_date(as_of_offset: int) -> str | None:
+    """Map an offset (0 = latest) to a YYYY-MM-DD using SPY's calendar.
+    Mirrors the resolution evaluate_ticker does per-ticker; needed up
+    front so the snapshot path can pick the right row in bulk."""
+    try:
+        offset = max(0, min(int(as_of_offset), MAX_AS_OF_OFFSET))
+    except (TypeError, ValueError):
+        return None
+    for ref in ("SPY", "QQQ", "DIA", "AAPL", "MSFT"):
+        df = _cached_history(ref, period="6mo")
+        if df is None or df.empty:
+            continue
+        idx = -(1 + offset)
+        if idx < -len(df):
+            continue
+        return df.index[idx].strftime("%Y-%m-%d")
+    # Last-ditch: any cached ticker
+    for _, (_, cached_df) in list(_PRICE_CACHE.items()):
+        if cached_df is None or cached_df.empty:
+            continue
+        idx = -(1 + offset)
+        if idx < -len(cached_df):
+            continue
+        return cached_df.index[idx].strftime("%Y-%m-%d")
+    return None
 
 
 # --- daily auto-warm scheduler ---------------------------------------------
@@ -723,6 +927,221 @@ def evaluate_ticker(
     )
 
 
+def _evaluate_from_snapshot(
+    ticker: str,
+    as_of_date: str,
+    row: dict,
+    *,
+    high_lookback: int,
+    streak_mode: str,
+    rsi_min: float,
+    rsi_max: float,
+    rsi_dev_min_pct: float,
+    rsi_dev_max_pct: float,
+    rvol_lookback: int,
+    rvol_min: float,
+    avg_volume_min: int,
+    price_min: float,
+    price_max: float,
+    price_dev_min_pct: float,
+    price_dev_max_pct: float,
+    ema_dev_min_pct: float,
+    ema_dev_max_pct: float,
+    macd_hist_min: float,
+    macd_require_rising: bool,
+    turnover_min_pct: float,
+    turnover_max_pct: float,
+    apply_high: bool,
+    apply_rsi: bool,
+    apply_rsi_dev: bool,
+    apply_rvol: bool,
+    apply_avg_volume: bool,
+    apply_price: bool,
+    apply_price_dev: bool,
+    apply_ema_dev: bool,
+    apply_macd: bool,
+    apply_turnover: bool,
+) -> ScreenHit | None:
+    """Apply every filter against a single snapshot row + its trailing bars.
+    Mirrors evaluate_ticker's gates but reads from a dict instead of a
+    DataFrame so the snapshot-fast path doesn't materialise per-ticker
+    indicator series."""
+    close = row.get("close")
+    prior_close = row.get("prior_close")
+    volume = row.get("volume")
+    if close is None or volume is None or prior_close is None:
+        return None
+
+    if apply_price and not (price_min <= close <= price_max):
+        return None
+
+    # recent_bars is JSONB; psycopg2 returns it as a dict. Tolerate str too
+    # in case the column type ever changes to plain JSON.
+    bars_payload = row.get("recent_bars")
+    if isinstance(bars_payload, str):
+        try:
+            import json as _json
+            bars_payload = _json.loads(bars_payload)
+        except Exception:
+            bars_payload = None
+    bars = (bars_payload or {}).get("bars") or []
+    if len(bars) < 2:
+        return None
+
+    # --- streak check (mirrors evaluate_ticker logic) ---------------------
+    eval_streak_val = None
+    streak_start_val = None
+    streak_ok = False
+    if streak_mode == "green":
+        window = bars[-high_lookback:]
+        if len(window) < high_lookback:
+            return None
+        try:
+            streak_ok = all(b["c"] is not None and b["o"] is not None and b["c"] > b["o"]
+                            for b in window)
+        except (KeyError, TypeError):
+            return None
+        eval_streak_val = float(window[-1]["c"])
+        streak_start_val = float(window[0]["c"])
+    elif streak_mode == "close_green":
+        window = bars[-(high_lookback + 1):]
+        if len(window) < high_lookback + 1:
+            return None
+        try:
+            closes = [float(b["c"]) for b in window]
+            opens = [float(b["o"]) for b in window[1:]]
+        except (KeyError, TypeError, ValueError):
+            return None
+        rising = all(closes[i] > closes[i - 1] for i in range(1, len(closes)))
+        green = all(c > o for c, o in zip(closes[1:], opens))
+        streak_ok = rising and green
+        eval_streak_val = closes[-1]
+        streak_start_val = closes[0]
+    else:
+        key = "h" if streak_mode == "high" else "c"
+        window = bars[-(high_lookback + 1):]
+        if len(window) < high_lookback + 1:
+            return None
+        try:
+            vals = [float(b[key]) for b in window]
+        except (KeyError, TypeError, ValueError):
+            return None
+        streak_ok = all(vals[i] > vals[i - 1] for i in range(1, len(vals)))
+        eval_streak_val = vals[-1]
+        streak_start_val = vals[0]
+    if apply_high and not streak_ok:
+        return None
+
+    rsi_val = row.get("rsi14")
+    if rsi_val is None:
+        return None
+    if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
+        return None
+
+    rsi_sma_val = row.get("rsi_sma9")
+    if rsi_sma_val is None or rsi_sma_val == 0:
+        return None
+    rsi_dev_pct = (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+    if apply_rsi_dev and not (rsi_dev_min_pct <= rsi_dev_pct <= rsi_dev_max_pct):
+        return None
+
+    ema_val = row.get("ema21")
+    if ema_val is None or ema_val == 0:
+        return None
+    price_ema21_dev_pct = (close - ema_val) / ema_val * 100.0
+    if apply_price_dev and not (price_dev_min_pct <= price_ema21_dev_pct <= price_dev_max_pct):
+        return None
+
+    ema_long_val = row.get("ema50")
+    if ema_long_val is None or ema_long_val == 0:
+        return None
+    ema21_ema50_dev_pct = (ema_val - ema_long_val) / ema_long_val * 100.0
+    if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
+        return None
+
+    macd_hist_val = row.get("macd_hist")
+    macd_hist_prev = row.get("macd_hist_prev")
+    macd_val = row.get("macd")
+    macd_signal_val = row.get("macd_signal")
+    if macd_hist_val is None or macd_hist_prev is None:
+        return None
+    if apply_macd:
+        if macd_hist_val < macd_hist_min:
+            return None
+        if macd_require_rising and not (macd_hist_val > macd_hist_prev):
+            return None
+
+    # Relative volume — recompute against the user-specified lookback (the
+    # `avg_volume` column in the snapshot is fixed to 10d; we need the
+    # last `rvol_lookback` bars *before* the as_of bar).
+    prior_window = bars[-(rvol_lookback + 1):-1]
+    if len(prior_window) < rvol_lookback:
+        return None
+    prior_vols = [b.get("v") for b in prior_window if b.get("v") is not None]
+    if not prior_vols:
+        return None
+    avg_volume = sum(prior_vols) / len(prior_vols)
+    if not avg_volume:
+        return None
+    rel_vol = volume / avg_volume
+    if apply_rvol and rel_vol <= rvol_min:
+        return None
+    if apply_avg_volume and avg_volume < avg_volume_min:
+        return None
+
+    shares_val = row.get("shares")
+    try:
+        shares_val = float(shares_val) if shares_val else None
+    except (TypeError, ValueError):
+        shares_val = None
+    turnover_pct = None
+    if shares_val and shares_val > 0:
+        turnover_pct = volume / shares_val * 100.0
+    if apply_turnover:
+        if turnover_pct is None:
+            return None
+        if not (turnover_min_pct <= turnover_pct <= turnover_max_pct):
+            return None
+    market_cap = (shares_val * close) if shares_val else None
+
+    pct_change = (close - prior_close) / prior_close * 100.0 if prior_close else 0.0
+    exchange = "TSX" if ticker.endswith(".TO") else "US"
+    breakout = (eval_streak_val - streak_start_val) / streak_start_val if streak_start_val else 0.0
+    score = max(rel_vol, 0.01) * (1 + max(0.0, breakout))
+
+    membership = lists_for(ticker)
+    return ScreenHit(
+        ticker=display_symbol(ticker),
+        name=_company_name(ticker),
+        exchange=exchange,
+        lists=membership,
+        list_labels=list_labels(membership),
+        as_of_date=as_of_date,
+        close=round(close, 4),
+        prev_close=round(prior_close, 4),
+        pct_change=round(pct_change, 2),
+        high_lookback=round(eval_streak_val, 4),
+        rsi=round(float(rsi_val), 2),
+        rsi_sma9=round(float(rsi_sma_val), 2),
+        rsi_dev_pct=round(rsi_dev_pct, 2),
+        ema21=round(ema_val, 4),
+        price_ema21_dev_pct=round(price_ema21_dev_pct, 2),
+        ema50=round(ema_long_val, 4),
+        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2),
+        macd=round(float(macd_val), 4) if macd_val is not None else 0.0,
+        macd_signal=round(float(macd_signal_val), 4) if macd_signal_val is not None else 0.0,
+        macd_hist=round(float(macd_hist_val), 4),
+        macd_hist_prev=round(float(macd_hist_prev), 4),
+        rel_volume=round(rel_vol, 2),
+        avg_volume=round(avg_volume, 0),
+        volume=round(volume, 0),
+        shares=round(shares_val, 0) if shares_val else None,
+        market_cap=round(market_cap, 0) if market_cap else None,
+        turnover_pct=round(turnover_pct, 4) if turnover_pct is not None else None,
+        score=round(score, 4),
+    )
+
+
 def run_screen(
     high_lookback: int = 2,
     streak_mode: str = "high",
@@ -773,6 +1192,60 @@ def run_screen(
             if t and t not in seen:
                 seen.add(t)
                 tickers.append(t)
+
+    # --- snapshot-fast path -----------------------------------------------
+    # If Postgres is configured and the chosen as_of_date has a snapshot,
+    # serve the whole screen from one bulk SELECT instead of 8k disk reads.
+    if snapshots.enabled():
+        target_date = _resolve_as_of_date(as_of_offset)
+        if target_date and snapshots.has_date(target_date):
+            db_rows = snapshots.load_for_date(target_date, tickers)
+            if db_rows:
+                snap_hits: list[ScreenHit] = []
+                for t in tickers:
+                    row = db_rows.get(t)
+                    if row is None:
+                        continue
+                    try:
+                        hit = _evaluate_from_snapshot(
+                            t, target_date, row,
+                            high_lookback=high_lookback,
+                            streak_mode=streak_mode,
+                            rsi_min=rsi_min, rsi_max=rsi_max,
+                            rsi_dev_min_pct=rsi_dev_min_pct,
+                            rsi_dev_max_pct=rsi_dev_max_pct,
+                            rvol_lookback=rvol_lookback,
+                            rvol_min=rvol_min,
+                            avg_volume_min=avg_volume_min,
+                            price_min=price_min, price_max=price_max,
+                            price_dev_min_pct=price_dev_min_pct,
+                            price_dev_max_pct=price_dev_max_pct,
+                            ema_dev_min_pct=ema_dev_min_pct,
+                            ema_dev_max_pct=ema_dev_max_pct,
+                            macd_hist_min=macd_hist_min,
+                            macd_require_rising=macd_require_rising,
+                            turnover_min_pct=turnover_min_pct,
+                            turnover_max_pct=turnover_max_pct,
+                            apply_high=apply_high, apply_rsi=apply_rsi,
+                            apply_rsi_dev=apply_rsi_dev,
+                            apply_rvol=apply_rvol,
+                            apply_avg_volume=apply_avg_volume,
+                            apply_price=apply_price,
+                            apply_price_dev=apply_price_dev,
+                            apply_ema_dev=apply_ema_dev,
+                            apply_macd=apply_macd,
+                            apply_turnover=apply_turnover,
+                        )
+                    except Exception as exc:
+                        log.warning("snapshot evaluate failed for %s: %s", t, exc)
+                        continue
+                    if hit is not None:
+                        snap_hits.append(hit)
+                snap_hits.sort(key=lambda h: h.score, reverse=True)
+                log.info("screen served from snapshot: %d matches for %s",
+                         len(snap_hits), target_date)
+                return snap_hits
+
     hits: list[ScreenHit] = []
 
     def _eval(t: str) -> ScreenHit | None:

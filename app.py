@@ -20,6 +20,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file
 
 import screener
+import snapshots
 from tickers import LIST_LABELS, refresh_universe, last_fetch_errors
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -275,10 +276,17 @@ def api_lists():
 
 @app.route("/api/dates")
 def api_dates():
-    """Last N US trading-day dates (anchored on SPY) for the date picker."""
+    """Last N US trading-day dates (anchored on SPY) for the date picker.
+    Each entry is tagged `in_snapshot` so the UI can show which dates the
+    screener can serve from Postgres (fast) vs which will fall back to
+    the live pickle path (slower, may refetch from Yahoo)."""
     n = _int("n", screener.MAX_AS_OF_OFFSET + 1)
     n = max(1, min(n, screener.MAX_AS_OF_OFFSET + 1))
-    return jsonify({"dates": screener.reference_dates(n=n)})
+    dates = screener.reference_dates(n=n)
+    snap_dates = set(snapshots.available_dates(50)) if snapshots.enabled() else set()
+    for d in dates:
+        d["in_snapshot"] = d["date"] in snap_dates
+    return jsonify({"dates": dates, "snapshot_enabled": snapshots.enabled()})
 
 
 @app.route("/api/admin/warm-cache", methods=["POST"])
@@ -303,6 +311,28 @@ def api_warm_status():
     return jsonify({
         **screener.warm_status(),
         "auto": screener.auto_warm_status(),
+    })
+
+
+@app.route("/api/admin/snapshot", methods=["POST"])
+def api_take_snapshot():
+    """Manually trigger a Postgres snapshot of the current pickle cache.
+    Runs synchronously — typical full-universe pass is ~30-60s on a warm
+    cache. No-ops with enabled=false when DATABASE_URL isn't set."""
+    if not snapshots.enabled():
+        return jsonify({"enabled": False,
+                        "error": "DATABASE_URL not set"}), 400
+    result = screener.take_snapshot()
+    return jsonify(result)
+
+
+@app.route("/api/admin/snapshot/status")
+def api_snapshot_status():
+    return jsonify({
+        "enabled": snapshots.enabled(),
+        "available_dates": snapshots.available_dates(10),
+        "retention_days": snapshots.RETENTION_DAYS,
+        **screener.snapshot_status(),
     })
 
 
@@ -452,9 +482,10 @@ def api_export_xlsx():
     )
 
 
-# Kick off the daily auto-warm scheduler. Runs in a daemon thread, no-ops
-# if DISABLE_AUTO_WARM is set. Safe to call at module load — gunicorn
-# imports app:app exactly once per worker (we run 1 worker).
+# Provision the Postgres snapshot table (no-ops when DATABASE_URL is unset),
+# then kick off the daily auto-warm scheduler. The auto-warm thread will
+# write a snapshot row per ticker when each warm completes.
+snapshots.init()
 screener.start_auto_warm()
 
 
