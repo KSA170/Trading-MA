@@ -68,6 +68,9 @@ class ScreenHit:
     rel_volume: float
     avg_volume: float
     volume: float
+    shares: float | None
+    market_cap: float | None
+    turnover_pct: float | None
     score: float
 
     def to_dict(self) -> dict:
@@ -167,6 +170,29 @@ def _remember(ticker: str, ts: float, df: pd.DataFrame) -> None:
                 _PRICE_CACHE.pop(old_key, None)
 
 
+def _fetch_shares(ticker: str) -> float | None:
+    """Best-effort fetch of shares outstanding via yfinance.fast_info.
+    Returns None on any failure (missing data, network error, private
+    company, etc). One Yahoo call per ticker — cheap, but only worth
+    doing when the value isn't already cached in df.attrs."""
+    try:
+        fi = yf.Ticker(ticker).fast_info
+    except Exception:
+        return None
+    for key in ("shares", "shares_outstanding", "sharesOutstanding"):
+        try:
+            val = fi[key] if hasattr(fi, "__getitem__") else getattr(fi, key, None)
+        except Exception:
+            val = None
+        try:
+            f = float(val) if val is not None else None
+        except (TypeError, ValueError):
+            f = None
+        if f and f > 0 and np.isfinite(f):
+            return f
+    return None
+
+
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     """Precompute every indicator the screener filters on — EMA(21), EMA(50),
     RSI(14) + its 9d SMA, and MACD(12, 26, 9) — and store each as a
@@ -185,21 +211,41 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
+def _cached_history(ticker: str, period: str = "6mo", need_shares: bool = False) -> pd.DataFrame | None:
     now = time.time()
     # 1. In-memory hot cache.
     cached = _PRICE_CACHE.get(ticker)
     if cached and now - cached[0] < _PRICE_TTL_SEC:
-        return cached[1]
+        df = cached[1]
+        if need_shares and df.attrs.get("shares") is None:
+            shares = _fetch_shares(ticker)
+            if shares:
+                df.attrs["shares"] = shares
+                pf = _price_file(ticker)
+                try:
+                    df.to_pickle(pf)
+                except Exception:
+                    pass
+        return df
     # 2. Disk cache — the once-per-day store.
     pf = _price_file(ticker)
     try:
         if pf.exists() and (now - pf.stat().st_mtime) < _PRICE_FILE_TTL_SEC:
             df = pd.read_pickle(pf)
+            rewrite = False
             # Old cache files (pre-enrichment) lack the indicator columns.
             # Enrich in place and rewrite so we don't have to refetch.
             if "rsi14" not in df.columns:
                 df = _enrich(df)
+                rewrite = True
+            # Shares attr was added later; backfill once on demand so the
+            # turnover filter has data without waiting for the next warm.
+            if need_shares and df.attrs.get("shares") is None:
+                shares = _fetch_shares(ticker)
+                if shares:
+                    df.attrs["shares"] = shares
+                    rewrite = True
+            if rewrite:
                 try:
                     df.to_pickle(pf)
                 except Exception:
@@ -210,7 +256,8 @@ def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
         log.warning("price cache read failed for %s: %s", ticker, exc)
     # 3. Fresh fetch.
     try:
-        df = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
+        yt = yf.Ticker(ticker)
+        df = yt.history(period=period, interval="1d", auto_adjust=False)
     except Exception as exc:
         log.warning("history fetch failed for %s: %s", ticker, exc)
         return None
@@ -220,6 +267,15 @@ def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
     keep = [c for c in _KEEP_COLS if c in df.columns]
     df = df[keep].astype("float32")
     df = _enrich(df)
+    # Fetch shares once per fresh fetch so the turnover filter has data
+    # without an extra screen-time call. fast_info is a cheap Yahoo quote
+    # call (~50ms); we tolerate failures (returns None).
+    try:
+        shares = _fetch_shares(ticker)
+        if shares:
+            df.attrs["shares"] = shares
+    except Exception:
+        pass
     try:
         _PRICE_DIR.mkdir(parents=True, exist_ok=True)
         df.to_pickle(pf)
@@ -443,6 +499,8 @@ def evaluate_ticker(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
+    turnover_min_pct: float = 0.0,
+    turnover_max_pct: float = 100.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
@@ -452,6 +510,7 @@ def evaluate_ticker(
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
+    apply_turnover: bool = False,
     as_of_offset: int = 0,
 ) -> ScreenHit | None:
     if as_of_offset < 0:
@@ -459,7 +518,7 @@ def evaluate_ticker(
     if as_of_offset > MAX_AS_OF_OFFSET:
         as_of_offset = MAX_AS_OF_OFFSET
 
-    df = _cached_history(ticker, period="6mo")
+    df = _cached_history(ticker, period="6mo", need_shares=apply_turnover)
     needed = max(
         high_lookback + 2, rsi_period + 5, rvol_lookback + 2,
         ema_period + 2, ema_long_period + 2,
@@ -608,6 +667,24 @@ def evaluate_ticker(
     if apply_avg_volume and avg_volume < avg_volume_min:
         return None
 
+    # Turnover %: daily volume / shares outstanding. Algebraically this is
+    # equal to (volume * price) / (shares * price) = dollar volume / market
+    # cap, so the price drops out — we only need shares outstanding.
+    shares_val = df.attrs.get("shares")
+    try:
+        shares_val = float(shares_val) if shares_val else None
+    except (TypeError, ValueError):
+        shares_val = None
+    turnover_pct = None
+    if shares_val and shares_val > 0:
+        turnover_pct = volume / shares_val * 100.0
+    if apply_turnover:
+        if turnover_pct is None:
+            return None
+        if not (turnover_min_pct <= turnover_pct <= turnover_max_pct):
+            return None
+    market_cap = (shares_val * prev_close) if shares_val else None
+
     pct_change = (prev_close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
     breakout = (eval_streak_val - streak_start_val) / streak_start_val if streak_start_val else 0.0
@@ -639,6 +716,9 @@ def evaluate_ticker(
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
+        shares=round(shares_val, 0) if shares_val else None,
+        market_cap=round(market_cap, 0) if market_cap else None,
+        turnover_pct=round(turnover_pct, 4) if turnover_pct is not None else None,
         score=round(score, 4),
     )
 
@@ -661,6 +741,8 @@ def run_screen(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
+    turnover_min_pct: float = 0.0,
+    turnover_max_pct: float = 100.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
@@ -670,6 +752,7 @@ def run_screen(
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
+    apply_turnover: bool = False,
     as_of_offset: int = 0,
     lists: list[str] | None = None,
     extras: list[str] | None = None,
@@ -713,6 +796,8 @@ def run_screen(
                 ema_dev_max_pct=ema_dev_max_pct,
                 macd_hist_min=macd_hist_min,
                 macd_require_rising=macd_require_rising,
+                turnover_min_pct=turnover_min_pct,
+                turnover_max_pct=turnover_max_pct,
                 apply_high=apply_high,
                 apply_rsi=apply_rsi,
                 apply_rsi_dev=apply_rsi_dev,
@@ -722,6 +807,7 @@ def run_screen(
                 apply_price_dev=apply_price_dev,
                 apply_ema_dev=apply_ema_dev,
                 apply_macd=apply_macd,
+                apply_turnover=apply_turnover,
                 as_of_offset=as_of_offset,
             )
         except Exception as exc:
@@ -839,6 +925,8 @@ def diagnose_ticker(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
+    turnover_min_pct: float = 0.0,
+    turnover_max_pct: float = 100.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
@@ -848,6 +936,7 @@ def diagnose_ticker(
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
+    apply_turnover: bool = False,
     as_of_offset: int = 0,
 ) -> dict:
     """Run each filter independently and return a per-filter pass/fail
@@ -867,7 +956,7 @@ def diagnose_ticker(
         "error": None,
     }
 
-    df = _cached_history(ticker, period="6mo")
+    df = _cached_history(ticker, period="6mo", need_shares=True)
     if df is None or df.empty:
         out["error"] = "yfinance returned no data for this ticker"
         return out
@@ -1055,6 +1144,22 @@ def diagnose_ticker(
     add("avg_volume", f"Avg volume ({rvol_lookback}d) ≥ {avg_volume_min:,}",
         round(avg_vol, 0) if avg_vol is not None else None,
         apply_avg_volume, avg_vol_ok, [avg_volume_min, None])
+
+    # 10. Turnover % = volume / shares outstanding × 100 (= $vol / market cap)
+    shares_val = df.attrs.get("shares")
+    try:
+        shares_val = float(shares_val) if shares_val else None
+    except (TypeError, ValueError):
+        shares_val = None
+    turnover_pct = (volume / shares_val * 100.0) if (shares_val and shares_val > 0) else None
+    market_cap = (shares_val * prev_close) if shares_val else None
+    turnover_ok = turnover_pct is not None and turnover_min_pct <= turnover_pct <= turnover_max_pct
+    add("turnover",
+        f"Volume / market cap ∈ [{turnover_min_pct}%, {turnover_max_pct}%]",
+        round(turnover_pct, 4) if turnover_pct is not None else None,
+        apply_turnover, turnover_ok, [turnover_min_pct, turnover_max_pct],
+        {"shares": round(shares_val, 0) if shares_val else None,
+         "market_cap": round(market_cap, 0) if market_cap else None})
 
     out["all_pass"] = all(c["pass"] for c in out["checks"])
     return out

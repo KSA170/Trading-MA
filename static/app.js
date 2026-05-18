@@ -56,6 +56,8 @@ const inputs = {
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
   macd_hist_min: $('#macd_hist_min'),
+  turnover_min_pct: $('#turnover_min_pct'),
+  turnover_max_pct: $('#turnover_max_pct'),
 };
 
 const refreshUniverseBtn = $('#refresh-universe-btn');
@@ -71,6 +73,7 @@ const toggles = {
   apply_ema_dev: $('#apply_ema_dev'),
   apply_macd: $('#apply_macd'),
   macd_require_rising: $('#macd_require_rising'),
+  apply_turnover: $('#apply_turnover'),
 };
 
 const listAllCb = $('#list_all');
@@ -189,6 +192,7 @@ function syncDisabledStates() {
     apply_price_dev: 'price_dev',
     apply_ema_dev: 'ema_dev',
     apply_macd: 'macd',
+    apply_turnover: 'turnover',
   };
   for (const [toggleId, groupKey] of Object.entries(map)) {
     const t = toggles[toggleId];
@@ -241,7 +245,7 @@ async function runScreen() {
   _screenAbort = new AbortController();
   setRunButtonState(true);
   setStatus('running…');
-  els.body.innerHTML = '<tr class="empty"><td colspan="17">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
+  els.body.innerHTML = '<tr class="empty"><td colspan="18">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
   els.matchCount.textContent = '';
   if (els.asOfLabel) els.asOfLabel.textContent = '';
   updateHighHeader();
@@ -262,11 +266,11 @@ async function runScreen() {
   } catch (err) {
     if (err && err.name === 'AbortError') {
       setStatus('stopped');
-      els.body.innerHTML = '<tr class="empty"><td colspan="17">Stopped.</td></tr>';
+      els.body.innerHTML = '<tr class="empty"><td colspan="18">Stopped.</td></tr>';
     } else {
       console.error(err);
       setStatus('error');
-      els.body.innerHTML = `<tr class="empty"><td colspan="17">Error: ${err.message}</td></tr>`;
+      els.body.innerHTML = `<tr class="empty"><td colspan="18">Error: ${err.message}</td></tr>`;
     }
   } finally {
     _screenAbort = null;
@@ -317,7 +321,7 @@ function sortedResults() {
 function renderResults(results) {
   els.matchCount.textContent = `(${results.length})`;
   if (!results.length) {
-    els.body.innerHTML = '<tr class="empty"><td colspan="17">No matches with these filters.</td></tr>';
+    els.body.innerHTML = '<tr class="empty"><td colspan="18">No matches with these filters.</td></tr>';
     return;
   }
   els.body.innerHTML = '';
@@ -350,6 +354,7 @@ function renderResults(results) {
       <td class="num ${macdHistClass}">${fmtNum(r.macd_hist, 4)}</td>
       <td class="num">${fmtNum(r.rel_volume)}×</td>
       <td class="num">${fmtVol(r.volume)}</td>
+      <td class="num" title="${r.market_cap ? 'mkt cap ' + fmtVol(r.market_cap) : 'shares outstanding unknown'}">${r.turnover_pct == null ? '—' : fmtNum(r.turnover_pct, 2) + '%'}</td>
     `;
     els.body.appendChild(tr);
   }
@@ -937,8 +942,9 @@ const HISTORY_PARAM_KEYS = [
   'ema_dev_min_pct', 'ema_dev_max_pct',
   'macd_hist_min', 'macd_require_rising',
   'rvol_lookback', 'rvol_min', 'avg_volume_min',
+  'turnover_min_pct', 'turnover_max_pct',
   'apply_high', 'apply_rsi', 'apply_rsi_dev', 'apply_rvol', 'apply_avg_volume',
-  'apply_price', 'apply_price_dev', 'apply_ema_dev', 'apply_macd',
+  'apply_price', 'apply_price_dev', 'apply_ema_dev', 'apply_macd', 'apply_turnover',
   'as_of_offset',
 ];
 
