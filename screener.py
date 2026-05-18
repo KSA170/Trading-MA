@@ -301,6 +301,11 @@ _warm_state: dict = {
     "finished_at": None,
 }
 _warm_lock = threading.Lock()
+# Separate ref so cancel can clear the UI-facing "running" flag without
+# losing track of a zombie thread still draining (e.g. wedged in a
+# network call inside all_tickers()). warm_cache refuses to start a new
+# job while this thread is alive.
+_warm_thread: threading.Thread | None = None
 
 
 def warm_status() -> dict:
@@ -309,18 +314,32 @@ def warm_status() -> dict:
 
 
 def cancel_warm_cache() -> bool:
-    """Ask the running warm thread to stop after the in-flight fetch.
-    Returns True if a warm was running, False otherwise."""
+    """Ask the running warm thread to stop and immediately mark the job
+    as finished from the UI's perspective. The background thread keeps
+    draining (each per-ticker worker noops once it sees `cancelled`),
+    but the UI doesn't have to wait for it to wake up from whatever
+    blocking call it's currently in."""
+    global _warm_thread
+    alive = _warm_thread is not None and _warm_thread.is_alive()
     with _warm_lock:
-        if not _warm_state["running"]:
+        was_running = _warm_state["running"]
+        if not was_running and not alive:
             return False
         _warm_state["cancelled"] = True
+        _warm_state["running"] = False
+        _warm_state["finished_at"] = time.time()
         return True
 
 
 def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
     """Start a background fetch of `tickers` (or the full universe) into the
     disk price cache. Returns False if a warm job is already running."""
+    global _warm_thread
+    # The previous job's thread may still be draining post-cancel — refuse
+    # to start a second concurrent warm in that case (both would fight for
+    # the same per-ticker pickle files).
+    if _warm_thread is not None and _warm_thread.is_alive():
+        return False
     with _warm_lock:
         if _warm_state["running"]:
             return False
@@ -372,7 +391,8 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
                     target=take_snapshot, daemon=True, name="post-warm-snapshot",
                 ).start()
 
-    threading.Thread(target=_run, daemon=True, name="warm-cache").start()
+    _warm_thread = threading.Thread(target=_run, daemon=True, name="warm-cache")
+    _warm_thread.start()
     return True
 
 

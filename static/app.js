@@ -4,6 +4,7 @@ const els = {
   runBtn: $('#run-btn'),
   warmBtn: $('#warm-btn'),
   cacheStatus: $('#cache-status'),
+  snapshotStatus: $('#snapshot-status'),
   status: $('#status-text'),
   matchCount: $('#match-count'),
   asOfLabel: $('#as-of-label'),
@@ -133,6 +134,44 @@ async function refreshCacheStatus() {
 function scheduleCacheStatus(delayMs = 350) {
   if (_cacheStatusTimer) clearTimeout(_cacheStatusTimer);
   _cacheStatusTimer = setTimeout(refreshCacheStatus, delayMs);
+}
+
+async function refreshSnapshotStatus() {
+  if (!els.snapshotStatus) return;
+  try {
+    const res = await fetch('/api/admin/snapshot/status');
+    if (!res.ok) return;
+    const s = await res.json();
+    if (!s.enabled) {
+      els.snapshotStatus.textContent = 'snapshot: off';
+      els.snapshotStatus.classList.add('cold');
+      els.snapshotStatus.classList.remove('warn');
+      els.snapshotStatus.title = 'DATABASE_URL is not set. Screens fall back to the pickle cache.';
+      return;
+    }
+    const dates = s.available_dates || [];
+    if (s.running) {
+      const pct = s.total ? Math.round((100 * s.done) / s.total) : 0;
+      els.snapshotStatus.textContent = `snapshot: writing ${s.done}/${s.total} (${pct}%)`;
+      els.snapshotStatus.classList.remove('cold');
+      els.snapshotStatus.classList.add('warn');
+      els.snapshotStatus.title = 'Snapshot write in progress…';
+      setTimeout(refreshSnapshotStatus, 4000);
+      return;
+    }
+    if (!dates.length) {
+      els.snapshotStatus.textContent = 'snapshot: empty';
+      els.snapshotStatus.classList.remove('warn');
+      els.snapshotStatus.classList.add('cold');
+      els.snapshotStatus.title = 'No snapshot rows yet. Run "Warm cache" — the snapshot writes automatically when warming finishes. Or POST /api/admin/snapshot to trigger it manually.';
+      return;
+    }
+    const latest = dates[0];
+    const wrote = s.last_written != null ? `, ${s.last_written.toLocaleString()} rows` : '';
+    els.snapshotStatus.textContent = `snapshot: ${latest}${wrote}`;
+    els.snapshotStatus.classList.remove('cold', 'warn');
+    els.snapshotStatus.title = `Snapshot dates available: ${dates.join(', ')}. Retention: ${s.retention_days} days.`;
+  } catch (_) { /* silent */ }
 }
 
 function buildQuery() {
@@ -638,6 +677,11 @@ async function pollWarmStatus() {
     } else {
       setWarmButtonState(false);
       scheduleCacheStatus(100);  // cache just got warm — refresh indicator
+      // The post-warm snapshot fires ~immediately and takes ~30s on a warm
+      // universe; poll a couple of times so the indicator updates.
+      refreshSnapshotStatus();
+      setTimeout(refreshSnapshotStatus, 10000);
+      setTimeout(refreshSnapshotStatus, 45000);
       if (s.total) {
         const dur = s.finished_at && s.started_at
           ? Math.round(s.finished_at - s.started_at) + 's'
@@ -1108,6 +1152,7 @@ listCheckboxes.forEach((cb) => cb.addEventListener('change', () => {
 if (listAllCb) listAllCb.addEventListener('change', () => scheduleCacheStatus());
 // Initial cache snapshot.
 scheduleCacheStatus(50);
+refreshSnapshotStatus();
 updateListAllState();
 
 if (refreshUniverseBtn) refreshUniverseBtn.addEventListener('click', refreshUniverse);
