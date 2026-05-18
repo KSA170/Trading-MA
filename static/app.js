@@ -26,6 +26,8 @@ const els = {
   diagnoseToggle: $('#diagnose-toggle'),
   filtersSection: $('#filters-section'),
   filtersToggle: $('#filters-toggle'),
+  historyBody: $('#history-body'),
+  historyToggle: $('#history-toggle'),
   hoverChart: $('#hover-chart'),
   hoverChartTitle: $('#hover-chart-title'),
   hoverChartStatus: $('#hover-chart-status'),
@@ -54,7 +56,6 @@ const inputs = {
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
   macd_hist_min: $('#macd_hist_min'),
-  extras: $('#extras'),
 };
 
 const refreshUniverseBtn = $('#refresh-universe-btn');
@@ -105,9 +106,6 @@ async function refreshCacheStatus() {
   const qs = new URLSearchParams();
   if (sel.length && listCheckboxes.length && sel.length < listCheckboxes.length) {
     qs.set('lists', sel.join(','));
-  }
-  if (inputs.extras && inputs.extras.value.trim()) {
-    qs.set('extras', inputs.extras.value.trim());
   }
   try {
     const res = await fetch('/api/admin/cache-status?' + qs.toString());
@@ -259,6 +257,8 @@ async function runScreen() {
     }
     setStatus(data.cached ? 'cached' : `done in ${data.elapsed_sec || '?'}s`);
     if (asOfSelect && asOfSelect.options.length <= 1) loadDates();
+    // Record this run for the match-history panel (no-op when 0 hits).
+    if (data.params) recordHistory(data, data.params);
   } catch (err) {
     if (err && err.name === 'AbortError') {
       setStatus('stopped');
@@ -910,6 +910,8 @@ if (els.diagnoseTicker) {
 // Collapse / expand the filter and diagnose sections, persisted in
 // localStorage so the user's preference survives reloads.
 wireCollapse(els.filtersToggle, els.filtersSection, 'collapse_filters');
+wireCollapse(els.historyToggle, els.historyBody, 'collapse_history');
+renderHistory();
 wireCollapse(
   els.diagnoseToggle,
   [els.diagnoseBody, els.diagnoseOutput],
@@ -917,6 +919,161 @@ wireCollapse(
 );
 
 updateSelectionUI();
+
+// --- match history (last 5 successful runs) -------------------------------
+// Persisted in localStorage so it survives reloads. Each entry stores the
+// full filter params + the result rows so "Restore" can put a past run
+// back into the table without re-running the screen.
+
+const HISTORY_KEY = 'match_history_v1';
+const HISTORY_MAX = 5;
+
+// Subset of the params dict that's actually filter-relevant (everything
+// except the lists tuple, which we render separately for readability).
+const HISTORY_PARAM_KEYS = [
+  'high_lookback', 'streak_mode',
+  'rsi_min', 'rsi_max', 'rsi_dev_min_pct', 'rsi_dev_max_pct',
+  'price_min', 'price_max', 'price_dev_min_pct', 'price_dev_max_pct',
+  'ema_dev_min_pct', 'ema_dev_max_pct',
+  'macd_hist_min', 'macd_require_rising',
+  'rvol_lookback', 'rvol_min', 'avg_volume_min',
+  'apply_high', 'apply_rsi', 'apply_rsi_dev', 'apply_rvol', 'apply_avg_volume',
+  'apply_price', 'apply_price_dev', 'apply_ema_dev', 'apply_macd',
+  'as_of_offset',
+];
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveHistory(entries) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_MAX)));
+  } catch (err) {
+    // quotaExceeded most likely — drop the oldest entry and retry once.
+    if (entries.length > 1) {
+      try { localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, entries.length - 1))); } catch (_) {}
+    }
+  }
+}
+
+function recordHistory(data, params) {
+  const results = data.results || [];
+  if (!results.length) return;  // only successful runs with matches
+  const entry = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    ranAt: new Date().toISOString(),
+    asOfDate: data.as_of_date || null,
+    matchCount: results.length,
+    params: pickParams(params || {}),
+    results: results,
+  };
+  const existing = loadHistory();
+  existing.unshift(entry);
+  saveHistory(existing.slice(0, HISTORY_MAX));
+  renderHistory();
+}
+
+function pickParams(p) {
+  const out = {};
+  for (const k of HISTORY_PARAM_KEYS) {
+    if (p[k] !== undefined) out[k] = p[k];
+  }
+  if (Array.isArray(p.lists)) out.lists = p.lists.slice();
+  return out;
+}
+
+function fmtParamValue(k, v) {
+  if (Array.isArray(v)) return v.join(', ') || '(all)';
+  if (typeof v === 'boolean') return v ? 'on' : 'off';
+  if (typeof v === 'number') {
+    return Number.isInteger(v) ? String(v) : (v.toLocaleString(undefined, { maximumFractionDigits: 3 }));
+  }
+  return String(v);
+}
+
+function renderHistory() {
+  if (!els.historyBody) return;
+  const entries = loadHistory();
+  if (!entries.length) {
+    els.historyBody.innerHTML = '<p class="muted history-empty">No runs yet — successful screens will be saved here automatically.</p>';
+    return;
+  }
+  els.historyBody.innerHTML = '';
+  for (const e of entries) {
+    const div = document.createElement('div');
+    div.className = 'history-entry';
+    div.dataset.id = e.id;
+    const ts = new Date(e.ranAt);
+    const tsTxt = ts.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+    const asOf = e.asOfDate ? `<span class="muted">as of ${escapeHtml(e.asOfDate)}</span>` : '';
+    div.innerHTML = `
+      <div class="entry-meta">
+        <span class="entry-time">${escapeHtml(tsTxt)}</span>
+        ${asOf}
+        <span class="entry-count">${e.matchCount} match${e.matchCount === 1 ? '' : 'es'}</span>
+        <button class="entry-restore" type="button">Restore</button>
+        <button class="entry-toggle-filters" type="button">Show filters</button>
+        <button class="entry-delete" type="button" title="Delete this entry">×</button>
+      </div>
+      <div class="entry-filters hidden"></div>
+    `;
+    els.historyBody.appendChild(div);
+  }
+}
+
+function entryFromEvent(ev) {
+  const node = ev.target.closest('.history-entry');
+  if (!node) return null;
+  const id = node.dataset.id;
+  const all = loadHistory();
+  const idx = all.findIndex((e) => e.id === id);
+  return { node, id, idx, entry: all[idx], all };
+}
+
+if (els.historyBody) {
+  els.historyBody.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button');
+    if (!btn) return;
+    const ctx = entryFromEvent(ev);
+    if (!ctx || !ctx.entry) return;
+    if (btn.classList.contains('entry-restore')) {
+      lastResults = ctx.entry.results || [];
+      renderTable();
+      if (els.matchCount) els.matchCount.textContent = `(${lastResults.length})`;
+      if (els.asOfLabel) {
+        els.asOfLabel.textContent = ctx.entry.asOfDate ? `as of ${ctx.entry.asOfDate}` : '';
+      }
+      setStatus(`restored ${lastResults.length} matches from ${new Date(ctx.entry.ranAt).toLocaleString()}`);
+    } else if (btn.classList.contains('entry-toggle-filters')) {
+      const panel = ctx.node.querySelector('.entry-filters');
+      if (!panel) return;
+      const hidden = panel.classList.toggle('hidden');
+      btn.textContent = hidden ? 'Show filters' : 'Hide filters';
+      if (!hidden && !panel.dataset.filled) {
+        const p = ctx.entry.params || {};
+        const rows = HISTORY_PARAM_KEYS
+          .filter((k) => k in p)
+          .map((k) => `<div><span class="k">${escapeHtml(k)}</span>: ${escapeHtml(fmtParamValue(k, p[k]))}</div>`);
+        if (p.lists) rows.unshift(`<div><span class="k">lists</span>: ${escapeHtml(fmtParamValue('lists', p.lists))}</div>`);
+        panel.innerHTML = rows.join('');
+        panel.dataset.filled = '1';
+      }
+    } else if (btn.classList.contains('entry-delete')) {
+      ctx.all.splice(ctx.idx, 1);
+      saveHistory(ctx.all);
+      renderHistory();
+    }
+  });
+}
+
 
 // --- bootstrap -------------------------------------------------------------
 
@@ -935,7 +1092,6 @@ listCheckboxes.forEach((cb) => cb.addEventListener('change', () => {
   updateListAllState();
   scheduleCacheStatus();
 }));
-if (inputs.extras) inputs.extras.addEventListener('input', () => scheduleCacheStatus(700));
 if (listAllCb) listAllCb.addEventListener('change', () => scheduleCacheStatus());
 // Initial cache snapshot.
 scheduleCacheStatus(50);

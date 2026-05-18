@@ -484,6 +484,70 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 .pos { color: var(--green); }
 .neg { color: var(--red); }
 
+.match-history {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+  margin-top: 16px;
+  overflow: hidden;
+}
+.match-history .section-toggle {
+  width: 100%;
+  border-bottom: 1px solid var(--border);
+}
+.history-body {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.history-body.collapsed-section { display: none; }
+.history-empty { font-size: 12px; margin: 6px 0; }
+
+.history-entry {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  padding: 8px 10px;
+}
+.history-entry .entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.history-entry .entry-time { font-weight: 600; }
+.history-entry .entry-count { color: var(--accent); font-variant-numeric: tabular-nums; }
+.history-entry .entry-meta button {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+.history-entry .entry-delete {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 6px;
+}
+.history-entry .entry-delete:hover { color: var(--red); }
+.history-entry .entry-filters {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 4px 12px;
+}
+.history-entry .entry-filters.hidden { display: none; }
+.history-entry .entry-filters .k { color: var(--text); }
+
 .chip {
   display: inline-block;
   padding: 1px 6px;

@@ -38,14 +38,6 @@
     </div>
 
     <div class="filter-group scope">
-      <label class="group-label">Always include</label>
-      <div class="filter">
-        <label>tickers (comma-separated)</label>
-        <input id="extras" type="text" placeholder="e.g. NRGV, ABCD.TO" autocomplete="off" />
-      </div>
-    </div>
-
-    <div class="filter-group scope">
       <label class="group-label">As-of close</label>
       <div class="filter">
         <select id="as_of_offset">
@@ -222,6 +214,15 @@
             <tr class="empty"><td colspan="17">Click "Run screen" to start.</td></tr>
           </tbody>
         </table>
+      </div>
+    </section>
+
+    <section class="match-history">
+      <button id="history-toggle" type="button" class="section-toggle" aria-controls="history-body" aria-expanded="true">
+        <span class="chevron">▾</span> Match history <span class="muted">(last 5 runs)</span>
+      </button>
+      <div id="history-body" class="history-body">
+        <p class="muted history-empty">No runs yet — successful screens will be saved here automatically.</p>
       </div>
     </section>
   </main>

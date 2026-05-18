@@ -67,7 +67,6 @@ DEFAULT_PARAMS: dict = {
     "apply_macd": True,
     "as_of_offset": 0,
     "lists": tuple(sorted(_VALID_LISTS)),
-    "extras": (),
 }
 
 
@@ -84,9 +83,8 @@ def _cache_key(params: dict) -> tuple:
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
     macd = (round(float(params["macd_hist_min"]), 4), bool(params["macd_require_rising"])) if params["apply_macd"] else ("off",)
     lists = tuple(sorted(params["lists"]))
-    extras = tuple(sorted(params.get("extras") or ()))
     as_of = int(params["as_of_offset"])
-    return ("v9", as_of, price, price_dev, ema_dev, macd, high, rsi, rsi_dev, rvol, avg_vol, lists, extras)
+    return ("v10", as_of, price, price_dev, ema_dev, macd, high, rsi, rsi_dev, rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -128,15 +126,6 @@ def _parse_params() -> dict:
         wanted = sorted(_VALID_LISTS)
     if not wanted:
         wanted = sorted(_VALID_LISTS)
-    raw_extras = request.args.get("extras", "")
-    extras: list[str] = []
-    if raw_extras.strip():
-        seen: set[str] = set()
-        for s in raw_extras.split(","):
-            t = s.strip().upper()
-            if t and t not in seen:
-                seen.add(t)
-                extras.append(t)
     as_of_offset = _int("as_of_offset", 0)
     if as_of_offset < 0:
         as_of_offset = 0
@@ -173,7 +162,6 @@ def _parse_params() -> dict:
         "apply_macd": _parse_bool("apply_macd", True),
         "as_of_offset": as_of_offset,
         "lists": tuple(wanted),
-        "extras": tuple(extras),
     }
 
 
@@ -240,7 +228,6 @@ def _api_screen_impl():
         apply_macd=params["apply_macd"],
         as_of_offset=params["as_of_offset"],
         lists=list(params["lists"]),
-        extras=list(params["extras"]),
     )
     payload = [h.to_dict() for h in hits]
     elapsed = time.time() - started

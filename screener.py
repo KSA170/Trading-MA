@@ -167,6 +167,24 @@ def _remember(ticker: str, ts: float, df: pd.DataFrame) -> None:
                 _PRICE_CACHE.pop(old_key, None)
 
 
+def _enrich(df: pd.DataFrame) -> pd.DataFrame:
+    """Precompute every indicator the screener filters on — EMA(21), EMA(50),
+    RSI(14) + its 9d SMA, and MACD(12, 26, 9) — and store each as a
+    float32 column. Moves all the expensive pandas ewm/rolling work to
+    cache-build time so a screen run becomes a slice + filter pass."""
+    closes = df["Close"]
+    df["ema21"] = ema(closes, 21).astype("float32")
+    df["ema50"] = ema(closes, 50).astype("float32")
+    df["rsi14"] = rsi_wilder(closes, 14).astype("float32")
+    df["rsi_sma9"] = df["rsi14"].rolling(window=9, min_periods=9).mean().astype("float32")
+    macd_line = ema(closes, 12) - ema(closes, 26)
+    macd_signal = ema(macd_line, 9)
+    df["macd"] = macd_line.astype("float32")
+    df["macd_signal"] = macd_signal.astype("float32")
+    df["macd_hist"] = (macd_line - macd_signal).astype("float32")
+    return df
+
+
 def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
     now = time.time()
     # 1. In-memory hot cache.
@@ -178,6 +196,14 @@ def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
     try:
         if pf.exists() and (now - pf.stat().st_mtime) < _PRICE_FILE_TTL_SEC:
             df = pd.read_pickle(pf)
+            # Old cache files (pre-enrichment) lack the indicator columns.
+            # Enrich in place and rewrite so we don't have to refetch.
+            if "rsi14" not in df.columns:
+                df = _enrich(df)
+                try:
+                    df.to_pickle(pf)
+                except Exception:
+                    pass
             _remember(ticker, now, df)
             return df
     except Exception as exc:
@@ -191,11 +217,9 @@ def _cached_history(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
     if df is None or df.empty:
         return None
     df = df.dropna(subset=["Close", "Volume"])
-    # Trim columns and downcast to float32 to keep the cached frame small.
     keep = [c for c in _KEEP_COLS if c in df.columns]
     df = df[keep].astype("float32")
-    # Persist to disk for reuse across screen runs / restarts within the
-    # session. Best-effort; ignore failures.
+    df = _enrich(df)
     try:
         _PRICE_DIR.mkdir(parents=True, exist_ok=True)
         df.to_pickle(pf)
@@ -516,63 +540,60 @@ def evaluate_ticker(
     if apply_high and not streak_ok:
         return None
 
-    # RSI(14) computed up to and including the eval bar
-    closes_to_eval = closes.iloc[: len(closes) + eval_idx + 1] if eval_idx < -1 else closes
-    rsi_series = rsi_wilder(closes_to_eval, period=rsi_period)
-    rsi_val = rsi_series.iloc[-1]
-    if not np.isfinite(rsi_val):
+    # Indicators were precomputed when the price frame was built/cached
+    # (see _enrich). Reading scalars off existing columns is far cheaper
+    # than the ewm/rolling work this used to do per-screen-per-ticker.
+    def _scalar(col: str, idx: int = eval_idx):
+        try:
+            v = df[col].iloc[idx]
+        except (KeyError, IndexError):
+            return None
+        v = float(v)
+        return v if np.isfinite(v) else None
+
+    # RSI(14)
+    rsi_val = _scalar("rsi14")
+    if rsi_val is None:
         return None
     if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
         return None
 
     # 9-day SMA of RSI(14) and RSI's deviation from it.
-    rsi_sma_series = rsi_series.rolling(window=rsi_sma_period, min_periods=rsi_sma_period).mean()
-    rsi_sma_val = rsi_sma_series.iloc[-1]
-    if not np.isfinite(rsi_sma_val) or rsi_sma_val == 0:
+    rsi_sma_val = _scalar("rsi_sma9")
+    if rsi_sma_val is None or rsi_sma_val == 0:
         return None
-    rsi_dev_pct = (float(rsi_val) - float(rsi_sma_val)) / float(rsi_sma_val) * 100.0
+    rsi_dev_pct = (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
     if apply_rsi_dev and not (rsi_dev_min_pct <= rsi_dev_pct <= rsi_dev_max_pct):
         return None
 
-    # EMA(21) of close, evaluated through the eval bar, and price's
-    # deviation from it as a percentage.
-    ema_series = ema(closes_to_eval, ema_period)
-    ema_val = ema_series.iloc[-1]
-    if not np.isfinite(ema_val) or ema_val == 0:
+    # EMA(21) + price deviation.
+    ema_val = _scalar("ema21")
+    if ema_val is None or ema_val == 0:
         return None
-    ema_val = float(ema_val)
     price_ema21_dev_pct = (prev_close - ema_val) / ema_val * 100.0
     if apply_price_dev and not (price_dev_min_pct <= price_ema21_dev_pct <= price_dev_max_pct):
         return None
 
-    # EMA(50) of close and the EMA21-vs-EMA50 deviation. Positive = EMA21 is
-    # above EMA50 (golden-cross territory); negative = EMA21 below EMA50.
-    ema_long_series = ema(closes_to_eval, ema_long_period)
-    ema_long_val = ema_long_series.iloc[-1]
-    if not np.isfinite(ema_long_val) or ema_long_val == 0:
+    # EMA(50) + EMA21-vs-EMA50 deviation.
+    ema_long_val = _scalar("ema50")
+    if ema_long_val is None or ema_long_val == 0:
         return None
-    ema_long_val = float(ema_long_val)
     ema21_ema50_dev_pct = (ema_val - ema_long_val) / ema_long_val * 100.0
     if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
         return None
 
-    # MACD(12, 26, 9): histogram = MACD line - signal line. "Bullish trending"
-    # = histogram is at or above `macd_hist_min` AND today's hist is greater
-    # than yesterday's (momentum building).
-    macd_line_series = ema(closes_to_eval, 12) - ema(closes_to_eval, 26)
-    macd_signal_series = ema(macd_line_series, 9)
-    macd_hist_series = macd_line_series - macd_signal_series
-    macd_val = macd_line_series.iloc[-1]
-    macd_signal_val = macd_signal_series.iloc[-1]
-    macd_hist_val = macd_hist_series.iloc[-1]
-    macd_hist_prev = macd_hist_series.iloc[-2] if len(macd_hist_series) > 1 else float("nan")
-    if not (np.isfinite(macd_val) and np.isfinite(macd_signal_val) and
-            np.isfinite(macd_hist_val) and np.isfinite(macd_hist_prev)):
+    # MACD(12, 26, 9) — histogram threshold and optional "rising" gate.
+    macd_val = _scalar("macd")
+    macd_signal_val = _scalar("macd_signal")
+    macd_hist_val = _scalar("macd_hist")
+    macd_hist_prev = _scalar("macd_hist", eval_idx - 1)
+    if (macd_val is None or macd_signal_val is None
+            or macd_hist_val is None or macd_hist_prev is None):
         return None
     if apply_macd:
-        if float(macd_hist_val) < macd_hist_min:
+        if macd_hist_val < macd_hist_min:
             return None
-        if macd_require_rising and not (float(macd_hist_val) > float(macd_hist_prev)):
+        if macd_require_rising and not (macd_hist_val > macd_hist_prev):
             return None
 
     # Relative volume: eval-bar volume / mean of the prior rvol_lookback bars
@@ -948,18 +969,25 @@ def diagnose_ticker(
             {"values": [round(float(v), 4) for v in streak_win.tolist()],
              "diffs": [round(float(d), 4) for d in clean_diffs]})
 
+    # Indicators come straight off the precomputed columns (same as
+    # evaluate_ticker), so no recomputation per call.
+    def _scalar(col: str, idx: int = eval_idx):
+        try:
+            v = df[col].iloc[idx]
+        except (KeyError, IndexError):
+            return None
+        v = float(v)
+        return v if np.isfinite(v) else None
+
     # 3. RSI(14) band
-    closes_to_eval = closes.iloc[: len(closes) + eval_idx + 1] if eval_idx < -1 else closes
-    rsi_series = rsi_wilder(closes_to_eval, period=rsi_period)
-    rsi_val = float(rsi_series.iloc[-1]) if np.isfinite(rsi_series.iloc[-1]) else None
+    rsi_val = _scalar("rsi14")
     rsi_ok = rsi_val is not None and rsi_min <= rsi_val <= rsi_max
     add("rsi", f"RSI({rsi_period}) ∈ [{rsi_min}, {rsi_max}]",
         round(rsi_val, 2) if rsi_val is not None else None,
         apply_rsi, rsi_ok, [rsi_min, rsi_max])
 
     # 4. RSI dev vs 9d SMA
-    rsi_sma_series = rsi_series.rolling(window=rsi_sma_period, min_periods=rsi_sma_period).mean()
-    rsi_sma_val = float(rsi_sma_series.iloc[-1]) if np.isfinite(rsi_sma_series.iloc[-1]) else None
+    rsi_sma_val = _scalar("rsi_sma9")
     rsi_dev_pct = None
     if rsi_val is not None and rsi_sma_val and rsi_sma_val != 0:
         rsi_dev_pct = (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
@@ -970,8 +998,7 @@ def diagnose_ticker(
         {"rsi_sma9": round(rsi_sma_val, 2) if rsi_sma_val is not None else None})
 
     # 5. Price dev vs EMA(21)
-    ema_series = ema(closes_to_eval, ema_period)
-    ema_val = float(ema_series.iloc[-1]) if np.isfinite(ema_series.iloc[-1]) else None
+    ema_val = _scalar("ema21")
     price_dev_pct = None
     if ema_val and ema_val != 0:
         price_dev_pct = (prev_close - ema_val) / ema_val * 100.0
@@ -982,8 +1009,7 @@ def diagnose_ticker(
         {"ema21": round(ema_val, 4) if ema_val is not None else None})
 
     # 6. EMA(21) vs EMA(50)
-    ema_long_series = ema(closes_to_eval, ema_long_period)
-    ema_long_val = float(ema_long_series.iloc[-1]) if np.isfinite(ema_long_series.iloc[-1]) else None
+    ema_long_val = _scalar("ema50")
     ema_dev_pct = None
     if ema_val is not None and ema_long_val and ema_long_val != 0:
         ema_dev_pct = (ema_val - ema_long_val) / ema_long_val * 100.0
@@ -994,11 +1020,8 @@ def diagnose_ticker(
         {"ema50": round(ema_long_val, 4) if ema_long_val is not None else None})
 
     # 7. MACD histogram
-    macd_line_series = ema(closes_to_eval, 12) - ema(closes_to_eval, 26)
-    macd_signal_series = ema(macd_line_series, 9)
-    macd_hist_series = macd_line_series - macd_signal_series
-    macd_hist_val = float(macd_hist_series.iloc[-1]) if np.isfinite(macd_hist_series.iloc[-1]) else None
-    macd_hist_prev = float(macd_hist_series.iloc[-2]) if len(macd_hist_series) > 1 and np.isfinite(macd_hist_series.iloc[-2]) else None
+    macd_hist_val = _scalar("macd_hist")
+    macd_hist_prev = _scalar("macd_hist", eval_idx - 1)
     macd_ok = True
     if macd_hist_val is None:
         macd_ok = False
