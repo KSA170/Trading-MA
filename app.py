@@ -332,6 +332,7 @@ def api_snapshot_status():
         "enabled": snapshots.enabled(),
         "available_dates": snapshots.available_dates(10),
         "retention_days": snapshots.RETENTION_DAYS,
+        "diagnostics": snapshots.diagnostics(),
         **screener.snapshot_status(),
     })
 

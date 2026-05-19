@@ -23,6 +23,39 @@ log = logging.getLogger("snapshots")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
+# Last error encountered during init() — exposed via diagnostics so the
+# UI can surface "you set DATABASE_URL but the connection failed" vs
+# "DATABASE_URL is missing entirely".
+_init_error: str | None = None
+
+# Last error encountered importing psycopg2 — surfaces "you added the
+# env var but the binary wheel isn't installed yet" type issues.
+_driver_error: str | None = None
+
+
+def diagnostics() -> dict:
+    """Snapshot of what the worker can see about the DB layer. Safe to
+    expose — never returns the URL itself, only its scheme/host so the
+    user can confirm the env var is actually plumbed through."""
+    url = DATABASE_URL
+    scheme = host = None
+    if url:
+        try:
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            scheme = p.scheme or None
+            host = p.hostname or None
+        except Exception:
+            pass
+    return {
+        "database_url_set": bool(url),
+        "database_url_scheme": scheme,
+        "database_url_host": host,
+        "driver_error": _driver_error,
+        "init_error": _init_error,
+        "initialized": _initialized,
+    }
+
 # Last N OHLCV bars stored per row as JSONB. 60 covers any reasonable
 # streak or rvol lookback the UI exposes (max 60 days).
 RECENT_BARS_KEEP = 60
@@ -41,9 +74,14 @@ def enabled() -> bool:
 
 @contextmanager
 def _conn():
-    import psycopg2  # local import so the rest of the app starts even
-    # when psycopg2 isn't installed yet (e.g. the first deploy where
-    # DATABASE_URL exists but the wheel hasn't been picked up).
+    global _driver_error
+    try:
+        import psycopg2  # local import so the rest of the app starts even
+        # when psycopg2 isn't installed yet (e.g. the first deploy where
+        # DATABASE_URL exists but the wheel hasn't been picked up).
+    except Exception as exc:
+        _driver_error = f"{type(exc).__name__}: {exc}"
+        raise
     c = psycopg2.connect(DATABASE_URL, connect_timeout=10)
     try:
         yield c
@@ -88,9 +126,10 @@ CREATE INDEX IF NOT EXISTS daily_snapshot_as_of_idx ON daily_snapshot (as_of);
 
 def init() -> None:
     """Idempotent CREATE TABLE — safe to call on every worker boot."""
-    global _initialized
+    global _initialized, _init_error
     if not enabled():
         log.info("snapshots: DATABASE_URL not set — disabled")
+        _init_error = "DATABASE_URL env var not set on this worker"
         return
     with _init_lock:
         if _initialized:
@@ -99,8 +138,10 @@ def init() -> None:
             with _conn() as c, c.cursor() as cur:
                 cur.execute(_SCHEMA)
             _initialized = True
+            _init_error = None
             log.info("snapshots: table ready")
         except Exception as exc:
+            _init_error = f"{type(exc).__name__}: {exc}"
             log.warning("snapshots: init failed: %s", exc)
 
 

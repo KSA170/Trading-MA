@@ -143,10 +143,15 @@ async function refreshSnapshotStatus() {
     if (!res.ok) return;
     const s = await res.json();
     if (!s.enabled) {
+      const diag = s.diagnostics || {};
       els.snapshotStatus.textContent = 'snapshot: off';
       els.snapshotStatus.classList.add('cold');
       els.snapshotStatus.classList.remove('warn');
-      els.snapshotStatus.title = 'DATABASE_URL is not set. Screens fall back to the pickle cache.';
+      const reason = diag.init_error || (diag.database_url_set ? 'DB connection failed' : 'DATABASE_URL env var not set on this worker');
+      els.snapshotStatus.title = `Snapshot disabled. ${reason}. `
+        + `Worker sees: DATABASE_URL=${diag.database_url_set ? 'set' : 'unset'}`
+        + (diag.database_url_host ? ` (host=${diag.database_url_host}, scheme=${diag.database_url_scheme})` : '')
+        + (diag.driver_error ? ` · driver_error=${diag.driver_error}` : '');
       return;
     }
     const dates = s.available_dates || [];
