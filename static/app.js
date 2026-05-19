@@ -1192,12 +1192,32 @@ if (els.snapshotStatus) {
     const txt = (els.snapshotStatus.textContent || '');
     const isWriting = txt.includes('writing');
     const url = isWriting ? '/api/admin/snapshot/cancel' : '/api/admin/snapshot';
+    // Immediate visual feedback so the user knows the click registered
+    // — without this, a POST that takes >50ms looks like nothing happened.
+    els.snapshotStatus.textContent = isWriting ? 'snapshot: stopping…' : 'snapshot: starting…';
+    els.snapshotStatus.classList.add('warn');
+    els.snapshotStatus.classList.remove('cold');
     try {
       const res = await fetch(url, { method: 'POST' });
-      if (!res.ok && res.status !== 400) throw new Error('HTTP ' + res.status);
-      // Start polling so the user sees the new running state immediately.
-      refreshSnapshotStatus();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && res.status !== 400) {
+        els.snapshotStatus.textContent = `snapshot: HTTP ${res.status}`;
+        els.snapshotStatus.classList.add('cold');
+        els.snapshotStatus.classList.remove('warn');
+        return;
+      }
+      if (data && data.error) {
+        els.snapshotStatus.textContent = `snapshot: ${data.error}`;
+        els.snapshotStatus.classList.add('cold');
+        els.snapshotStatus.classList.remove('warn');
+        return;
+      }
+      // Pick up the new running state on the next tick.
+      setTimeout(refreshSnapshotStatus, 400);
     } catch (err) {
+      els.snapshotStatus.textContent = 'snapshot: network error';
+      els.snapshotStatus.classList.add('cold');
+      els.snapshotStatus.classList.remove('warn');
       console.warn('snapshot click action failed:', err);
     }
   });

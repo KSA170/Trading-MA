@@ -560,11 +560,12 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
     fresh on disk. Reads pickles directly (no Yahoo fallback) in a
     bounded thread pool and upserts in 500-row batches so progress
     survives a worker restart. Honors cancel_snapshot()."""
-    global _snapshot_thread
     if not snapshots.enabled():
         return {"enabled": False}
-    if _snapshot_thread is not None and _snapshot_thread.is_alive():
-        return {"running": True, **snapshot_status()}
+    # Re-entry guard. Only check the state flag — NOT _snapshot_thread.
+    # When called from inside _snapshot_thread (post-warm hook or
+    # api_take_snapshot), is_alive() on that ref would be True and the
+    # function would falsely bail thinking another run is in progress.
     with _snapshot_lock:
         if _snapshot_state["running"]:
             return {"running": True, **_snapshot_state}
