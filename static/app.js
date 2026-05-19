@@ -157,13 +157,16 @@ async function refreshSnapshotStatus() {
     const dates = s.available_dates || [];
     if (s.running) {
       const pct = s.total ? Math.round((100 * s.done) / s.total) : 0;
-      els.snapshotStatus.textContent = `snapshot: writing ${s.done}/${s.total} (${pct}%)`;
+      const tag = s.cancelled ? ' (stopping…)' : '';
+      els.snapshotStatus.textContent = `snapshot: writing ${s.done}/${s.total} (${pct}%)${tag} · click to stop`;
       els.snapshotStatus.classList.remove('cold');
       els.snapshotStatus.classList.add('warn');
-      els.snapshotStatus.title = 'Snapshot write in progress…';
+      els.snapshotStatus.title = 'Snapshot write in progress. Click to cancel.';
+      els.snapshotStatus.style.cursor = 'pointer';
       setTimeout(refreshSnapshotStatus, 4000);
       return;
     }
+    els.snapshotStatus.style.cursor = '';
     if (!dates.length) {
       els.snapshotStatus.textContent = 'snapshot: empty';
       els.snapshotStatus.classList.remove('warn');
@@ -1162,6 +1165,16 @@ updateListAllState();
 
 if (refreshUniverseBtn) refreshUniverseBtn.addEventListener('click', refreshUniverse);
 if (els.warmBtn) els.warmBtn.addEventListener('click', warmCache);
+if (els.snapshotStatus) {
+  els.snapshotStatus.addEventListener('click', async () => {
+    // Only meaningful when a snapshot is currently running — the pill's
+    // text changes to "click to stop" in that case.
+    try {
+      const res = await fetch('/api/admin/snapshot/cancel', { method: 'POST' });
+      if (res.ok) refreshSnapshotStatus();
+    } catch (_) { /* status poll will reflect reality */ }
+  });
+}
 // If a warm job is already running (page reload mid-warm), pick up its
 // progress.
 fetch('/api/admin/warm-status').then((r) => r.json()).then((s) => {

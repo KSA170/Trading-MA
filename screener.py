@@ -387,9 +387,11 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
             # write today's snapshot in a background thread so the warm
             # endpoint can return promptly.
             if not cancelled_flag and snapshots.enabled():
-                threading.Thread(
+                global _snapshot_thread
+                _snapshot_thread = threading.Thread(
                     target=take_snapshot, daemon=True, name="post-warm-snapshot",
-                ).start()
+                )
+                _snapshot_thread.start()
 
     _warm_thread = threading.Thread(target=_run, daemon=True, name="warm-cache")
     _warm_thread.start()
@@ -407,6 +409,7 @@ _snapshot_state: dict = {
     "done": 0,
     "total": 0,
     "errors": 0,
+    "cancelled": False,
     "started_at": None,
     "finished_at": None,
     "last_as_of": None,
@@ -414,11 +417,27 @@ _snapshot_state: dict = {
     "last_trimmed": 0,
 }
 _snapshot_lock = threading.Lock()
+_snapshot_thread: threading.Thread | None = None
 
 
 def snapshot_status() -> dict:
     with _snapshot_lock:
         return dict(_snapshot_state)
+
+
+def cancel_snapshot() -> bool:
+    """Ask the running snapshot job to stop. Mirrors cancel_warm_cache:
+    flips running=False for the UI immediately, and sets cancelled=True
+    so the worker thread's per-ticker check noops the remaining work."""
+    global _snapshot_thread
+    alive = _snapshot_thread is not None and _snapshot_thread.is_alive()
+    with _snapshot_lock:
+        if not _snapshot_state["running"] and not alive:
+            return False
+        _snapshot_state["cancelled"] = True
+        _snapshot_state["running"] = False
+        _snapshot_state["finished_at"] = time.time()
+        return True
 
 
 def _row_from_df(ticker: str, df: pd.DataFrame) -> dict | None:
@@ -496,68 +515,124 @@ def _safe_float(v) -> float | None:
     return f if np.isfinite(f) else None
 
 
+def _read_pickle_for_snapshot(ticker: str) -> pd.DataFrame | None:
+    """Read a ticker's pickle directly from disk. Never touches Yahoo —
+    snapshot must not extend a 30-minute warm into a 3-hour Yahoo
+    refetch loop because one pickle went weird. Returns None for
+    missing / stale / unreadable / un-enriched files."""
+    pf = _price_file(ticker)
+    try:
+        if not pf.exists():
+            return None
+        if (time.time() - pf.stat().st_mtime) > _PRICE_FILE_TTL_SEC:
+            return None
+        df = pd.read_pickle(pf)
+    except Exception:
+        return None
+    if df is None or df.empty or "rsi14" not in df.columns:
+        return None
+    return df
+
+
+_SNAPSHOT_BATCH = 500       # rows per upsert — bounds memory + makes
+                            # progress durable if the worker dies.
+_SNAPSHOT_WORKERS = 6       # disk reads + JSON encode; mostly I/O.
+
+
 def take_snapshot(tickers: list[str] | None = None) -> dict:
     """Write a snapshot row to Postgres for every ticker whose pickle is
-    fresh on disk. Skips tickers without a fresh pickle (no Yahoo re-fetch
-    in this phase — run warm_cache first). Idempotent: re-running on the
-    same trading day just upserts the existing rows."""
+    fresh on disk. Reads pickles directly (no Yahoo fallback) in a
+    bounded thread pool and upserts in 500-row batches so progress
+    survives a worker restart. Honors cancel_snapshot()."""
+    global _snapshot_thread
     if not snapshots.enabled():
         return {"enabled": False}
+    if _snapshot_thread is not None and _snapshot_thread.is_alive():
+        return {"running": True, **snapshot_status()}
     with _snapshot_lock:
         if _snapshot_state["running"]:
             return {"running": True, **_snapshot_state}
         _snapshot_state.update(
-            running=True, done=0, total=0, errors=0,
+            running=True, done=0, total=0, errors=0, cancelled=False,
             started_at=time.time(), finished_at=None,
+            last_written=0, last_trimmed=0, last_as_of=None,
         )
 
     tk = list(tickers) if tickers is not None else all_tickers()
-    rows: list[dict] = []
+    written_total = 0
     errors = 0
+    last_as_of: str | None = None
+    batch: list[dict] = []
+
+    def _flush() -> None:
+        nonlocal written_total
+        if not batch:
+            return
+        try:
+            n = snapshots.upsert_many(batch)
+            written_total += n
+            with _snapshot_lock:
+                _snapshot_state["last_written"] = written_total
+        finally:
+            batch.clear()
+
+    def _one(t: str) -> dict | None:
+        with _snapshot_lock:
+            if _snapshot_state["cancelled"]:
+                return None
+        df = _read_pickle_for_snapshot(t)
+        if df is None:
+            return None
+        try:
+            return _row_from_df(t, df)
+        except Exception as exc:
+            log.warning("snapshot row build failed for %s: %s", t, exc)
+            raise
+
     try:
         with _snapshot_lock:
             _snapshot_state["total"] = len(tk)
-        now = time.time()
-        for t in tk:
-            try:
-                pf = _price_file(t)
-                # Don't re-fetch from Yahoo here — the snapshot phase
-                # mirrors what's already on disk. If a ticker's pickle
-                # is stale or missing, warm_cache will fix it next run.
-                if not pf.exists() or (now - pf.stat().st_mtime) > _PRICE_FILE_TTL_SEC:
-                    continue
-                df = _cached_history(t)
-                row = _row_from_df(t, df)
-                if row is None:
-                    continue
-                rows.append(row)
-            except Exception as exc:
-                errors += 1
-                log.warning("snapshot row build failed for %s: %s", t, exc)
-            finally:
+        log.info("snapshot: starting (%d tickers)", len(tk))
+
+        with ThreadPoolExecutor(max_workers=_SNAPSHOT_WORKERS) as pool:
+            # imap-style iteration so we can flush in batches as rows
+            # become available, instead of holding all 8k in memory.
+            for i, fut_row in enumerate(pool.map(_one, tk), start=1):
+                with _snapshot_lock:
+                    if _snapshot_state["cancelled"]:
+                        break
+                if fut_row is not None:
+                    batch.append(fut_row)
+                    last_as_of = fut_row.get("as_of") or last_as_of
+                    if len(batch) >= _SNAPSHOT_BATCH:
+                        _flush()
                 with _snapshot_lock:
                     _snapshot_state["done"] += 1
+                if i % 1000 == 0:
+                    log.info("snapshot: %d/%d processed, %d written so far",
+                             i, len(tk), written_total)
 
-        written = snapshots.upsert_many(rows)
-        trimmed = snapshots.trim_to_last(snapshots.RETENTION_DAYS)
-        as_of = rows[0]["as_of"] if rows else None
+        _flush()
+        trimmed = snapshots.trim_to_last(snapshots.RETENTION_DAYS) if written_total else 0
         with _snapshot_lock:
             _snapshot_state.update(
                 errors=errors,
-                last_as_of=as_of,
-                last_written=written,
+                last_as_of=last_as_of,
+                last_written=written_total,
                 last_trimmed=trimmed,
             )
-        log.info("snapshot complete: as_of=%s written=%d trimmed=%d errors=%d",
-                 as_of, written, trimmed, errors)
+        log.info("snapshot complete: as_of=%s written=%d trimmed=%d",
+                 last_as_of, written_total, trimmed)
         return {
             "enabled": True,
-            "as_of": as_of,
-            "written": written,
+            "as_of": last_as_of,
+            "written": written_total,
             "trimmed": trimmed,
             "errors": errors,
-            "skipped": len(tk) - len(rows) - errors,
         }
+    except Exception as exc:
+        log.warning("snapshot job failed: %s", exc)
+        return {"enabled": True, "error": str(exc), "written": written_total}
     finally:
         with _snapshot_lock:
             _snapshot_state["running"] = False

@@ -317,13 +317,28 @@ def api_warm_status():
 @app.route("/api/admin/snapshot", methods=["POST"])
 def api_take_snapshot():
     """Manually trigger a Postgres snapshot of the current pickle cache.
-    Runs synchronously — typical full-universe pass is ~30-60s on a warm
-    cache. No-ops with enabled=false when DATABASE_URL isn't set."""
+    Runs in a background thread so the request returns immediately —
+    poll /api/admin/snapshot/status for progress. No-ops with
+    enabled=false when DATABASE_URL isn't set."""
     if not snapshots.enabled():
         return jsonify({"enabled": False,
                         "error": "DATABASE_URL not set"}), 400
-    result = screener.take_snapshot()
-    return jsonify(result)
+    # Background-spawn so the HTTP request doesn't hold open for the
+    # full ~1-2 minute snapshot pass.
+    started = False
+    if not screener.snapshot_status().get("running"):
+        screener._snapshot_thread = threading.Thread(
+            target=screener.take_snapshot, daemon=True, name="manual-snapshot",
+        )
+        screener._snapshot_thread.start()
+        started = True
+    return jsonify({"started": started, "status": screener.snapshot_status()})
+
+
+@app.route("/api/admin/snapshot/cancel", methods=["POST"])
+def api_cancel_snapshot():
+    cancelled = screener.cancel_snapshot()
+    return jsonify({"cancelled": cancelled, "status": screener.snapshot_status()})
 
 
 @app.route("/api/admin/snapshot/status")
