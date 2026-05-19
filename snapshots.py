@@ -190,10 +190,15 @@ _LOAD_COLS = (
 )
 
 
-def load_for_date(as_of: str, tickers: Iterable[str] | None = None) -> dict[str, dict]:
-    """Bulk-load one screen's worth of rows. Returns {ticker: row_dict}."""
+def iter_for_date(as_of: str, tickers: Iterable[str] | None = None, chunk: int = 500):
+    """Stream rows for `as_of` one at a time via a server-side cursor.
+    Yields (ticker, row_dict) tuples. Peak memory stays bounded to
+    `chunk` rows regardless of how many match — the 7,800-row × ~5KB
+    JSONB-per-row payload is ~35MB raw and ~100MB once parsed into
+    Python dicts, which OOMs a 512MB Render worker if pulled into
+    memory all at once via fetchall()."""
     if not enabled():
-        return {}
+        return
     sql = (
         f"SELECT {', '.join(_LOAD_COLS)} FROM daily_snapshot "
         "WHERE as_of = %s"
@@ -203,18 +208,19 @@ def load_for_date(as_of: str, tickers: Iterable[str] | None = None) -> dict[str,
         sql += " AND ticker = ANY(%s)"
         args.append(list(tickers))
     try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute(sql, args)
-            rows = cur.fetchall()
-        out: dict[str, dict] = {}
-        for r in rows:
-            d = dict(zip(_LOAD_COLS, r))
-            t = d.pop("ticker")
-            out[t] = d
-        return out
+        with _conn() as c:
+            # name= triggers psycopg2's server-side cursor: rows are
+            # fetched `itersize` at a time on demand, instead of the
+            # entire result set being buffered client-side at execute().
+            with c.cursor(name="snap_iter") as cur:
+                cur.itersize = chunk
+                cur.execute(sql, args)
+                for r in cur:
+                    d = dict(zip(_LOAD_COLS, r))
+                    t = d.pop("ticker")
+                    yield t, d
     except Exception as exc:
-        log.warning("snapshots.load_for_date(%s) failed: %s", as_of, exc)
-        return {}
+        log.warning("snapshots.iter_for_date(%s) failed: %s", as_of, exc)
 
 
 _WRITE_COLS = (

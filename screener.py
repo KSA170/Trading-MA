@@ -1328,56 +1328,58 @@ def run_screen(
 
     # --- snapshot-fast path -----------------------------------------------
     # If Postgres is configured and the chosen as_of_date has a snapshot,
-    # serve the whole screen from one bulk SELECT instead of 8k disk reads.
+    # serve the screen by streaming rows from the DB and evaluating each
+    # in place. The streaming cursor caps memory at ~`chunk` rows —
+    # crucial on the 512MB Render free tier where a single fetchall() of
+    # the 7,800-row result set OOMs the worker (each row carries a ~5KB
+    # JSONB recent_bars blob → ~100MB+ in Python dicts).
     if snapshots.enabled():
         target_date = _resolve_as_of_date(as_of_offset)
         if target_date and snapshots.has_date(target_date):
-            db_rows = snapshots.load_for_date(target_date, tickers)
-            if db_rows:
-                snap_hits: list[ScreenHit] = []
-                for t in tickers:
-                    row = db_rows.get(t)
-                    if row is None:
-                        continue
-                    try:
-                        hit = _evaluate_from_snapshot(
-                            t, target_date, row,
-                            high_lookback=high_lookback,
-                            streak_mode=streak_mode,
-                            rsi_min=rsi_min, rsi_max=rsi_max,
-                            rsi_dev_min_pct=rsi_dev_min_pct,
-                            rsi_dev_max_pct=rsi_dev_max_pct,
-                            rvol_lookback=rvol_lookback,
-                            rvol_min=rvol_min,
-                            avg_volume_min=avg_volume_min,
-                            price_min=price_min, price_max=price_max,
-                            price_dev_min_pct=price_dev_min_pct,
-                            price_dev_max_pct=price_dev_max_pct,
-                            ema_dev_min_pct=ema_dev_min_pct,
-                            ema_dev_max_pct=ema_dev_max_pct,
-                            macd_hist_min=macd_hist_min,
-                            macd_require_rising=macd_require_rising,
-                            turnover_min_pct=turnover_min_pct,
-                            turnover_max_pct=turnover_max_pct,
-                            apply_high=apply_high, apply_rsi=apply_rsi,
-                            apply_rsi_dev=apply_rsi_dev,
-                            apply_rvol=apply_rvol,
-                            apply_avg_volume=apply_avg_volume,
-                            apply_price=apply_price,
-                            apply_price_dev=apply_price_dev,
-                            apply_ema_dev=apply_ema_dev,
-                            apply_macd=apply_macd,
-                            apply_turnover=apply_turnover,
-                        )
-                    except Exception as exc:
-                        log.warning("snapshot evaluate failed for %s: %s", t, exc)
-                        continue
-                    if hit is not None:
-                        snap_hits.append(hit)
-                snap_hits.sort(key=lambda h: h.score, reverse=True)
-                log.info("screen served from snapshot: %d matches for %s",
-                         len(snap_hits), target_date)
-                return snap_hits
+            ticker_set = set(tickers)
+            snap_hits: list[ScreenHit] = []
+            for tk_name, row in snapshots.iter_for_date(target_date, tickers):
+                if tk_name not in ticker_set:
+                    continue
+                try:
+                    hit = _evaluate_from_snapshot(
+                        tk_name, target_date, row,
+                        high_lookback=high_lookback,
+                        streak_mode=streak_mode,
+                        rsi_min=rsi_min, rsi_max=rsi_max,
+                        rsi_dev_min_pct=rsi_dev_min_pct,
+                        rsi_dev_max_pct=rsi_dev_max_pct,
+                        rvol_lookback=rvol_lookback,
+                        rvol_min=rvol_min,
+                        avg_volume_min=avg_volume_min,
+                        price_min=price_min, price_max=price_max,
+                        price_dev_min_pct=price_dev_min_pct,
+                        price_dev_max_pct=price_dev_max_pct,
+                        ema_dev_min_pct=ema_dev_min_pct,
+                        ema_dev_max_pct=ema_dev_max_pct,
+                        macd_hist_min=macd_hist_min,
+                        macd_require_rising=macd_require_rising,
+                        turnover_min_pct=turnover_min_pct,
+                        turnover_max_pct=turnover_max_pct,
+                        apply_high=apply_high, apply_rsi=apply_rsi,
+                        apply_rsi_dev=apply_rsi_dev,
+                        apply_rvol=apply_rvol,
+                        apply_avg_volume=apply_avg_volume,
+                        apply_price=apply_price,
+                        apply_price_dev=apply_price_dev,
+                        apply_ema_dev=apply_ema_dev,
+                        apply_macd=apply_macd,
+                        apply_turnover=apply_turnover,
+                    )
+                except Exception as exc:
+                    log.warning("snapshot evaluate failed for %s: %s", tk_name, exc)
+                    continue
+                if hit is not None:
+                    snap_hits.append(hit)
+            snap_hits.sort(key=lambda h: h.score, reverse=True)
+            log.info("screen served from snapshot: %d matches for %s",
+                     len(snap_hits), target_date)
+            return snap_hits
 
     hits: list[ScreenHit] = []
 
