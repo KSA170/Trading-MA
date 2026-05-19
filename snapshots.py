@@ -32,6 +32,10 @@ _init_error: str | None = None
 # env var but the binary wheel isn't installed yet" type issues.
 _driver_error: str | None = None
 
+# Last error returned by upsert_many — captured so the UI can show why
+# rows aren't being persisted even though the connection is "up".
+_last_write_error: str | None = None
+
 
 def diagnostics() -> dict:
     """Snapshot of what the worker can see about the DB layer. Safe to
@@ -224,6 +228,7 @@ _WRITE_COLS = (
 def upsert_many(rows: list[dict]) -> int:
     """Bulk upsert. Returns count of rows submitted (Postgres doesn't tell
     us how many actually changed without RETURNING, which we skip)."""
+    global _last_write_error
     if not enabled() or not rows:
         return 0
     from psycopg2.extras import execute_values
@@ -248,10 +253,17 @@ def upsert_many(rows: list[dict]) -> int:
     try:
         with _conn() as c, c.cursor() as cur:
             execute_values(cur, sql, values, page_size=500)
+        _last_write_error = None
         return len(values)
     except Exception as exc:
+        # Capture the first error verbatim so the UI can surface it.
+        _last_write_error = f"{type(exc).__name__}: {exc}"
         log.warning("snapshots.upsert_many failed (%d rows): %s", len(values), exc)
         return 0
+
+
+def last_write_error() -> str | None:
+    return _last_write_error
 
 
 def trim_to_last(n_dates: int = RETENTION_DAYS) -> int:

@@ -168,11 +168,29 @@ async function refreshSnapshotStatus() {
     }
     els.snapshotStatus.style.cursor = '';
     if (!dates.length) {
-      els.snapshotStatus.textContent = 'snapshot: empty · click to write';
+      const ran = s.finished_at && s.started_at;
+      const skipSummary = [
+        ['missing', s.skipped_missing],
+        ['stale', s.skipped_stale],
+        ['unenriched', s.skipped_unenriched],
+        ['corrupt', s.skipped_corrupt],
+        ['short', s.skipped_short],
+      ].filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n}`).join(' ');
+      els.snapshotStatus.textContent = ran
+        ? `snapshot: 0 rows · click to retry`
+        : `snapshot: empty · click to write`;
       els.snapshotStatus.classList.remove('warn');
       els.snapshotStatus.classList.add('cold');
       els.snapshotStatus.style.cursor = 'pointer';
-      els.snapshotStatus.title = 'No snapshot rows yet. Click to snapshot the current pickle cache directly (no Yahoo refetch). Takes ~60–90s for the full universe.';
+      const lines = [
+        ran
+          ? `Last run wrote 0 rows. ${s.done}/${s.total} pickles processed.`
+          : 'No snapshot rows yet.',
+        skipSummary ? `Skipped: ${skipSummary}` : '',
+        s.last_error ? `DB error: ${s.last_error}` : '',
+        'Click to write a snapshot from the current pickle cache (no Yahoo refetch).',
+      ].filter(Boolean);
+      els.snapshotStatus.title = lines.join(' · ');
       return;
     }
     const latest = dates[0];

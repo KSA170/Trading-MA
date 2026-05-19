@@ -416,6 +416,14 @@ _snapshot_state: dict = {
     "last_as_of": None,
     "last_written": 0,
     "last_trimmed": 0,
+    # Per-category counters from the last completed run — populated so
+    # the UI can explain why a snapshot produced 0 rows.
+    "skipped_missing": 0,     # pickle file does not exist on disk
+    "skipped_stale": 0,       # mtime older than _PRICE_FILE_TTL_SEC
+    "skipped_unenriched": 0,  # rsi14 column absent (old-format pickle)
+    "skipped_corrupt": 0,     # pd.read_pickle raised
+    "skipped_short": 0,       # df had < 2 bars
+    "last_error": None,       # most recent upsert error, if any
 }
 _snapshot_lock = threading.Lock()
 _snapshot_thread: threading.Thread | None = None
@@ -516,23 +524,30 @@ def _safe_float(v) -> float | None:
     return f if np.isfinite(f) else None
 
 
-def _read_pickle_for_snapshot(ticker: str) -> pd.DataFrame | None:
-    """Read a ticker's pickle directly from disk. Never touches Yahoo —
-    snapshot must not extend a 30-minute warm into a 3-hour Yahoo
-    refetch loop because one pickle went weird. Returns None for
-    missing / stale / unreadable / un-enriched files."""
+def _read_pickle_for_snapshot(ticker: str) -> tuple[pd.DataFrame | None, str]:
+    """Read a ticker's pickle directly from disk. Returns (df, reason).
+    reason is "" on success, or one of: missing / stale / corrupt /
+    unenriched / empty / short — so the snapshot loop can tally why
+    tickers were rejected and surface it in the UI."""
     pf = _price_file(ticker)
+    if not pf.exists():
+        return None, "missing"
     try:
-        if not pf.exists():
-            return None
         if (time.time() - pf.stat().st_mtime) > _PRICE_FILE_TTL_SEC:
-            return None
+            return None, "stale"
+    except Exception:
+        return None, "missing"
+    try:
         df = pd.read_pickle(pf)
     except Exception:
-        return None
-    if df is None or df.empty or "rsi14" not in df.columns:
-        return None
-    return df
+        return None, "corrupt"
+    if df is None or df.empty:
+        return None, "empty"
+    if "rsi14" not in df.columns:
+        return None, "unenriched"
+    if len(df) < 2:
+        return None, "short"
+    return df, ""
 
 
 _SNAPSHOT_BATCH = 500       # rows per upsert — bounds memory + makes
@@ -564,6 +579,13 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
     errors = 0
     last_as_of: str | None = None
     batch: list[dict] = []
+    # Per-category counters — surfaced via /api/admin/snapshot/status so
+    # we can answer "why is snapshot empty?" without server access.
+    skip_counts = {
+        "missing": 0, "stale": 0, "unenriched": 0,
+        "corrupt": 0, "empty": 0, "short": 0,
+    }
+    skip_lock = threading.Lock()
 
     def _flush() -> None:
         nonlocal written_total
@@ -574,6 +596,7 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
             written_total += n
             with _snapshot_lock:
                 _snapshot_state["last_written"] = written_total
+                _snapshot_state["last_error"] = snapshots.last_write_error()
         finally:
             batch.clear()
 
@@ -581,8 +604,10 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
         with _snapshot_lock:
             if _snapshot_state["cancelled"]:
                 return None
-        df = _read_pickle_for_snapshot(t)
+        df, reason = _read_pickle_for_snapshot(t)
         if df is None:
+            with skip_lock:
+                skip_counts[reason] = skip_counts.get(reason, 0) + 1
             return None
         try:
             return _row_from_df(t, df)
@@ -621,15 +646,26 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
                 last_as_of=last_as_of,
                 last_written=written_total,
                 last_trimmed=trimmed,
+                last_error=snapshots.last_write_error(),
+                skipped_missing=skip_counts["missing"],
+                skipped_stale=skip_counts["stale"],
+                skipped_unenriched=skip_counts["unenriched"],
+                skipped_corrupt=skip_counts["corrupt"],
+                skipped_short=skip_counts["empty"] + skip_counts["short"],
             )
-        log.info("snapshot complete: as_of=%s written=%d trimmed=%d",
-                 last_as_of, written_total, trimmed)
+        log.info(
+            "snapshot complete: as_of=%s written=%d trimmed=%d skipped=%s last_error=%s",
+            last_as_of, written_total, trimmed, skip_counts,
+            snapshots.last_write_error(),
+        )
         return {
             "enabled": True,
             "as_of": last_as_of,
             "written": written_total,
             "trimmed": trimmed,
             "errors": errors,
+            "skipped": skip_counts,
+            "last_error": snapshots.last_write_error(),
         }
     except Exception as exc:
         log.warning("snapshot job failed: %s", exc)
