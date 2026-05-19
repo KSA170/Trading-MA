@@ -380,13 +380,14 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
             log.warning("warm-cache job failed: %s", exc)
         finally:
             with _warm_lock:
-                cancelled_flag = _warm_state["cancelled"]
                 _warm_state["running"] = False
                 _warm_state["finished_at"] = time.time()
-            # If the warm completed cleanly and Postgres is configured,
-            # write today's snapshot in a background thread so the warm
-            # endpoint can return promptly.
-            if not cancelled_flag and snapshots.enabled():
+            # Always snapshot what made it onto disk, even if the warm
+            # was cancelled — partial data is still useful and the user
+            # may have cancelled by accident (e.g. auto-warm racing with
+            # a manual click on boot). Cancel the snapshot separately
+            # via /api/admin/snapshot/cancel if you really don't want it.
+            if snapshots.enabled():
                 global _snapshot_thread
                 _snapshot_thread = threading.Thread(
                     target=take_snapshot, daemon=True, name="post-warm-snapshot",

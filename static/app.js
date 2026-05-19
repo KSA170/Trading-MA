@@ -168,17 +168,19 @@ async function refreshSnapshotStatus() {
     }
     els.snapshotStatus.style.cursor = '';
     if (!dates.length) {
-      els.snapshotStatus.textContent = 'snapshot: empty';
+      els.snapshotStatus.textContent = 'snapshot: empty · click to write';
       els.snapshotStatus.classList.remove('warn');
       els.snapshotStatus.classList.add('cold');
-      els.snapshotStatus.title = 'No snapshot rows yet. Run "Warm cache" — the snapshot writes automatically when warming finishes. Or POST /api/admin/snapshot to trigger it manually.';
+      els.snapshotStatus.style.cursor = 'pointer';
+      els.snapshotStatus.title = 'No snapshot rows yet. Click to snapshot the current pickle cache directly (no Yahoo refetch). Takes ~60–90s for the full universe.';
       return;
     }
     const latest = dates[0];
     const wrote = s.last_written != null ? `, ${s.last_written.toLocaleString()} rows` : '';
-    els.snapshotStatus.textContent = `snapshot: ${latest}${wrote}`;
+    els.snapshotStatus.textContent = `snapshot: ${latest}${wrote} · click to refresh`;
     els.snapshotStatus.classList.remove('cold', 'warn');
-    els.snapshotStatus.title = `Snapshot dates available: ${dates.join(', ')}. Retention: ${s.retention_days} days.`;
+    els.snapshotStatus.style.cursor = 'pointer';
+    els.snapshotStatus.title = `Snapshot dates: ${dates.join(', ')}. Retention: ${s.retention_days} days. Click to write a fresh snapshot from the current pickle cache.`;
   } catch (_) { /* silent */ }
 }
 
@@ -1167,12 +1169,19 @@ if (refreshUniverseBtn) refreshUniverseBtn.addEventListener('click', refreshUniv
 if (els.warmBtn) els.warmBtn.addEventListener('click', warmCache);
 if (els.snapshotStatus) {
   els.snapshotStatus.addEventListener('click', async () => {
-    // Only meaningful when a snapshot is currently running — the pill's
-    // text changes to "click to stop" in that case.
+    // Cancel if currently writing; otherwise trigger a fresh snapshot
+    // of whatever's already on disk (no Yahoo refetch).
+    const txt = (els.snapshotStatus.textContent || '');
+    const isWriting = txt.includes('writing');
+    const url = isWriting ? '/api/admin/snapshot/cancel' : '/api/admin/snapshot';
     try {
-      const res = await fetch('/api/admin/snapshot/cancel', { method: 'POST' });
-      if (res.ok) refreshSnapshotStatus();
-    } catch (_) { /* status poll will reflect reality */ }
+      const res = await fetch(url, { method: 'POST' });
+      if (!res.ok && res.status !== 400) throw new Error('HTTP ' + res.status);
+      // Start polling so the user sees the new running state immediately.
+      refreshSnapshotStatus();
+    } catch (err) {
+      console.warn('snapshot click action failed:', err);
+    }
   });
 }
 // If a warm job is already running (page reload mid-warm), pick up its
