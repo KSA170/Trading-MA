@@ -528,7 +528,13 @@ def _read_pickle_for_snapshot(ticker: str) -> tuple[pd.DataFrame | None, str]:
     """Read a ticker's pickle directly from disk. Returns (df, reason).
     reason is "" on success, or one of: missing / stale / corrupt /
     unenriched / empty / short — so the snapshot loop can tally why
-    tickers were rejected and surface it in the UI."""
+    tickers were rejected and surface it in the UI.
+
+    If the pickle is on disk but lacks indicator columns (rsi14 etc.),
+    enrich it in memory before returning. This is pure pandas — no
+    network — and rescues snapshots when an older warm wrote pickles
+    that didn't get enriched, or when a fresh warm's enrichment
+    rewrite to disk failed silently (free-tier disk full / permission)."""
     pf = _price_file(ticker)
     if not pf.exists():
         return None, "missing"
@@ -543,10 +549,15 @@ def _read_pickle_for_snapshot(ticker: str) -> tuple[pd.DataFrame | None, str]:
         return None, "corrupt"
     if df is None or df.empty:
         return None, "empty"
-    if "rsi14" not in df.columns:
-        return None, "unenriched"
     if len(df) < 2:
         return None, "short"
+    if "rsi14" not in df.columns:
+        try:
+            df = _enrich(df)
+        except Exception:
+            return None, "unenriched"
+        if "rsi14" not in df.columns:
+            return None, "unenriched"
     return df, ""
 
 

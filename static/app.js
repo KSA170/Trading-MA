@@ -166,38 +166,45 @@ async function refreshSnapshotStatus() {
       setTimeout(refreshSnapshotStatus, 4000);
       return;
     }
-    els.snapshotStatus.style.cursor = '';
-    if (!dates.length) {
-      const ran = s.finished_at && s.started_at;
-      const skipSummary = [
+    els.snapshotStatus.style.cursor = 'pointer';
+    const ran = !!(s.finished_at && s.started_at);
+    const wrote = s.last_written || 0;
+
+    // Latest run wrote 0 rows: foreground the skip breakdown right in
+    // the pill text so the user can see *why* without hovering.
+    if (ran && wrote === 0) {
+      const skipParts = [
         ['missing', s.skipped_missing],
         ['stale', s.skipped_stale],
         ['unenriched', s.skipped_unenriched],
         ['corrupt', s.skipped_corrupt],
         ['short', s.skipped_short],
-      ].filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n}`).join(' ');
-      els.snapshotStatus.textContent = ran
-        ? `snapshot: 0 rows · click to retry`
-        : `snapshot: empty · click to write`;
+      ].filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n.toLocaleString()}`);
+      const skipTxt = skipParts.length ? ` (${skipParts.join(', ')})` : '';
+      const errTxt = s.last_error ? ' · DB error' : '';
+      els.snapshotStatus.textContent = `snapshot: 0 rows${skipTxt}${errTxt} · click to retry`;
       els.snapshotStatus.classList.remove('warn');
       els.snapshotStatus.classList.add('cold');
-      els.snapshotStatus.style.cursor = 'pointer';
       const lines = [
-        ran
-          ? `Last run wrote 0 rows. ${s.done}/${s.total} pickles processed.`
-          : 'No snapshot rows yet.',
-        skipSummary ? `Skipped: ${skipSummary}` : '',
+        `Last run wrote 0 rows. Processed ${s.done}/${s.total} pickles.`,
+        skipParts.length ? `Skipped: ${skipParts.join(', ')}` : '',
         s.last_error ? `DB error: ${s.last_error}` : '',
-        'Click to write a snapshot from the current pickle cache (no Yahoo refetch).',
       ].filter(Boolean);
       els.snapshotStatus.title = lines.join(' · ');
       return;
     }
+
+    if (!dates.length) {
+      els.snapshotStatus.textContent = 'snapshot: empty · click to write';
+      els.snapshotStatus.classList.remove('warn');
+      els.snapshotStatus.classList.add('cold');
+      els.snapshotStatus.title = 'No snapshot rows yet. Click to write the current pickle cache to the DB.';
+      return;
+    }
     const latest = dates[0];
-    const wrote = s.last_written != null ? `, ${s.last_written.toLocaleString()} rows` : '';
-    els.snapshotStatus.textContent = `snapshot: ${latest}${wrote} · click to refresh`;
+    const wroteTxt = `, ${wrote.toLocaleString()} rows`;
+    els.snapshotStatus.textContent = `snapshot: ${latest}${wroteTxt} · click to refresh`;
     els.snapshotStatus.classList.remove('cold', 'warn');
-    els.snapshotStatus.style.cursor = 'pointer';
     els.snapshotStatus.title = `Snapshot dates: ${dates.join(', ')}. Retention: ${s.retention_days} days. Click to write a fresh snapshot from the current pickle cache.`;
   } catch (_) { /* silent */ }
 }
