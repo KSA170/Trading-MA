@@ -72,6 +72,7 @@ class ScreenHit:
     shares: float | None
     market_cap: float | None
     turnover_pct: float | None
+    momentum_score: float
     score: float
 
     def to_dict(self) -> dict:
@@ -95,6 +96,98 @@ def rsi_wilder(close: pd.Series, period: int = 14) -> pd.Series:
 
 def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False, min_periods=period).mean()
+
+
+# --- heuristic "momentum continuation" score ------------------------------
+# Weighted blend of the indicator stack squashed into 0-100. Each sub-score
+# is a bell or sigmoid in [0, 1] designed to peak at a "healthy momentum"
+# value and fall off at exhaustion extremes (overbought / parabolic /
+# stretched / volume-mania). Sub-scores are weighted (sums to 100); missing
+# indicators are skipped and the remaining weights re-normalized.
+#
+# IMPORTANT: this is a RANKING heuristic, NOT a calibrated probability.
+# A true probability would require backtesting forward returns over the
+# snapshot table — which only starts to be meaningful once we've
+# accumulated weeks of daily snapshots.
+
+def _bell(x: float, center: float, width: float) -> float:
+    """Gaussian-shaped 0-1 bell centered at `center` with sigma `width`."""
+    return math.exp(-((x - center) / width) ** 2)
+
+
+def _sigmoid(x: float, midpoint: float, slope: float = 1.0) -> float:
+    """Logistic 0-1 curve crossing 0.5 at `midpoint`; `slope` is steepness."""
+    z = (x - midpoint) * slope
+    if z > 40:
+        return 1.0
+    if z < -40:
+        return 0.0
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+def compute_momentum_score(
+    *,
+    close: float | None = None,
+    rsi: float | None = None,
+    rsi_dev_pct: float | None = None,
+    price_ema21_dev_pct: float | None = None,
+    ema21_ema50_dev_pct: float | None = None,
+    macd_hist: float | None = None,
+    macd_hist_prev: float | None = None,
+    rel_volume: float | None = None,
+    breakout_pct: float | None = None,
+    turnover_pct: float | None = None,
+) -> float:
+    """Heuristic 0-100 score; higher = more of the indicator stack is
+    aligned for continuation. See module-level note: ranking signal, not
+    a calibrated probability."""
+    parts: list[tuple[float, float]] = []  # (weight, value in [0, 1])
+
+    # RSI position — strong but not overbought. Peak at 60.
+    if rsi is not None:
+        parts.append((12.0, _bell(rsi, 60.0, 18.0)))
+
+    # RSI dev vs 9d SMA — accelerating, not parabolic. Peak at +3%.
+    if rsi_dev_pct is not None:
+        parts.append((8.0, _bell(rsi_dev_pct, 3.0, 5.0)))
+
+    # Price vs EMA(21) — slightly above the moving average. Peak at +1%.
+    if price_ema21_dev_pct is not None:
+        parts.append((8.0, _bell(price_ema21_dev_pct, 1.0, 3.5)))
+
+    # EMA(21) vs EMA(50) — trend confirmation, not stretched. Peak at +2%.
+    if ema21_ema50_dev_pct is not None:
+        parts.append((13.0, _bell(ema21_ema50_dev_pct, 2.0, 4.0)))
+
+    # MACD histogram — positive = bullish. Normalize by price so the
+    # scale is comparable across $5 vs $500 names.
+    if macd_hist is not None and close and close > 0:
+        macd_pct = macd_hist / close * 100.0
+        parts.append((12.0, _sigmoid(macd_pct, 0.1, 5.0)))
+    elif macd_hist is not None:
+        parts.append((12.0, _sigmoid(macd_hist, 0.0, 1.0)))
+
+    # MACD rising — binary acceleration bonus.
+    if macd_hist is not None and macd_hist_prev is not None:
+        parts.append((10.0, 1.0 if macd_hist > macd_hist_prev else 0.2))
+
+    # Relative volume — confirmation. Ramps around 2x.
+    if rel_volume is not None:
+        parts.append((17.0, _sigmoid(rel_volume, 2.0, 2.0)))
+
+    # Streak run-up % — modest breakout. Around +2% ideal.
+    if breakout_pct is not None:
+        parts.append((10.0, _sigmoid(breakout_pct, 2.0, 0.8)))
+
+    # Turnover (volume / market cap) — engaged but not retail mania.
+    if turnover_pct is not None:
+        parts.append((10.0, _bell(turnover_pct, 1.5, 3.0)))
+
+    if not parts:
+        return 0.0
+    total_w = sum(w for w, _ in parts)
+    score = sum(w * v for w, v in parts)
+    return round(100.0 * score / total_w, 1)
 
 
 # --- data fetching ---------------------------------------------------------
@@ -1037,6 +1130,18 @@ def evaluate_ticker(
     exchange = "TSX" if ticker.endswith(".TO") else "US"
     breakout = (eval_streak_val - streak_start_val) / streak_start_val if streak_start_val else 0.0
     score = max(rel_vol, 0.01) * (1 + max(0.0, breakout))
+    momentum = compute_momentum_score(
+        close=prev_close,
+        rsi=rsi_val,
+        rsi_dev_pct=rsi_dev_pct,
+        price_ema21_dev_pct=price_ema21_dev_pct,
+        ema21_ema50_dev_pct=ema21_ema50_dev_pct,
+        macd_hist=macd_hist_val,
+        macd_hist_prev=macd_hist_prev,
+        rel_volume=rel_vol,
+        breakout_pct=breakout * 100.0,
+        turnover_pct=turnover_pct,
+    )
 
     membership = lists_for(ticker)
     return ScreenHit(
@@ -1067,6 +1172,7 @@ def evaluate_ticker(
         shares=round(shares_val, 0) if shares_val else None,
         market_cap=round(market_cap, 0) if market_cap else None,
         turnover_pct=round(turnover_pct, 4) if turnover_pct is not None else None,
+        momentum_score=momentum,
         score=round(score, 4),
     )
 
@@ -1252,6 +1358,18 @@ def _evaluate_from_snapshot(
     exchange = "TSX" if ticker.endswith(".TO") else "US"
     breakout = (eval_streak_val - streak_start_val) / streak_start_val if streak_start_val else 0.0
     score = max(rel_vol, 0.01) * (1 + max(0.0, breakout))
+    momentum = compute_momentum_score(
+        close=close,
+        rsi=rsi_val,
+        rsi_dev_pct=rsi_dev_pct,
+        price_ema21_dev_pct=price_ema21_dev_pct,
+        ema21_ema50_dev_pct=ema21_ema50_dev_pct,
+        macd_hist=macd_hist_val,
+        macd_hist_prev=macd_hist_prev,
+        rel_volume=rel_vol,
+        breakout_pct=breakout * 100.0,
+        turnover_pct=turnover_pct,
+    )
 
     membership = lists_for(ticker)
     return ScreenHit(
@@ -1282,6 +1400,7 @@ def _evaluate_from_snapshot(
         shares=round(shares_val, 0) if shares_val else None,
         market_cap=round(market_cap, 0) if market_cap else None,
         turnover_pct=round(turnover_pct, 4) if turnover_pct is not None else None,
+        momentum_score=momentum,
         score=round(score, 4),
     )
 

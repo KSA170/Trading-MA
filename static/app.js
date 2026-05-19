@@ -326,7 +326,7 @@ async function runScreen() {
   _screenAbort = new AbortController();
   setRunButtonState(true);
   setStatus('running…');
-  els.body.innerHTML = '<tr class="empty"><td colspan="18">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
+  els.body.innerHTML = '<tr class="empty"><td colspan="19">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
   els.matchCount.textContent = '';
   if (els.asOfLabel) els.asOfLabel.textContent = '';
   updateHighHeader();
@@ -347,11 +347,11 @@ async function runScreen() {
   } catch (err) {
     if (err && err.name === 'AbortError') {
       setStatus('stopped');
-      els.body.innerHTML = '<tr class="empty"><td colspan="18">Stopped.</td></tr>';
+      els.body.innerHTML = '<tr class="empty"><td colspan="19">Stopped.</td></tr>';
     } else {
       console.error(err);
       setStatus('error');
-      els.body.innerHTML = `<tr class="empty"><td colspan="18">Error: ${err.message}</td></tr>`;
+      els.body.innerHTML = `<tr class="empty"><td colspan="19">Error: ${err.message}</td></tr>`;
     }
   } finally {
     _screenAbort = null;
@@ -402,7 +402,7 @@ function sortedResults() {
 function renderResults(results) {
   els.matchCount.textContent = `(${results.length})`;
   if (!results.length) {
-    els.body.innerHTML = '<tr class="empty"><td colspan="18">No matches with these filters.</td></tr>';
+    els.body.innerHTML = '<tr class="empty"><td colspan="19">No matches with these filters.</td></tr>';
     return;
   }
   els.body.innerHTML = '';
@@ -417,9 +417,13 @@ function renderResults(results) {
       tr.classList.add('row-equal');
     }
     const isSelected = selectedTickers.has(r.ticker);
+    const mom = r.momentum_score;
+    const momClass = (mom === null || mom === undefined) ? '' : (mom >= 70 ? 'pos' : (mom < 40 ? 'neg' : ''));
+    const momTxt = (mom === null || mom === undefined) ? '—' : fmtNum(mom, 1);
     tr.innerHTML = `
       <td class="check"><input type="checkbox" data-select="${escapeHtml(r.ticker)}"${isSelected ? ' checked' : ''} aria-label="Select ${escapeHtml(r.ticker)}" /></td>
       <td data-ticker="${escapeHtml(r.ticker)}"><strong>${r.ticker}</strong></td>
+      <td class="num ${momClass}"><strong>${momTxt}</strong></td>
       <td>${escapeHtml(r.name || '')}</td>
       <td><span class="chip">${r.exchange}</span></td>
       <td class="num">${fmtNum(r.close)}</td>

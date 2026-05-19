@@ -442,6 +442,7 @@ def api_debug(ticker: str):
 # fields produced by ScreenHit.to_dict().
 _EXPORT_COLUMNS: list[tuple[str, str]] = [
     ("ticker", "Ticker"),
+    ("momentum_score", "Momentum"),
     ("name", "Name"),
     ("exchange", "Exchange"),
     ("as_of_date", "As-of date"),

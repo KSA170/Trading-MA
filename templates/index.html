@@ -206,6 +206,7 @@
             <tr>
               <th class="check"><input type="checkbox" id="select-all" aria-label="Select all rows" /></th>
               <th data-sort="ticker" data-type="text">Ticker</th>
+              <th class="num" data-sort="momentum_score" data-type="num" title="Heuristic 0-100 momentum continuation score: weighted blend of RSI position, EMA stack alignment, MACD strength + slope, RVol, streak breakout, and turnover. Higher = more indicators aligned for further upside. NOT a calibrated probability — a ranking signal, not a forecast.">Momentum</th>
               <th data-sort="name" data-type="text">Name</th>
               <th data-sort="exchange" data-type="text">Ex.</th>
               <th class="num" data-sort="close" data-type="num">Prev close</th>
@@ -225,7 +226,7 @@
             </tr>
           </thead>
           <tbody id="results-body">
-            <tr class="empty"><td colspan="18">Click "Run screen" to start.</td></tr>
+            <tr class="empty"><td colspan="19">Click "Run screen" to start.</td></tr>
           </tbody>
         </table>
       </div>
