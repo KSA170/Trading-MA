@@ -1,0 +1,32 @@
+name: Classify universe (sector / industry)
+
+# Rebuilds the ticker -> sector/industry map (ticker_sector table) from
+# yfinance industry data. Slow (~30-40 min for the full universe) and a
+# bit flaky, but sector classifications change rarely so weekly is plenty.
+# Run it manually once after first setting up sector alerts, then it keeps
+# itself fresh. Re-running fills any gaps left by yfinance hiccups.
+on:
+  schedule:
+    - cron: '0 8 * * 6'   # Saturdays 08:00 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: classify-universe
+  cancel-in-progress: false
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Build sector/industry map
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python alerts.py classify

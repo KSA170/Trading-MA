@@ -535,22 +535,77 @@ def api_alerts_watchlist_remove():
     return jsonify({"removed": removed, "tickers": alerts.get_watchlist()})
 
 
-@app.route("/api/alerts/config", methods=["GET"])
-def api_alerts_config_get():
-    return jsonify({"enabled": alerts.enabled(), "params": alerts.get_alert_params()})
+@app.route("/api/alerts/rules", methods=["GET"])
+def api_alerts_rules():
+    """All alert rules — each scoped to the watchlist, a sector, or an
+    industry, with its own filter criteria."""
+    return jsonify({
+        "enabled": alerts.enabled(),
+        "rules": alerts.list_rules(),
+        "classification": alerts.classification_status(),
+    })
 
 
-@app.route("/api/alerts/config", methods=["POST"])
-def api_alerts_config_set():
-    """Save the current screener filters as the alert criteria. Body is
-    the same param dict /api/screen accepts; only filter keys are kept."""
+@app.route("/api/alerts/rules", methods=["POST"])
+def api_alerts_rule_create():
+    """Create an alert rule. JSON body: {name, scope_type, scope_value}.
+    The rule's criteria are taken from the current screener filters
+    passed in the query string (same params /api/screen accepts)."""
     if not alerts.enabled():
         return jsonify({"error": "DATABASE_URL not set"}), 400
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or "").strip()
+    scope_type = (payload.get("scope_type") or "").strip().lower()
+    scope_value = (payload.get("scope_value") or "").strip()
+    if not name:
+        return jsonify({"error": "rule name required"}), 400
+    if scope_type not in alerts.SCOPE_TYPES:
+        return jsonify({"error": "invalid scope_type"}), 400
+    if scope_type != "watchlist" and not scope_value:
+        return jsonify({"error": "scope_value required for sector/industry rules"}), 400
     params = _parse_params()
-    # _parse_params adds 'lists' (a tuple) which the alert path doesn't use.
+    params.pop("lists", None)  # not an evaluate_ticker kwarg
+    rule_id = alerts.add_rule(name, scope_type, scope_value, params)
+    if rule_id is None:
+        return jsonify({"error": "could not create rule"}), 500
+    return jsonify({"id": rule_id, "rules": alerts.list_rules()})
+
+
+@app.route("/api/alerts/rules/delete", methods=["POST"])
+def api_alerts_rule_delete():
+    if not alerts.enabled():
+        return jsonify({"error": "DATABASE_URL not set"}), 400
+    payload = request.get_json(silent=True) or {}
+    ok = alerts.delete_rule(int(payload.get("id", 0)))
+    return jsonify({"deleted": ok, "rules": alerts.list_rules()})
+
+
+@app.route("/api/alerts/rules/toggle", methods=["POST"])
+def api_alerts_rule_toggle():
+    if not alerts.enabled():
+        return jsonify({"error": "DATABASE_URL not set"}), 400
+    payload = request.get_json(silent=True) or {}
+    ok = alerts.set_rule_enabled(int(payload.get("id", 0)), bool(payload.get("enabled")))
+    return jsonify({"updated": ok, "rules": alerts.list_rules()})
+
+
+@app.route("/api/alerts/rules/update-criteria", methods=["POST"])
+def api_alerts_rule_update_criteria():
+    """Replace a rule's criteria with the current screener filters
+    (rule id in the JSON body, filters in the query string)."""
+    if not alerts.enabled():
+        return jsonify({"error": "DATABASE_URL not set"}), 400
+    payload = request.get_json(silent=True) or {}
+    params = _parse_params()
     params.pop("lists", None)
-    ok = alerts.set_alert_params(params)
-    return jsonify({"saved": ok, "params": alerts.get_alert_params()})
+    ok = alerts.set_rule_params(int(payload.get("id", 0)), params)
+    return jsonify({"updated": ok, "rules": alerts.list_rules()})
+
+
+@app.route("/api/alerts/scopes", methods=["GET"])
+def api_alerts_scopes():
+    """Distinct sectors and industries for the rule-builder dropdowns."""
+    return jsonify(alerts.list_scopes())
 
 
 # Provision the Postgres snapshot + alert tables (no-ops when DATABASE_URL

@@ -244,15 +244,38 @@
 
     <section class="match-history alerts-panel">
       <button id="alerts-toggle" type="button" class="section-toggle" aria-controls="alerts-body" aria-expanded="true">
-        <span class="chevron">▾</span> Alert watchlist <span class="muted">(realtime Telegram alerts, checked every ~5 min in market hours)</span>
+        <span class="chevron">▾</span> Alert watchlist <span class="muted">(tickers used by watchlist-scoped rules)</span>
       </button>
       <div id="alerts-body" class="history-body">
         <div class="alerts-toolbar">
           <span id="alerts-status" class="muted">—</span>
-          <button id="alerts-save-filters-btn" type="button" title="Save the current filter settings as the criteria the alert engine evaluates against">Use current filters as alert criteria</button>
         </div>
         <div id="alerts-watchlist" class="alerts-watchlist">
           <p class="muted history-empty">Watchlist empty — select rows above and click "Add to alerts".</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="match-history alerts-rules-panel">
+      <button id="rules-toggle" type="button" class="section-toggle" aria-controls="rules-body" aria-expanded="true">
+        <span class="chevron">▾</span> Alert rules <span class="muted">(realtime Telegram alerts, checked every ~15 min in market hours)</span>
+      </button>
+      <div id="rules-body" class="history-body">
+        <div class="rules-create">
+          <input id="rule-name" type="text" placeholder="Rule name — e.g. Biotech momentum" autocomplete="off" />
+          <select id="rule-scope-type" title="What set of stocks this rule scans">
+            <option value="watchlist">Watchlist</option>
+            <option value="industry">Industry</option>
+            <option value="sector">Sector</option>
+          </select>
+          <select id="rule-scope-value" title="Which sector / industry" disabled>
+            <option value="">—</option>
+          </select>
+          <button id="rule-create-btn" type="button" title="Create a rule that uses the filter settings currently configured above as its alert criteria">Create rule (uses current filters)</button>
+        </div>
+        <p id="rules-classify-note" class="muted"></p>
+        <div id="rules-list">
+          <p class="muted history-empty">No alert rules yet — create one above.</p>
         </div>
       </div>
     </section>
