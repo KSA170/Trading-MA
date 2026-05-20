@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Trading MA — Breakout Screener</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://unpkg.com/lightweight-charts@5.0.7/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Trading MA <span class="muted">— Breakout Screener</span></h1>
+    <div class="status">
+      <span id="status-text">idle</span>
+      <span id="cache-status" class="cache-status" title="Disk-cache state for the selected universe. Cold runs hit Yahoo for every ticker and can take minutes."></span>
+      <span id="snapshot-status" class="cache-status" title="Postgres snapshot status. Dates shown here are the ones screens can serve directly from the DB."></span>
+      <button id="warm-btn" type="button" title="Pre-fetch every ticker's recent history to disk so the next screen reads from a local cache instead of Yahoo. Best run after market close.">Warm cache</button>
+      <button id="run-btn" class="primary">Run screen</button>
+    </div>
+  </header>
+
+  <button id="filters-toggle" type="button" class="section-toggle" aria-controls="filters-section" aria-expanded="true">
+    <span class="chevron">▾</span> Filters
+  </button>
+
+  <section class="filters" id="filters-section">
+    <div class="filter-group scope">
+      <label class="group-label">
+        Exchanges
+        <button id="refresh-universe-btn" type="button" class="refresh-btn" title="Re-fetch the US symbol directory from nasdaqtrader.com">↻</button>
+      </label>
+      <div class="filter list-checkboxes">
+        <label class="list-option list-all"><input type="checkbox" id="list_all" checked /> Select all</label>
+        <label class="list-option"><input type="checkbox" data-list-key="nyse" checked /> NYSE (incl. NYSE American)</label>
+        <label class="list-option"><input type="checkbox" data-list-key="nasdaq" checked /> NASDAQ</label>
+        <label class="list-option"><input type="checkbox" data-list-key="tsx" checked /> TSX</label>
+        <label class="list-option"><input type="checkbox" data-list-key="tsxv" checked /> TSX Venture</label>
+      </div>
+    </div>
+
+    <div class="filter-group scope">
+      <label class="group-label">As-of close</label>
+      <div class="filter">
+        <select id="as_of_offset">
+          <option value="0">Latest</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="price">
+      <label class="group-toggle"><input type="checkbox" id="apply_price" checked /> Price range</label>
+      <div class="filter">
+        <label>min ($)</label>
+        <input id="price_min" type="number" step="0.5" min="0" value="1" />
+      </div>
+      <div class="filter">
+        <label>max ($)</label>
+        <input id="price_max" type="number" step="1" min="0" value="1000" />
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="high">
+      <label class="group-toggle"><input type="checkbox" id="apply_high" checked /> Price streak</label>
+      <div class="filter">
+        <label>Streak length (days)</label>
+        <input id="high_lookback" type="number" min="2" max="60" value="2" />
+      </div>
+      <div class="filter">
+        <label>Mode</label>
+        <select id="streak_mode">
+          <option value="high">Higher highs (high &gt; prior high)</option>
+          <option value="close">Higher closes (close &gt; prior close)</option>
+          <option value="green">Green bodies (close &gt; open)</option>
+          <option value="close_green">Higher closes &amp; green bodies (both)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="rsi">
+      <label class="group-toggle"><input type="checkbox" id="apply_rsi" checked /> RSI(14) band</label>
+      <div class="filter">
+        <label>min</label>
+        <input id="rsi_min" type="number" step="0.1" min="0" max="100" value="45" />
+      </div>
+      <div class="filter">
+        <label>max</label>
+        <input id="rsi_max" type="number" step="0.1" min="0" max="100" value="65" />
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="rsi_dev">
+      <label class="group-toggle"><input type="checkbox" id="apply_rsi_dev" checked /> RSI(14) dev vs 9d SMA</label>
+      <div class="filter">
+        <label>min (%)</label>
+        <input id="rsi_dev_min_pct" type="number" step="0.5" value="0" />
+      </div>
+      <div class="filter">
+        <label>max (%)</label>
+        <input id="rsi_dev_max_pct" type="number" step="0.5" value="10" />
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="price_dev">
+      <label class="group-toggle"><input type="checkbox" id="apply_price_dev" checked /> Price dev vs EMA(21)</label>
+      <div class="filter">
+        <label>min (%)</label>
+        <input id="price_dev_min_pct" type="number" step="0.5" value="-1" />
+      </div>
+      <div class="filter">
+        <label>max (%)</label>
+        <input id="price_dev_max_pct" type="number" step="0.5" value="4" />
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="ema_dev">
+      <label class="group-toggle"><input type="checkbox" id="apply_ema_dev" checked /> EMA(21) dev vs EMA(50)</label>
+      <div class="filter">
+        <label>min (%)</label>
+        <input id="ema_dev_min_pct" type="number" step="0.5" value="-3" />
+      </div>
+      <div class="filter">
+        <label>max (%)</label>
+        <input id="ema_dev_max_pct" type="number" step="0.5" value="3" />
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="macd">
+      <label class="group-toggle"><input type="checkbox" id="apply_macd" checked /> MACD histogram bullish</label>
+      <div class="filter">
+        <label>min hist value</label>
+        <input id="macd_hist_min" type="number" step="0.01" value="0" />
+      </div>
+      <div class="filter inline-toggle">
+        <label class="inline-checkbox"><input type="checkbox" id="macd_require_rising" checked /> require rising</label>
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="rvol">
+      <label class="group-toggle"><input type="checkbox" id="apply_rvol" checked /> Relative volume</label>
+      <div class="filter">
+        <label>lookback (days)</label>
+        <input id="rvol_lookback" type="number" min="2" max="60" value="10" />
+      </div>
+      <div class="filter">
+        <label>min (×)</label>
+        <input id="rvol_min" type="number" step="0.05" min="0" value="1.2" />
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="avg_volume">
+      <label class="group-toggle"><input type="checkbox" id="apply_avg_volume" checked /> Avg volume floor</label>
+      <div class="filter">
+        <label>min (shares)</label>
+        <input id="avg_volume_min" type="number" step="1000" min="0" value="50000" />
+      </div>
+    </div>
+
+    <div class="filter-group" data-group="turnover">
+      <label class="group-toggle" title="Daily volume divided by market cap. Equals volume / shares outstanding × 100 — the price cancels out, so this is the share-of-float traded today."><input type="checkbox" id="apply_turnover" /> Volume / market cap</label>
+      <div class="filter">
+        <label>min (%)</label>
+        <input id="turnover_min_pct" type="number" step="0.1" min="0" value="0.5" />
+      </div>
+      <div class="filter">
+        <label>max (%)</label>
+        <input id="turnover_max_pct" type="number" step="0.5" min="0" value="100" />
+      </div>
+    </div>
+
+    <div class="filter-notes">
+      Daily bars based on previous close. Source: Yahoo Finance. Uncheck a group to ignore that filter.
+    </div>
+  </section>
+
+  <main class="content">
+    <section class="results">
+      <h2>
+        Matches <span id="match-count" class="muted"></span>
+        <span id="as-of-label" class="as-of-label muted"></span>
+      </h2>
+      <div class="diagnose-bar">
+        <button id="diagnose-toggle" type="button" class="section-toggle" aria-controls="diagnose-body diagnose-output" aria-expanded="true">
+          <span class="chevron">▾</span>
+        </button>
+        <div id="diagnose-body" class="diagnose-body">
+          <label for="diagnose-ticker" class="muted">Diagnose ticker:</label>
+          <input id="diagnose-ticker" type="text" placeholder="e.g. NRGV" autocomplete="off" />
+          <button id="diagnose-btn" type="button">Run</button>
+          <button id="diagnose-clear-btn" type="button" disabled>Clear</button>
+          <span id="diagnose-status" class="muted"></span>
+        </div>
+      </div>
+      <div id="diagnose-output" class="diagnose-output hidden"></div>
+
+      <div class="results-toolbar">
+        <span id="selection-count" class="muted">0 selected</span>
+        <button id="email-btn" type="button" disabled>Email</button>
+        <button id="share-btn" type="button" disabled>Share</button>
+        <button id="copy-questrade-btn" type="button" disabled title="Copy selected tickers to clipboard — paste into Questrade Pro's watchlist input">Copy for Questrade</button>
+        <button id="alerts-add-btn" type="button" disabled title="Add selected tickers to the realtime alert watchlist (Telegram)">Add to alerts</button>
+        <button id="export-btn" type="button" disabled>Export to Excel</button>
+        <button id="clear-selection-btn" type="button" disabled>Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table id="results-table" class="sortable">
+          <thead>
+            <tr>
+              <th class="check"><input type="checkbox" id="select-all" aria-label="Select all rows" /></th>
+              <th data-sort="ticker" data-type="text">Ticker</th>
+              <th class="num" data-sort="momentum_score" data-type="num" title="Heuristic 0-100 momentum continuation score: weighted blend of RSI position, EMA stack alignment, MACD strength + slope, RVol, streak breakout, and turnover. Higher = more indicators aligned for further upside. NOT a calibrated probability — a ranking signal, not a forecast.">Momentum</th>
+              <th data-sort="name" data-type="text">Name</th>
+              <th data-sort="exchange" data-type="text">Ex.</th>
+              <th class="num" data-sort="close" data-type="num">Prev close</th>
+              <th class="num" data-sort="pct_change" data-type="num">% chg</th>
+              <th class="num" data-sort="high_lookback" data-type="num" id="th-high">2d HH</th>
+              <th class="num" data-sort="rsi" data-type="num">RSI(14)</th>
+              <th class="num" data-sort="rsi_sma9" data-type="num">9d SMA</th>
+              <th class="num" data-sort="rsi_dev_pct" data-type="num">RSI dev</th>
+              <th class="num" data-sort="ema21" data-type="num">EMA(21)</th>
+              <th class="num" data-sort="price_ema21_dev_pct" data-type="num">vs EMA21</th>
+              <th class="num" data-sort="ema50" data-type="num">EMA(50)</th>
+              <th class="num" data-sort="ema21_ema50_dev_pct" data-type="num">21 vs 50</th>
+              <th class="num" data-sort="macd_hist" data-type="num">MACD hist</th>
+              <th class="num" data-sort="rel_volume" data-type="num">RVol</th>
+              <th class="num" data-sort="volume" data-type="num">Volume</th>
+              <th class="num" data-sort="turnover_pct" data-type="num" title="Daily volume / market cap × 100 — equivalently volume / shares outstanding.">Turnover %</th>
+            </tr>
+          </thead>
+          <tbody id="results-body">
+            <tr class="empty"><td colspan="19">Click "Run screen" to start.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="match-history">
+      <button id="history-toggle" type="button" class="section-toggle" aria-controls="history-body" aria-expanded="true">
+        <span class="chevron">▾</span> Match history <span class="muted">(last 5 runs)</span>
+      </button>
+      <div id="history-body" class="history-body">
+        <p class="muted history-empty">No runs yet — successful screens will be saved here automatically.</p>
+      </div>
+    </section>
+
+    <section class="match-history alerts-panel">
+      <button id="alerts-toggle" type="button" class="section-toggle" aria-controls="alerts-body" aria-expanded="true">
+        <span class="chevron">▾</span> Alert watchlist <span class="muted">(realtime Telegram alerts, checked every ~5 min in market hours)</span>
+      </button>
+      <div id="alerts-body" class="history-body">
+        <div class="alerts-toolbar">
+          <span id="alerts-status" class="muted">—</span>
+          <button id="alerts-save-filters-btn" type="button" title="Save the current filter settings as the criteria the alert engine evaluates against">Use current filters as alert criteria</button>
+        </div>
+        <div id="alerts-watchlist" class="alerts-watchlist">
+          <p class="muted history-empty">Watchlist empty — select rows above and click "Add to alerts".</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="hover-chart" class="hover-chart hidden" aria-hidden="true">
+    <div class="hover-chart-header">
+      <span id="hover-chart-title"></span>
+      <span id="hover-chart-status" class="muted"></span>
+    </div>
+    <div id="hover-chart-container" class="hover-chart-container"></div>
+    <div class="hover-chart-legend">
+      <span><span class="dot dot-ema21"></span> EMA 21</span>
+      <span><span class="dot dot-ema50"></span> EMA 50</span>
+      <span><span class="dot dot-rsi"></span> RSI(14)</span>
+      <span><span class="dot dot-rsi9"></span> 9d SMA</span>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
