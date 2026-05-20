@@ -16,8 +16,14 @@ const els = {
   emailBtn: $('#email-btn'),
   shareBtn: $('#share-btn'),
   copyQuestradeBtn: $('#copy-questrade-btn'),
+  alertsAddBtn: $('#alerts-add-btn'),
   exportBtn: $('#export-btn'),
   clearSelectionBtn: $('#clear-selection-btn'),
+  alertsToggle: $('#alerts-toggle'),
+  alertsBody: $('#alerts-body'),
+  alertsStatus: $('#alerts-status'),
+  alertsWatchlist: $('#alerts-watchlist'),
+  alertsSaveFiltersBtn: $('#alerts-save-filters-btn'),
   diagnoseTicker: $('#diagnose-ticker'),
   diagnoseBtn: $('#diagnose-btn'),
   diagnoseClearBtn: $('#diagnose-clear-btn'),
@@ -465,7 +471,7 @@ function updateSelectionUI() {
   if (els.selectionCount) {
     els.selectionCount.textContent = count === 1 ? '1 selected' : `${count} selected`;
   }
-  [els.emailBtn, els.shareBtn, els.copyQuestradeBtn, els.exportBtn, els.clearSelectionBtn].forEach((b) => {
+  [els.emailBtn, els.shareBtn, els.copyQuestradeBtn, els.alertsAddBtn, els.exportBtn, els.clearSelectionBtn].forEach((b) => {
     if (b) b.disabled = count === 0;
   });
   if (els.selectAll) {
@@ -1169,6 +1175,106 @@ if (els.historyBody) {
     }
   });
 }
+
+
+// --- alert watchlist ------------------------------------------------------
+// The realtime alert engine (alerts.py, run by a GitHub Actions cron)
+// monitors these tickers and pushes Telegram messages when they match the
+// saved alert criteria. This panel just manages the watchlist + criteria.
+
+function renderAlertWatchlist(data) {
+  const tickers = (data && data.tickers) || [];
+  if (els.alertsStatus) {
+    if (!data || data.enabled === false) {
+      els.alertsStatus.textContent = 'alerts disabled — DATABASE_URL not set on the server';
+    } else {
+      els.alertsStatus.textContent = tickers.length
+        ? `${tickers.length} ticker${tickers.length === 1 ? '' : 's'} monitored`
+        : 'no tickers monitored yet';
+    }
+  }
+  if (!els.alertsWatchlist) return;
+  if (!tickers.length) {
+    els.alertsWatchlist.innerHTML = '<p class="muted history-empty">Watchlist empty — select rows above and click "Add to alerts".</p>';
+    return;
+  }
+  els.alertsWatchlist.innerHTML = '';
+  for (const t of tickers) {
+    const chip = document.createElement('span');
+    chip.className = 'alert-chip';
+    chip.innerHTML = `<span>${escapeHtml(t)}</span><button type="button" data-remove="${escapeHtml(t)}" title="Remove ${escapeHtml(t)} from alerts">×</button>`;
+    els.alertsWatchlist.appendChild(chip);
+  }
+}
+
+async function loadAlertWatchlist() {
+  if (!els.alertsWatchlist) return;
+  try {
+    const res = await fetch('/api/alerts/watchlist');
+    if (!res.ok) return;
+    renderAlertWatchlist(await res.json());
+  } catch (_) { /* silent */ }
+}
+
+async function addSelectedToAlerts() {
+  const rows = selectedRows();
+  if (!rows.length) return;
+  const tickers = rows.map((r) => r.ticker);
+  try {
+    const res = await fetch('/api/alerts/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tickers }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus('alert add failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    renderAlertWatchlist({ enabled: true, tickers: data.tickers });
+    setStatus(`added ${tickers.length} to alert watchlist`);
+  } catch (_) {
+    setStatus('alert add failed');
+  }
+}
+
+async function removeFromAlerts(ticker) {
+  try {
+    const res = await fetch('/api/alerts/watchlist/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderAlertWatchlist({ enabled: true, tickers: data.tickers });
+  } catch (_) { /* silent */ }
+}
+
+async function saveAlertFilters() {
+  try {
+    const res = await fetch('/api/alerts/config?' + buildQuery(), { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus('save alert criteria failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    setStatus('alert criteria saved — the engine will use these filters');
+  } catch (_) {
+    setStatus('save alert criteria failed');
+  }
+}
+
+if (els.alertsAddBtn) els.alertsAddBtn.addEventListener('click', addSelectedToAlerts);
+if (els.alertsSaveFiltersBtn) els.alertsSaveFiltersBtn.addEventListener('click', saveAlertFilters);
+if (els.alertsWatchlist) {
+  els.alertsWatchlist.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-remove]');
+    if (btn) removeFromAlerts(btn.dataset.remove);
+  });
+}
+wireCollapse(els.alertsToggle, els.alertsBody, 'collapse_alerts');
+loadAlertWatchlist();
 
 
 // --- bootstrap -------------------------------------------------------------

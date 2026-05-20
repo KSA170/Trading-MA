@@ -558,3 +558,40 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
   color: var(--muted);
   margin-right: 3px;
 }
+
+.alerts-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.alerts-toolbar #alerts-status { font-size: 12px; }
+.alerts-watchlist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.alerts-watchlist .history-empty { font-size: 12px; margin: 4px 0; }
+.alert-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.alert-chip button {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.alert-chip button:hover { color: var(--red); }

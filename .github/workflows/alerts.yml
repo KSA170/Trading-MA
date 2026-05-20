@@ -1,0 +1,36 @@
+name: Realtime alerts
+
+# Runs the alert engine every 5 minutes during (roughly) US market hours.
+# 13:00-21:00 UTC brackets 9:30am-4:00pm ET across both EST and EDT;
+# alerts.py does the precise ET market-hours check and exits early when
+# the session is closed, so off-hours invocations are cheap no-ops.
+on:
+  schedule:
+    - cron: '*/5 13-21 * * 1-5'
+  workflow_dispatch: {}   # allow manual runs from the Actions tab
+
+# Don't pile up overlapping runs if one is slow.
+concurrency:
+  group: realtime-alerts
+  cancel-in-progress: false
+
+jobs:
+  alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run alert engine
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python alerts.py

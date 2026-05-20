@@ -21,6 +21,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 import screener
 import snapshots
+import alerts
 from tickers import LIST_LABELS, refresh_universe, last_fetch_errors
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -499,10 +500,64 @@ def api_export_xlsx():
     )
 
 
-# Provision the Postgres snapshot table (no-ops when DATABASE_URL is unset),
-# then kick off the daily auto-warm scheduler. The auto-warm thread will
-# write a snapshot row per ticker when each warm completes.
+@app.route("/api/alerts/watchlist", methods=["GET"])
+def api_alerts_watchlist():
+    """Tickers currently monitored by the realtime alert engine."""
+    return jsonify({
+        "enabled": alerts.enabled(),
+        "tickers": alerts.get_watchlist(),
+    })
+
+
+@app.route("/api/alerts/watchlist", methods=["POST"])
+def api_alerts_watchlist_add():
+    """Add tickers to the alert watchlist (JSON body: {"tickers": [...]})."""
+    if not alerts.enabled():
+        return jsonify({"error": "DATABASE_URL not set"}), 400
+    payload = request.get_json(silent=True) or {}
+    tickers = payload.get("tickers") or []
+    if not isinstance(tickers, list) or not tickers:
+        return jsonify({"error": "no tickers provided"}), 400
+    added = alerts.add_to_watchlist([str(t) for t in tickers])
+    return jsonify({"added": added, "tickers": alerts.get_watchlist()})
+
+
+@app.route("/api/alerts/watchlist/remove", methods=["POST"])
+def api_alerts_watchlist_remove():
+    """Remove one ticker (JSON body: {"ticker": "AAPL"})."""
+    if not alerts.enabled():
+        return jsonify({"error": "DATABASE_URL not set"}), 400
+    payload = request.get_json(silent=True) or {}
+    ticker = (payload.get("ticker") or "").strip()
+    if not ticker:
+        return jsonify({"error": "no ticker provided"}), 400
+    removed = alerts.remove_from_watchlist(ticker)
+    return jsonify({"removed": removed, "tickers": alerts.get_watchlist()})
+
+
+@app.route("/api/alerts/config", methods=["GET"])
+def api_alerts_config_get():
+    return jsonify({"enabled": alerts.enabled(), "params": alerts.get_alert_params()})
+
+
+@app.route("/api/alerts/config", methods=["POST"])
+def api_alerts_config_set():
+    """Save the current screener filters as the alert criteria. Body is
+    the same param dict /api/screen accepts; only filter keys are kept."""
+    if not alerts.enabled():
+        return jsonify({"error": "DATABASE_URL not set"}), 400
+    params = _parse_params()
+    # _parse_params adds 'lists' (a tuple) which the alert path doesn't use.
+    params.pop("lists", None)
+    ok = alerts.set_alert_params(params)
+    return jsonify({"saved": ok, "params": alerts.get_alert_params()})
+
+
+# Provision the Postgres snapshot + alert tables (no-ops when DATABASE_URL
+# is unset), then kick off the daily auto-warm scheduler. The auto-warm
+# thread will write a snapshot row per ticker when each warm completes.
 snapshots.init()
+alerts.init_tables()
 screener.start_auto_warm()
 
 

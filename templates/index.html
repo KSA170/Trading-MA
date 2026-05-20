@@ -197,6 +197,7 @@
         <button id="email-btn" type="button" disabled>Email</button>
         <button id="share-btn" type="button" disabled>Share</button>
         <button id="copy-questrade-btn" type="button" disabled title="Copy selected tickers to clipboard — paste into Questrade Pro's watchlist input">Copy for Questrade</button>
+        <button id="alerts-add-btn" type="button" disabled title="Add selected tickers to the realtime alert watchlist (Telegram)">Add to alerts</button>
         <button id="export-btn" type="button" disabled>Export to Excel</button>
         <button id="clear-selection-btn" type="button" disabled>Clear</button>
       </div>
@@ -238,6 +239,21 @@
       </button>
       <div id="history-body" class="history-body">
         <p class="muted history-empty">No runs yet — successful screens will be saved here automatically.</p>
+      </div>
+    </section>
+
+    <section class="match-history alerts-panel">
+      <button id="alerts-toggle" type="button" class="section-toggle" aria-controls="alerts-body" aria-expanded="true">
+        <span class="chevron">▾</span> Alert watchlist <span class="muted">(realtime Telegram alerts, checked every ~5 min in market hours)</span>
+      </button>
+      <div id="alerts-body" class="history-body">
+        <div class="alerts-toolbar">
+          <span id="alerts-status" class="muted">—</span>
+          <button id="alerts-save-filters-btn" type="button" title="Save the current filter settings as the criteria the alert engine evaluates against">Use current filters as alert criteria</button>
+        </div>
+        <div id="alerts-watchlist" class="alerts-watchlist">
+          <p class="muted history-empty">Watchlist empty — select rows above and click "Add to alerts".</p>
+        </div>
       </div>
     </section>
   </main>
