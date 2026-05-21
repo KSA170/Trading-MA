@@ -70,9 +70,9 @@ button.primary {
 button.primary:hover { filter: brightness(1.05); }
 .filters {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 14px;
-  padding: 14px 20px;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 10px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
@@ -119,8 +119,8 @@ button.warn:hover { filter: brightness(1.05); }
   flex-direction: row;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel-2);
@@ -186,34 +186,105 @@ button.warn:hover { filter: brightness(1.05); }
   margin: 0;
 }
 
-.filter.list-checkboxes {
+/* Exchange filter — compact dropdown */
+.filter.exchange-dd { position: relative; flex: 1 1 100%; }
+.dd-btn {
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.dd-btn::after { content: " ▾"; color: var(--muted); }
+.dd-btn:hover { border-color: var(--accent); }
+.dd-menu {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  white-space: nowrap;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  padding: 6px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  flex: 1 1 100%;
+  gap: 3px;
 }
-.filter.list-checkboxes .list-option {
+.dd-menu.hidden { display: none; }
+.dd-menu .list-option {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
   color: var(--text);
   cursor: pointer;
-  padding: 2px 0;
+  padding: 3px 4px;
   user-select: none;
 }
-.filter.list-checkboxes .list-option input[type="checkbox"] {
+.dd-menu .list-option input[type="checkbox"] {
   accent-color: var(--accent);
   width: 14px;
   height: 14px;
   cursor: pointer;
   margin: 0;
 }
-.filter.list-checkboxes .list-all {
+.dd-menu .list-all {
   font-weight: 600;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 4px;
+  padding-bottom: 5px;
   margin-bottom: 2px;
+}
+
+/* Column show/hide menu */
+.column-menu-wrap { position: relative; }
+.column-menu {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.column-menu.hidden { display: none; }
+.column-menu .col-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 3px 4px;
+  white-space: nowrap;
+  user-select: none;
+}
+.column-menu .col-opt input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  margin: 0;
+}
+.column-menu .col-menu-hint {
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 6px;
 }
 
 .filter-group .refresh-btn {
@@ -424,8 +495,8 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 
 .hover-chart {
   position: fixed;
-  width: 620px;
-  height: 380px;
+  width: 820px;
+  height: 520px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -619,9 +690,8 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 #rules-list { display: flex; flex-direction: column; gap: 6px; }
 .rule-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel-2);
@@ -629,6 +699,12 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
   font-size: 12px;
 }
 .rule-row.rule-off { opacity: 0.55; }
+.rule-row .rule-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .rule-row .rule-name { font-weight: 600; font-size: 13px; }
 .rule-row .rule-scope {
   padding: 1px 7px;
@@ -648,3 +724,26 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
   padding: 0 4px;
 }
 .rule-row .rule-delete:hover { color: var(--red); }
+.rule-row .rule-criteria {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+.rule-row .rule-crit {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.rule-row .rule-crit-none { font-size: 11px; color: var(--muted); }
+
+/* Draggable column headers */
+table.sortable th[draggable="true"] { cursor: pointer; }
+table.sortable th.th-drag-over {
+  box-shadow: inset 2px 0 0 var(--accent);
+}

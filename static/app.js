@@ -10,15 +10,19 @@ const els = {
   asOfLabel: $('#as-of-label'),
   body: $('#results-body'),
   thead: document.querySelector('#results-table thead'),
-  thHigh: $('#th-high'),
   selectAll: $('#select-all'),
   selectionCount: $('#selection-count'),
   emailBtn: $('#email-btn'),
   shareBtn: $('#share-btn'),
-  copyQuestradeBtn: $('#copy-questrade-btn'),
+  exportTvBtn: $('#export-tv-btn'),
   alertsAddBtn: $('#alerts-add-btn'),
+  saveHistoryBtn: $('#save-history-btn'),
   exportBtn: $('#export-btn'),
   clearSelectionBtn: $('#clear-selection-btn'),
+  columnsBtn: $('#columns-btn'),
+  columnMenu: $('#column-menu'),
+  exchangeDdBtn: $('#exchange-dd-btn'),
+  exchangeDdMenu: $('#exchange-dd-menu'),
   alertsToggle: $('#alerts-toggle'),
   alertsBody: $('#alerts-body'),
   alertsStatus: $('#alerts-status'),
@@ -51,6 +55,7 @@ const els = {
 const selectedTickers = new Set();
 
 let lastResults = [];
+let lastRunData = null;  // the most recent /api/screen response — for "Save to history"
 let sortState = { key: null, dir: null }; // dir: 'asc' | 'desc'
 
 const inputs = {
@@ -251,12 +256,22 @@ function buildQuery() {
   return params.toString();
 }
 
+function updateExchangeDdLabel() {
+  if (!els.exchangeDdBtn || !listCheckboxes.length) return;
+  const total = listCheckboxes.length;
+  const checked = listCheckboxes.filter((cb) => cb.checked).length;
+  els.exchangeDdBtn.textContent = checked === 0 ? 'No exchanges'
+    : checked === total ? 'All exchanges'
+    : `${checked} of ${total} exchanges`;
+}
+
 function updateListAllState() {
   if (!listAllCb || !listCheckboxes.length) return;
   const total = listCheckboxes.length;
   const checked = listCheckboxes.filter((cb) => cb.checked).length;
   listAllCb.checked = checked === total;
   listAllCb.indeterminate = checked > 0 && checked < total;
+  updateExchangeDdLabel();
   // Disable Run if nothing is selected — empty universe is not a useful screen.
   if (els.runBtn) {
     if (checked === 0) {
@@ -347,7 +362,7 @@ async function runScreen() {
   _screenAbort = new AbortController();
   setRunButtonState(true);
   setStatus('running…');
-  els.body.innerHTML = '<tr class="empty"><td colspan="19">Fetching market data — this may take 30–90s on a cold cache…</td></tr>';
+  els.body.innerHTML = `<tr class="empty"><td colspan="${emptyColspan()}">Fetching market data — this may take 30–90s on a cold cache…</td></tr>`;
   els.matchCount.textContent = '';
   if (els.asOfLabel) els.asOfLabel.textContent = '';
   updateHighHeader();
@@ -356,6 +371,7 @@ async function runScreen() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     lastResults = data.results || [];
+    lastRunData = data;  // kept for "Save to history" — see saveSelectionToHistory
     renderTable();
     if (els.asOfLabel) {
       const d = data.as_of_date || (asOfSelect && asOfSelect.options[asOfSelect.selectedIndex]?.text) || '';
@@ -363,16 +379,14 @@ async function runScreen() {
     }
     setStatus(data.cached ? 'cached' : `done in ${data.elapsed_sec || '?'}s`);
     if (asOfSelect && asOfSelect.options.length <= 1) loadDates();
-    // Record this run for the match-history panel (no-op when 0 hits).
-    if (data.params) recordHistory(data, data.params);
   } catch (err) {
     if (err && err.name === 'AbortError') {
       setStatus('stopped');
-      els.body.innerHTML = '<tr class="empty"><td colspan="19">Stopped.</td></tr>';
+      els.body.innerHTML = `<tr class="empty"><td colspan="${emptyColspan()}">Stopped.</td></tr>`;
     } else {
       console.error(err);
       setStatus('error');
-      els.body.innerHTML = `<tr class="empty"><td colspan="19">Error: ${err.message}</td></tr>`;
+      els.body.innerHTML = `<tr class="empty"><td colspan="${emptyColspan()}">Error: ${err.message}</td></tr>`;
     }
   } finally {
     _screenAbort = null;
@@ -381,15 +395,10 @@ async function runScreen() {
   }
 }
 
+// The high-lookback column's header label is dynamic (e.g. "3d HC"),
+// so a streak-input change just re-renders the header.
 function updateHighHeader() {
-  if (!els.thHigh) return;
-  const n = parseInt(inputs.high_lookback.value, 10);
-  const mode = inputs.streak_mode ? inputs.streak_mode.value : 'high';
-  const suffix = mode === 'close' ? 'HC'
-    : mode === 'green' ? 'green'
-    : mode === 'close_green' ? 'HC+G'
-    : 'HH';
-  els.thHigh.textContent = (Number.isFinite(n) && n > 0) ? `${n}d ${suffix}` : suffix;
+  renderHeader();
 }
 
 function applySortIndicators() {
@@ -420,55 +429,214 @@ function sortedResults() {
   return out;
 }
 
+// --- table columns (show / hide / reorder) --------------------------------
+// Columns are data-driven so the user can hide them and drag-reorder them.
+// The leading checkbox column is fixed and not part of this list. The order
+// array and hidden-key set persist in localStorage.
+
+const COLUMN_DEFS = [
+  { key: 'ticker', label: 'Ticker', type: 'text',
+    render: (r) => `<td data-ticker="${escapeHtml(r.ticker)}"><strong>${escapeHtml(r.ticker)}</strong></td>` },
+  { key: 'momentum_score', label: 'Momentum', type: 'num',
+    title: 'Heuristic 0-100 momentum continuation score: weighted blend of RSI position, EMA stack, MACD strength + slope, RVol, streak breakout, and turnover. NOT a calibrated probability — a ranking signal.',
+    render: (r) => {
+      const m = r.momentum_score;
+      const c = (m == null) ? '' : (m >= 70 ? 'pos' : (m < 40 ? 'neg' : ''));
+      return `<td class="num ${c}"><strong>${m == null ? '—' : fmtNum(m, 1)}</strong></td>`;
+    } },
+  { key: 'name', label: 'Name', type: 'text',
+    render: (r) => `<td>${escapeHtml(r.name || '')}</td>` },
+  { key: 'exchange', label: 'Ex.', type: 'text',
+    render: (r) => `<td><span class="chip">${escapeHtml(r.exchange || '')}</span></td>` },
+  { key: 'close', label: 'Prev close', type: 'num',
+    render: (r) => `<td class="num">${fmtNum(r.close)}</td>` },
+  { key: 'pct_change', label: '% chg', type: 'num',
+    render: (r) => `<td class="num ${r.pct_change >= 0 ? 'pos' : 'neg'}">${r.pct_change >= 0 ? '+' : ''}${fmtNum(r.pct_change)}%</td>` },
+  { key: 'high_lookback', label: '2d HH', type: 'num',
+    render: (r) => `<td class="num">${fmtNum(r.high_lookback)}</td>` },
+  { key: 'rsi', label: 'RSI(14)', type: 'num',
+    render: (r) => `<td class="num">${fmtNum(r.rsi)}</td>` },
+  { key: 'rsi_sma9', label: '9d SMA', type: 'num',
+    render: (r) => `<td class="num">${fmtNum(r.rsi_sma9)}</td>` },
+  { key: 'rsi_dev_pct', label: 'RSI dev', type: 'num',
+    render: (r) => `<td class="num ${r.rsi_dev_pct >= 0 ? 'pos' : 'neg'}">${r.rsi_dev_pct >= 0 ? '+' : ''}${fmtNum(r.rsi_dev_pct)}%</td>` },
+  { key: 'ema21', label: 'EMA(21)', type: 'num',
+    render: (r) => `<td class="num">${fmtNum(r.ema21)}</td>` },
+  { key: 'price_ema21_dev_pct', label: 'vs EMA21', type: 'num',
+    render: (r) => `<td class="num ${r.price_ema21_dev_pct >= 0 ? 'pos' : 'neg'}">${r.price_ema21_dev_pct >= 0 ? '+' : ''}${fmtNum(r.price_ema21_dev_pct)}%</td>` },
+  { key: 'ema50', label: 'EMA(50)', type: 'num',
+    render: (r) => `<td class="num">${fmtNum(r.ema50)}</td>` },
+  { key: 'ema21_ema50_dev_pct', label: '21 vs 50', type: 'num',
+    render: (r) => `<td class="num ${r.ema21_ema50_dev_pct >= 0 ? 'pos' : 'neg'}">${r.ema21_ema50_dev_pct >= 0 ? '+' : ''}${fmtNum(r.ema21_ema50_dev_pct)}%</td>` },
+  { key: 'macd_hist', label: 'MACD hist', type: 'num',
+    render: (r) => `<td class="num ${r.macd_hist >= 0 ? 'pos' : 'neg'}">${fmtNum(r.macd_hist, 4)}</td>` },
+  { key: 'rel_volume', label: 'RVol', type: 'num',
+    render: (r) => `<td class="num">${fmtNum(r.rel_volume)}×</td>` },
+  { key: 'volume', label: 'Volume', type: 'num',
+    render: (r) => `<td class="num">${fmtVol(r.volume)}</td>` },
+  { key: 'turnover_pct', label: 'Turnover %', type: 'num',
+    title: 'Daily volume / market cap × 100 — equivalently volume / shares outstanding.',
+    render: (r) => `<td class="num" title="${r.market_cap ? 'mkt cap ' + fmtVol(r.market_cap) : 'shares outstanding unknown'}">${r.turnover_pct == null ? '—' : fmtNum(r.turnover_pct, 2) + '%'}</td>` },
+];
+const COLUMN_BY_KEY = Object.fromEntries(COLUMN_DEFS.map((d) => [d.key, d]));
+const ALL_COLUMN_KEYS = COLUMN_DEFS.map((d) => d.key);
+const COLS_ORDER_KEY = 'match_columns_order_v1';
+const COLS_HIDDEN_KEY = 'match_columns_hidden_v1';
+
+function loadColumnOrder() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLS_ORDER_KEY) || '[]');
+    if (Array.isArray(saved)) {
+      const valid = saved.filter((k) => COLUMN_BY_KEY[k]);
+      for (const k of ALL_COLUMN_KEYS) if (!valid.includes(k)) valid.push(k);
+      if (valid.length) return valid;
+    }
+  } catch (_) { /* fall through */ }
+  return ALL_COLUMN_KEYS.slice();
+}
+function loadHiddenColumns() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLS_HIDDEN_KEY) || '[]');
+    if (Array.isArray(saved)) return new Set(saved.filter((k) => COLUMN_BY_KEY[k]));
+  } catch (_) { /* fall through */ }
+  return new Set();
+}
+let columnOrder = loadColumnOrder();
+let hiddenColumns = loadHiddenColumns();
+
+function saveColumnState() {
+  try {
+    localStorage.setItem(COLS_ORDER_KEY, JSON.stringify(columnOrder));
+    localStorage.setItem(COLS_HIDDEN_KEY, JSON.stringify(Array.from(hiddenColumns)));
+  } catch (_) { /* ignore */ }
+}
+function visibleColumns() {
+  return columnOrder.map((k) => COLUMN_BY_KEY[k]).filter((d) => d && !hiddenColumns.has(d.key));
+}
+function emptyColspan() { return visibleColumns().length + 1; }
+
+function columnLabel(def) {
+  if (def.key === 'high_lookback') {
+    const n = parseInt(inputs.high_lookback.value, 10);
+    const mode = inputs.streak_mode ? inputs.streak_mode.value : 'high';
+    const suffix = mode === 'close' ? 'HC'
+      : mode === 'green' ? 'green'
+      : mode === 'close_green' ? 'HC+G'
+      : 'HH';
+    return (Number.isFinite(n) && n > 0) ? `${n}d ${suffix}` : suffix;
+  }
+  return def.label;
+}
+
+function renderHeader() {
+  if (!els.thead) return;
+  const tr = els.thead.querySelector('tr');
+  if (!tr) return;
+  // Keep the first th (.check — holds #select-all); rebuild the rest.
+  while (tr.children.length > 1) tr.removeChild(tr.lastChild);
+  for (const def of visibleColumns()) {
+    const th = document.createElement('th');
+    if (def.type === 'num') th.className = 'num';
+    th.dataset.sort = def.key;
+    th.dataset.type = def.type;
+    th.dataset.colKey = def.key;
+    th.draggable = true;
+    th.textContent = columnLabel(def);
+    if (def.title) th.title = def.title;
+    tr.appendChild(th);
+  }
+  applySortIndicators();
+}
+
+// Column drag-to-reorder — HTML5 DnD on the th headers.
+let _dragColKey = null;
+function onHeadDragStart(ev) {
+  const th = ev.target.closest('th[data-col-key]');
+  if (!th) return;
+  _dragColKey = th.dataset.colKey;
+  ev.dataTransfer.effectAllowed = 'move';
+  try { ev.dataTransfer.setData('text/plain', _dragColKey); } catch (_) {}
+}
+function onHeadDragOver(ev) {
+  const th = ev.target.closest('th[data-col-key]');
+  if (th && _dragColKey) {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'move';
+    th.classList.add('th-drag-over');
+  }
+}
+function onHeadDragLeave(ev) {
+  const th = ev.target.closest('th[data-col-key]');
+  if (th) th.classList.remove('th-drag-over');
+}
+function onHeadDrop(ev) {
+  const th = ev.target.closest('th[data-col-key]');
+  if (th) th.classList.remove('th-drag-over');
+  const dragKey = _dragColKey;
+  _dragColKey = null;
+  if (!th || !dragKey) return;
+  ev.preventDefault();
+  const targetKey = th.dataset.colKey;
+  if (targetKey === dragKey) return;
+  const order = columnOrder.slice();
+  const from = order.indexOf(dragKey);
+  if (from < 0) return;
+  order.splice(from, 1);
+  const to = order.indexOf(targetKey);
+  if (to < 0) return;
+  order.splice(to, 0, dragKey);  // insert before the drop target
+  columnOrder = order;
+  saveColumnState();
+  renderTable();
+}
+
+function renderColumnMenu() {
+  if (!els.columnMenu) return;
+  els.columnMenu.innerHTML = '';
+  for (const key of columnOrder) {
+    const def = COLUMN_BY_KEY[key];
+    if (!def) continue;
+    const lbl = document.createElement('label');
+    lbl.className = 'col-opt';
+    const checked = hiddenColumns.has(key) ? '' : ' checked';
+    lbl.innerHTML = `<input type="checkbox" data-col-toggle="${escapeHtml(key)}"${checked} /> ${escapeHtml(def.label)}`;
+    els.columnMenu.appendChild(lbl);
+  }
+  const hint = document.createElement('div');
+  hint.className = 'col-menu-hint';
+  hint.textContent = 'Drag column headers in the table to reorder them.';
+  els.columnMenu.appendChild(hint);
+}
+function toggleColumnMenu(show) {
+  if (!els.columnMenu) return;
+  const willShow = (show === undefined) ? els.columnMenu.classList.contains('hidden') : show;
+  if (willShow) renderColumnMenu();
+  els.columnMenu.classList.toggle('hidden', !willShow);
+}
+
 function renderResults(results) {
   els.matchCount.textContent = `(${results.length})`;
   if (!results.length) {
-    els.body.innerHTML = '<tr class="empty"><td colspan="19">No matches with these filters.</td></tr>';
+    els.body.innerHTML = `<tr class="empty"><td colspan="${emptyColspan()}">No matches with these filters.</td></tr>`;
     return;
   }
+  const cols = visibleColumns();
   els.body.innerHTML = '';
   for (const r of results) {
     const tr = document.createElement('tr');
-    const pctClass = r.pct_change >= 0 ? 'pos' : 'neg';
-    const devClass = r.rsi_dev_pct >= 0 ? 'pos' : 'neg';
-    const emaDevClass = r.price_ema21_dev_pct >= 0 ? 'pos' : 'neg';
-    const emaCrossClass = r.ema21_ema50_dev_pct >= 0 ? 'pos' : 'neg';
-    const macdHistClass = r.macd_hist >= 0 ? 'pos' : 'neg';
-    if (r.rsi !== null && r.rsi_sma9 !== null && r.rsi !== undefined && r.rsi_sma9 !== undefined && r.rsi === r.rsi_sma9) {
+    if (r.rsi != null && r.rsi_sma9 != null && r.rsi === r.rsi_sma9) {
       tr.classList.add('row-equal');
     }
     const isSelected = selectedTickers.has(r.ticker);
-    const mom = r.momentum_score;
-    const momClass = (mom === null || mom === undefined) ? '' : (mom >= 70 ? 'pos' : (mom < 40 ? 'neg' : ''));
-    const momTxt = (mom === null || mom === undefined) ? '—' : fmtNum(mom, 1);
-    tr.innerHTML = `
-      <td class="check"><input type="checkbox" data-select="${escapeHtml(r.ticker)}"${isSelected ? ' checked' : ''} aria-label="Select ${escapeHtml(r.ticker)}" /></td>
-      <td data-ticker="${escapeHtml(r.ticker)}"><strong>${r.ticker}</strong></td>
-      <td class="num ${momClass}"><strong>${momTxt}</strong></td>
-      <td>${escapeHtml(r.name || '')}</td>
-      <td><span class="chip">${r.exchange}</span></td>
-      <td class="num">${fmtNum(r.close)}</td>
-      <td class="num ${pctClass}">${r.pct_change >= 0 ? '+' : ''}${fmtNum(r.pct_change)}%</td>
-      <td class="num">${fmtNum(r.high_lookback)}</td>
-      <td class="num">${fmtNum(r.rsi)}</td>
-      <td class="num">${fmtNum(r.rsi_sma9)}</td>
-      <td class="num ${devClass}">${r.rsi_dev_pct >= 0 ? '+' : ''}${fmtNum(r.rsi_dev_pct)}%</td>
-      <td class="num">${fmtNum(r.ema21)}</td>
-      <td class="num ${emaDevClass}">${r.price_ema21_dev_pct >= 0 ? '+' : ''}${fmtNum(r.price_ema21_dev_pct)}%</td>
-      <td class="num">${fmtNum(r.ema50)}</td>
-      <td class="num ${emaCrossClass}">${r.ema21_ema50_dev_pct >= 0 ? '+' : ''}${fmtNum(r.ema21_ema50_dev_pct)}%</td>
-      <td class="num ${macdHistClass}">${fmtNum(r.macd_hist, 4)}</td>
-      <td class="num">${fmtNum(r.rel_volume)}×</td>
-      <td class="num">${fmtVol(r.volume)}</td>
-      <td class="num" title="${r.market_cap ? 'mkt cap ' + fmtVol(r.market_cap) : 'shares outstanding unknown'}">${r.turnover_pct == null ? '—' : fmtNum(r.turnover_pct, 2) + '%'}</td>
-    `;
+    const checkTd = `<td class="check"><input type="checkbox" data-select="${escapeHtml(r.ticker)}"${isSelected ? ' checked' : ''} aria-label="Select ${escapeHtml(r.ticker)}" /></td>`;
+    tr.innerHTML = checkTd + cols.map((c) => c.render(r)).join('');
     els.body.appendChild(tr);
   }
 }
 
 function renderTable() {
   pruneSelection();
-  applySortIndicators();
+  renderHeader();
   renderResults(sortedResults());
   updateSelectionUI();
 }
@@ -486,7 +654,8 @@ function updateSelectionUI() {
   if (els.selectionCount) {
     els.selectionCount.textContent = count === 1 ? '1 selected' : `${count} selected`;
   }
-  [els.emailBtn, els.shareBtn, els.copyQuestradeBtn, els.alertsAddBtn, els.exportBtn, els.clearSelectionBtn].forEach((b) => {
+  [els.emailBtn, els.shareBtn, els.exportTvBtn, els.alertsAddBtn, els.saveHistoryBtn,
+   els.exportBtn, els.clearSelectionBtn].forEach((b) => {
     if (b) b.disabled = count === 0;
   });
   if (els.selectAll) {
@@ -575,19 +744,30 @@ async function shareSelected() {
   }
 }
 
-async function copyForQuestrade() {
+function exportForTradingView() {
   const rows = selectedRows();
   if (!rows.length) return;
-  // Questrade Pro accepts pasted ticker lists in its watchlist input.
-  // .TO suffix is preserved for Canadian names — Questrade resolves it
-  // to the TSX listing automatically.
-  const text = rows.map((r) => r.ticker).join('\n');
-  try {
-    await navigator.clipboard.writeText(text);
-    setStatus(`copied ${rows.length} ticker${rows.length > 1 ? 's' : ''} for Questrade`);
-  } catch (_) {
-    window.prompt(`Copy the tickers below, then paste into Questrade Pro's watchlist input:`, text);
-  }
+  // TradingView's "Import watchlist" takes a .txt of comma-separated
+  // symbols. EXCHANGE:SYMBOL is unambiguous; we fall back to a bare
+  // symbol when the exchange is unknown. TSX/TSXV display symbols carry
+  // a .TO / .V suffix that TradingView doesn't use — strip it.
+  const EX = { nyse: 'NYSE', nasdaq: 'NASDAQ', amex: 'AMEX', tsx: 'TSX', tsxv: 'TSXV' };
+  const symbols = rows.map((r) => {
+    const sym = String(r.ticker || '').toUpperCase().replace(/\.(TO|V)$/, '');
+    const key = (Array.isArray(r.lists) && r.lists[0]) || '';
+    const ex = EX[key];
+    return ex ? `${ex}:${sym}` : sym;
+  });
+  const blob = new Blob([symbols.join(',')], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `tradingview-watchlist-${new Date().toISOString().slice(0, 10)}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  setStatus(`exported ${rows.length} ticker${rows.length > 1 ? 's' : ''} for TradingView`);
 }
 
 async function exportSelected() {
@@ -837,8 +1017,8 @@ function escapeHtml(s) {
 // instant.
 
 const HOVER_DELAY_MS = 220;
-const HOVER_W = 620;
-const HOVER_H = 380;
+const HOVER_W = 820;
+const HOVER_H = 520;
 const _chartCache = new Map();
 let _hoverChart = null;
 let _hoverShowTimer = null;
@@ -901,7 +1081,12 @@ async function showHoverChart(ticker, anchorEl) {
     }
   }
   if (_hoverTicker !== ticker) return; // user moved off before fetch completed
-  els.hoverChartStatus.textContent = payload.name || '';
+  // Show the company name beside the ticker in the chart header.
+  const sym = payload.ticker || ticker;
+  els.hoverChartTitle.textContent = (payload.name && payload.name !== sym)
+    ? `${sym} — ${payload.name}`
+    : sym;
+  els.hoverChartStatus.textContent = '';
   drawHoverChart(payload);
 }
 
@@ -1012,9 +1197,47 @@ window.addEventListener('scroll', hideHoverChart, true);
 if (els.selectAll) els.selectAll.addEventListener('change', onSelectAllChange);
 if (els.emailBtn) els.emailBtn.addEventListener('click', emailSelected);
 if (els.shareBtn) els.shareBtn.addEventListener('click', shareSelected);
-if (els.copyQuestradeBtn) els.copyQuestradeBtn.addEventListener('click', copyForQuestrade);
+if (els.exportTvBtn) els.exportTvBtn.addEventListener('click', exportForTradingView);
+if (els.saveHistoryBtn) els.saveHistoryBtn.addEventListener('click', saveSelectionToHistory);
 if (els.exportBtn) els.exportBtn.addEventListener('click', exportSelected);
 if (els.clearSelectionBtn) els.clearSelectionBtn.addEventListener('click', clearSelection);
+
+// Column show/hide menu + drag-to-reorder headers.
+if (els.columnsBtn) {
+  els.columnsBtn.addEventListener('click', (ev) => { ev.stopPropagation(); toggleColumnMenu(); });
+}
+if (els.columnMenu) {
+  els.columnMenu.addEventListener('change', (ev) => {
+    const cb = ev.target.closest('input[data-col-toggle]');
+    if (!cb) return;
+    const key = cb.dataset.colToggle;
+    if (cb.checked) {
+      hiddenColumns.delete(key);
+    } else {
+      // Never let the user hide every column.
+      if (hiddenColumns.size >= COLUMN_DEFS.length - 1) {
+        cb.checked = true;
+        setStatus('keep at least one column visible');
+        return;
+      }
+      hiddenColumns.add(key);
+    }
+    saveColumnState();
+    renderTable();
+  });
+}
+if (els.thead) {
+  els.thead.addEventListener('dragstart', onHeadDragStart);
+  els.thead.addEventListener('dragover', onHeadDragOver);
+  els.thead.addEventListener('dragleave', onHeadDragLeave);
+  els.thead.addEventListener('drop', onHeadDrop);
+}
+document.addEventListener('click', (ev) => {
+  if (els.columnMenu && !els.columnMenu.classList.contains('hidden')
+      && !ev.target.closest('.column-menu-wrap')) {
+    toggleColumnMenu(false);
+  }
+});
 if (els.diagnoseBtn) els.diagnoseBtn.addEventListener('click', runDiagnose);
 if (els.diagnoseClearBtn) els.diagnoseClearBtn.addEventListener('click', clearDiagnose);
 if (els.diagnoseTicker) {
@@ -1036,13 +1259,13 @@ wireCollapse(
 
 updateSelectionUI();
 
-// --- match history (last 5 successful runs) -------------------------------
+// --- match history (last 10 saved selections) -----------------------------
 // Persisted in localStorage so it survives reloads. Each entry stores the
-// full filter params + the result rows so "Restore" can put a past run
-// back into the table without re-running the screen.
+// run's filter params + only the rows the user *selected* from that run,
+// so "Restore" puts that hand-picked set back into the table.
 
 const HISTORY_KEY = 'match_history_v1';
-const HISTORY_MAX = 5;
+const HISTORY_MAX = 10;
 
 // Subset of the params dict that's actually filter-relevant (everything
 // except the lists tuple, which we render separately for readability).
@@ -1081,21 +1304,23 @@ function saveHistory(entries) {
   }
 }
 
-function recordHistory(data, params) {
-  const results = data.results || [];
-  if (!results.length) return;  // only successful runs with matches
+function saveSelectionToHistory() {
+  const rows = selectedRows();
+  if (!rows.length) { setStatus('select some tickers first'); return; }
+  if (!lastRunData) { setStatus('run a screen first'); return; }
   const entry = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     ranAt: new Date().toISOString(),
-    asOfDate: data.as_of_date || null,
-    matchCount: results.length,
-    params: pickParams(params || {}),
-    results: results,
+    asOfDate: lastRunData.as_of_date || null,
+    matchCount: rows.length,
+    params: pickParams(lastRunData.params || {}),
+    results: rows.slice(),  // only the user's hand-picked selection
   };
   const existing = loadHistory();
   existing.unshift(entry);
   saveHistory(existing.slice(0, HISTORY_MAX));
   renderHistory();
+  setStatus(`saved ${rows.length} ticker${rows.length > 1 ? 's' : ''} to history`);
 }
 
 function pickParams(p) {
@@ -1120,7 +1345,7 @@ function renderHistory() {
   if (!els.historyBody) return;
   const entries = loadHistory();
   if (!entries.length) {
-    els.historyBody.innerHTML = '<p class="muted history-empty">No runs yet — successful screens will be saved here automatically.</p>';
+    els.historyBody.innerHTML = '<p class="muted history-empty">No saved runs yet — select tickers from a run and click "Save to history".</p>';
     return;
   }
   els.historyBody.innerHTML = '';
@@ -1135,7 +1360,7 @@ function renderHistory() {
       <div class="entry-meta">
         <span class="entry-time">${escapeHtml(tsTxt)}</span>
         ${asOf}
-        <span class="entry-count">${e.matchCount} match${e.matchCount === 1 ? '' : 'es'}</span>
+        <span class="entry-count">${e.matchCount} ticker${e.matchCount === 1 ? '' : 's'}</span>
         <button class="entry-restore" type="button">Restore</button>
         <button class="entry-toggle-filters" type="button">Show filters</button>
         <button class="entry-delete" type="button" title="Delete this entry">×</button>
@@ -1168,7 +1393,7 @@ if (els.historyBody) {
       if (els.asOfLabel) {
         els.asOfLabel.textContent = ctx.entry.asOfDate ? `as of ${ctx.entry.asOfDate}` : '';
       }
-      setStatus(`restored ${lastResults.length} matches from ${new Date(ctx.entry.ranAt).toLocaleString()}`);
+      setStatus(`restored ${lastResults.length} ticker${lastResults.length === 1 ? '' : 's'} from ${new Date(ctx.entry.ranAt).toLocaleString()}`);
     } else if (btn.classList.contains('entry-toggle-filters')) {
       const panel = ctx.node.querySelector('.entry-filters');
       if (!panel) return;
@@ -1308,19 +1533,50 @@ function renderRules(data) {
     const scopeTxt = r.scope_type === 'watchlist'
       ? 'watchlist'
       : `${r.scope_type}: ${r.scope_value}`;
+    const crit = summarizeRuleParams(r.params || {});
+    const critHtml = crit.length
+      ? crit.map((c) => `<span class="rule-crit">${escapeHtml(c)}</span>`).join('')
+      : '<span class="rule-crit-none">no filters enabled — every ticker in scope would alert</span>';
     const row = document.createElement('div');
     row.className = 'rule-row' + (r.enabled ? '' : ' rule-off');
     row.dataset.id = r.id;
     row.innerHTML = `
-      <span class="rule-name">${escapeHtml(r.name)}</span>
-      <span class="rule-scope">${escapeHtml(scopeTxt)}</span>
-      <span class="rule-spacer"></span>
-      <button type="button" data-act="toggle">${r.enabled ? 'Disable' : 'Enable'}</button>
-      <button type="button" data-act="update" title="Replace this rule's criteria with the filters currently set above">Update criteria</button>
-      <button type="button" class="rule-delete" data-act="delete" title="Delete rule">×</button>
+      <div class="rule-head">
+        <span class="rule-name">${escapeHtml(r.name)}</span>
+        <span class="rule-scope">${escapeHtml(scopeTxt)}</span>
+        <span class="rule-spacer"></span>
+        <button type="button" data-act="toggle">${r.enabled ? 'Disable' : 'Enable'}</button>
+        <button type="button" data-act="update" title="Replace this rule's criteria with the filters currently set above">Update criteria</button>
+        <button type="button" class="rule-delete" data-act="delete" title="Delete rule">×</button>
+      </div>
+      <div class="rule-criteria">${critHtml}</div>
     `;
     els.rulesList.appendChild(row);
   }
+}
+
+// Human-readable summary of a rule's criteria — only the filters that
+// are actually enabled (apply_* true) are listed.
+function streakModeLabel(m) {
+  return m === 'close' ? 'higher closes'
+    : m === 'green' ? 'green bodies'
+    : m === 'close_green' ? 'higher closes + green'
+    : 'higher highs';
+}
+function summarizeRuleParams(p) {
+  const out = [];
+  const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
+  if (p.apply_price) out.push(`Price $${n(p.price_min)}–$${n(p.price_max)}`);
+  if (p.apply_high) out.push(`Streak ${p.high_lookback}d ${streakModeLabel(p.streak_mode)}`);
+  if (p.apply_rsi) out.push(`RSI(14) ${n(p.rsi_min)}–${n(p.rsi_max)}`);
+  if (p.apply_rsi_dev) out.push(`RSI dev ${n(p.rsi_dev_min_pct)}–${n(p.rsi_dev_max_pct)}%`);
+  if (p.apply_price_dev) out.push(`vs EMA21 ${n(p.price_dev_min_pct)}–${n(p.price_dev_max_pct)}%`);
+  if (p.apply_ema_dev) out.push(`EMA21 vs EMA50 ${n(p.ema_dev_min_pct)}–${n(p.ema_dev_max_pct)}%`);
+  if (p.apply_macd) out.push(`MACD hist ≥ ${n(p.macd_hist_min)}${p.macd_require_rising ? ' & rising' : ''}`);
+  if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
+  if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
+  if (p.apply_turnover) out.push(`Turnover ${n(p.turnover_min_pct)}–${n(p.turnover_max_pct)}%`);
+  return out;
 }
 
 async function loadRules() {
@@ -1459,6 +1715,21 @@ listCheckboxes.forEach((cb) => cb.addEventListener('change', () => {
   scheduleCacheStatus();
 }));
 if (listAllCb) listAllCb.addEventListener('change', () => scheduleCacheStatus());
+
+// Exchange filter dropdown — toggle the checkbox popover, close on
+// outside click.
+if (els.exchangeDdBtn && els.exchangeDdMenu) {
+  els.exchangeDdBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    els.exchangeDdMenu.classList.toggle('hidden');
+  });
+  document.addEventListener('click', (ev) => {
+    if (!els.exchangeDdMenu.classList.contains('hidden')
+        && !ev.target.closest('.exchange-dd')) {
+      els.exchangeDdMenu.classList.add('hidden');
+    }
+  });
+}
 // Initial cache snapshot.
 scheduleCacheStatus(50);
 refreshSnapshotStatus();
