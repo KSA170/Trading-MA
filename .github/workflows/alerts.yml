@@ -1,14 +1,15 @@
 name: Realtime alerts
 
-# Runs the alert engine every 15 minutes during (roughly) US market hours.
-# 13:00-21:00 UTC brackets 9:30am-4:00pm ET across both EST and EDT;
-# alerts.py does the precise ET market-hours check and exits early when
-# the session is closed, so off-hours invocations are cheap no-ops.
-# Minutes are offset from :00 — GitHub delays/drops scheduled runs that
-# land on the top of the hour during peak load.
+# Triggered by an external cron service (cron-job.org) via the
+# workflow_dispatch API — GitHub's own scheduled cron proved too
+# unreliable for a fixed cadence, so the `schedule:` trigger is gone.
+#
+# First step is a market-hours gate: when it's not a weekday US session
+# (and force_run / test_telegram aren't set), every expensive step is
+# skipped, so an off-hours or weekend trigger costs only the ~1-minute
+# runner minimum. This keeps a 30-minute cadence inside the private
+# repo's 2,000 Actions-minute monthly budget.
 on:
-  schedule:
-    - cron: '2,17,32,47 13-21 * * 1-5'
   workflow_dispatch:
     inputs:
       force_run:
@@ -30,14 +31,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - name: Market-hours gate
+        id: gate
+        env:
+          FORCE_RUN: ${{ inputs.force_run }}
+          TEST_TG: ${{ inputs.test_telegram }}
+        run: |
+          DOW=$(TZ=America/New_York date +%u)
+          HHMM=$((10#$(TZ=America/New_York date +%H%M)))
+          PROCEED=false
+          if [ "$DOW" -le 5 ] && [ "$HHMM" -ge 930 ] && [ "$HHMM" -le 1600 ]; then
+            PROCEED=true
+          fi
+          if [ "$FORCE_RUN" = "true" ] || [ "$TEST_TG" = "true" ]; then
+            PROCEED=true
+          fi
+          echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
+          echo "ET now: $(TZ=America/New_York date '+%a %Y-%m-%d %H:%M')  ->  proceed=$PROCEED"
+      - name: Checkout
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/checkout@v5
+      - name: Setup Python
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
       - name: Install dependencies
+        if: steps.gate.outputs.proceed == 'true'
         run: pip install -r requirements.txt
       - name: Run alert engine
+        if: steps.gate.outputs.proceed == 'true'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
