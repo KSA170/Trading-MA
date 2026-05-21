@@ -1,20 +1,26 @@
 """
 Realtime alert engine for Trading-MA.
 
-Runs as a standalone script (see .github/workflows/alerts.yml) on a ~5-minute
-cron during US market hours. For each ticker on the alert watchlist it:
-  1. fetches ~9 months of daily bars from Alpaca — the last bar is today's
-     in-progress bar, so the indicators reflect the current price,
-  2. evaluates it against the saved alert criteria using the same
-     screener.evaluate_ticker logic the web UI uses,
-  3. sends a Telegram message for any ticker that newly passes — deduped
-     so you get at most one alert per ticker per trading day.
+Runs as a standalone script (see .github/workflows/alerts.yml) on a ~15-minute
+cron during US market hours. It evaluates a set of *alert rules*, each
+independently scoped:
 
-The web app (app.py) imports this module only for watchlist / config
-management; the alerting loop itself is invoked via `python alerts.py`.
+  - watchlist  — the manually-curated ticker list (alert_watchlist table)
+  - sector     — every stock in a yfinance sector  (e.g. "Healthcare")
+  - industry   — every stock in a yfinance industry (e.g. "Biotechnology")
+
+For each enabled rule it resolves the scope to a ticker list, fetches ~9
+months of daily bars from Alpaca (the last bar is the in-progress trading
+day, so indicators reflect the live price), evaluates each ticker with the
+same screener.evaluate_ticker logic the web UI uses, and sends a Telegram
+message per new match — deduped per (rule, ticker, day).
+
+`python alerts.py`           runs one alert cycle.
+`python alerts.py classify`  rebuilds the ticker -> sector/industry map
+                             (slow; see .github/workflows/classify.yml).
 
 Env vars (set as GitHub Actions secrets):
-  DATABASE_URL         Postgres (shared with the web app)
+  DATABASE_URL         Postgres external URL (shared with the web app)
   ALPACA_API_KEY       Alpaca API key id
   ALPACA_SECRET_KEY    Alpaca API secret
   TELEGRAM_BOT_TOKEN   from @BotFather
@@ -32,7 +38,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, time as dt_time
 
 import pandas as pd
@@ -79,25 +87,45 @@ DEFAULT_ALERT_PARAMS: dict = {
 # Only these keys are valid kwargs for screener.evaluate_ticker.
 _PARAM_KEYS = frozenset(DEFAULT_ALERT_PARAMS.keys())
 
+SCOPE_TYPES = ("watchlist", "sector", "industry")
 
-# --- alert tables ----------------------------------------------------------
+
+# --- schema ----------------------------------------------------------------
 
 _ALERT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS alert_watchlist (
     ticker   TEXT PRIMARY KEY,
     added_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS alert_state (
-    ticker       TEXT NOT NULL,
-    trigger_date DATE NOT NULL,
-    detail       TEXT,
-    sent_at      TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (ticker, trigger_date)
-);
 CREATE TABLE IF NOT EXISTS alert_config (
     id         INT PRIMARY KEY,
     params     JSONB,
     updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ticker_sector (
+    ticker        TEXT PRIMARY KEY,
+    sector        TEXT,
+    industry      TEXT,
+    classified_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ticker_sector_industry_idx ON ticker_sector (industry);
+CREATE INDEX IF NOT EXISTS ticker_sector_sector_idx ON ticker_sector (sector);
+CREATE TABLE IF NOT EXISTS alert_rules (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    scope_type  TEXT NOT NULL,
+    scope_value TEXT NOT NULL DEFAULT '',
+    params      JSONB,
+    enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS alert_sent (
+    rule_id      INT  NOT NULL,
+    ticker       TEXT NOT NULL,
+    trigger_date DATE NOT NULL,
+    detail       TEXT,
+    sent_at      TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (rule_id, ticker, trigger_date)
 );
 """
 
@@ -108,14 +136,45 @@ def enabled() -> bool:
 
 
 def init_tables() -> None:
-    """Idempotent CREATE TABLE for the alert tables. Safe on every boot."""
+    """Idempotent CREATE TABLE for the alert tables. Also migrates a
+    pre-existing watchlist setup into a default 'Watchlist' rule so
+    alerts configured before the multi-rule change keep working."""
     if not enabled():
         return
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(_ALERT_SCHEMA)
+            cur.execute("SELECT COUNT(*) FROM alert_rules")
+            if (cur.fetchone()[0] or 0) == 0:
+                params = dict(DEFAULT_ALERT_PARAMS)
+                # Inherit the old single-config criteria if present.
+                try:
+                    cur.execute("SELECT params FROM alert_config WHERE id = 1")
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        stored = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                        for k, v in stored.items():
+                            if k in _PARAM_KEYS:
+                                params[k] = v
+                except Exception:
+                    pass
+                cur.execute(
+                    "INSERT INTO alert_rules (name, scope_type, scope_value, "
+                    "params, enabled) VALUES (%s, 'watchlist', '', %s, TRUE)",
+                    ("Watchlist", json.dumps(params)),
+                )
+                log.info("alerts: migrated existing setup into a 'Watchlist' rule")
     except Exception as exc:
         log.warning("alerts: init_tables failed: %s", exc)
+
+
+def _clean_params(raw: dict | None) -> dict:
+    """Keep only valid evaluate_ticker kwargs; fill gaps with defaults."""
+    params = dict(DEFAULT_ALERT_PARAMS)
+    for k, v in (raw or {}).items():
+        if k in _PARAM_KEYS:
+            params[k] = v
+    return params
 
 
 # --- watchlist -------------------------------------------------------------
@@ -133,7 +192,6 @@ def get_watchlist() -> list[str]:
 
 
 def add_to_watchlist(tickers: list[str]) -> int:
-    """Insert tickers (upper-cased, de-duped). Returns count submitted."""
     clean = sorted({t.strip().upper() for t in tickers if t and t.strip()})
     if not enabled() or not clean:
         return 0
@@ -163,87 +221,245 @@ def remove_from_watchlist(ticker: str) -> bool:
         return False
 
 
-# --- alert criteria config -------------------------------------------------
+# --- alert rules -----------------------------------------------------------
 
-def get_alert_params() -> dict:
-    """Return the saved alert criteria, falling back to defaults. Only
-    keys that are valid evaluate_ticker kwargs are kept."""
-    params = dict(DEFAULT_ALERT_PARAMS)
+def list_rules(enabled_only: bool = False) -> list[dict]:
     if not enabled():
-        return params
+        return []
+    sql = ("SELECT id, name, scope_type, scope_value, params, enabled "
+           "FROM alert_rules")
+    if enabled_only:
+        sql += " WHERE enabled = TRUE"
+    sql += " ORDER BY id"
     try:
         with snapshots._conn() as c, c.cursor() as cur:
-            cur.execute("SELECT params FROM alert_config WHERE id = 1")
-            row = cur.fetchone()
-        if row and row[0]:
-            stored = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-            for k, v in stored.items():
-                if k in _PARAM_KEYS:
-                    params[k] = v
+            cur.execute(sql)
+            rows = cur.fetchall()
+        out = []
+        for r in rows:
+            params = r[4] if isinstance(r[4], dict) else (json.loads(r[4]) if r[4] else {})
+            out.append({
+                "id": r[0], "name": r[1], "scope_type": r[2],
+                "scope_value": r[3], "params": _clean_params(params),
+                "enabled": bool(r[5]),
+            })
+        return out
     except Exception as exc:
-        log.warning("alerts: get_alert_params failed: %s", exc)
-    return params
+        log.warning("alerts: list_rules failed: %s", exc)
+        return []
 
 
-def set_alert_params(params: dict) -> bool:
-    """Persist alert criteria. Unknown keys are dropped."""
-    if not enabled():
-        return False
-    clean = {k: v for k, v in (params or {}).items() if k in _PARAM_KEYS}
-    if not clean:
-        return False
+def add_rule(name: str, scope_type: str, scope_value: str, params: dict) -> int | None:
+    name = (name or "").strip()
+    scope_type = (scope_type or "").strip().lower()
+    scope_value = (scope_value or "").strip()
+    if not enabled() or not name or scope_type not in SCOPE_TYPES:
+        return None
+    if scope_type != "watchlist" and not scope_value:
+        return None
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
-                "INSERT INTO alert_config (id, params, updated_at) "
-                "VALUES (1, %s, now()) "
-                "ON CONFLICT (id) DO UPDATE SET params = EXCLUDED.params, "
-                "updated_at = now()",
-                (json.dumps(clean),),
+                "INSERT INTO alert_rules (name, scope_type, scope_value, "
+                "params, enabled) VALUES (%s, %s, %s, %s, TRUE) RETURNING id",
+                (name, scope_type, scope_value, json.dumps(_clean_params(params))),
             )
-        return True
+            return cur.fetchone()[0]
     except Exception as exc:
-        log.warning("alerts: set_alert_params failed: %s", exc)
+        log.warning("alerts: add_rule failed: %s", exc)
+        return None
+
+
+def delete_rule(rule_id: int) -> bool:
+    if not enabled():
         return False
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute("DELETE FROM alert_rules WHERE id = %s", (int(rule_id),))
+            return (cur.rowcount or 0) > 0
+    except Exception as exc:
+        log.warning("alerts: delete_rule failed: %s", exc)
+        return False
+
+
+def set_rule_enabled(rule_id: int, is_enabled: bool) -> bool:
+    if not enabled():
+        return False
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute("UPDATE alert_rules SET enabled = %s WHERE id = %s",
+                        (bool(is_enabled), int(rule_id)))
+            return (cur.rowcount or 0) > 0
+    except Exception as exc:
+        log.warning("alerts: set_rule_enabled failed: %s", exc)
+        return False
+
+
+def set_rule_params(rule_id: int, params: dict) -> bool:
+    if not enabled():
+        return False
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute("UPDATE alert_rules SET params = %s WHERE id = %s",
+                        (json.dumps(_clean_params(params)), int(rule_id)))
+            return (cur.rowcount or 0) > 0
+    except Exception as exc:
+        log.warning("alerts: set_rule_params failed: %s", exc)
+        return False
+
+
+# --- sector / industry map -------------------------------------------------
+
+def tickers_for_scope(scope_type: str, scope_value: str) -> list[str]:
+    """Resolve a rule's scope to a concrete ticker list."""
+    if scope_type == "watchlist":
+        return get_watchlist()
+    if scope_type not in ("sector", "industry") or not enabled():
+        return []
+    col = "sector" if scope_type == "sector" else "industry"
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                f"SELECT ticker FROM ticker_sector WHERE {col} = %s ORDER BY ticker",
+                (scope_value,),
+            )
+            return [r[0] for r in cur.fetchall()]
+    except Exception as exc:
+        log.warning("alerts: tickers_for_scope failed: %s", exc)
+        return []
+
+
+def list_scopes() -> dict:
+    """Distinct sectors and industries (with member counts) for the UI
+    rule-builder dropdowns."""
+    out = {"sectors": [], "industries": []}
+    if not enabled():
+        return out
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT sector, COUNT(*) FROM ticker_sector "
+                "WHERE sector IS NOT NULL AND sector <> '' "
+                "GROUP BY sector ORDER BY sector")
+            out["sectors"] = [{"name": r[0], "count": r[1]} for r in cur.fetchall()]
+            cur.execute(
+                "SELECT industry, COUNT(*) FROM ticker_sector "
+                "WHERE industry IS NOT NULL AND industry <> '' "
+                "GROUP BY industry ORDER BY industry")
+            out["industries"] = [{"name": r[0], "count": r[1]} for r in cur.fetchall()]
+    except Exception as exc:
+        log.warning("alerts: list_scopes failed: %s", exc)
+    return out
+
+
+def classification_status() -> dict:
+    """How much of the universe has a sector/industry tag."""
+    if not enabled():
+        return {"enabled": False, "classified": 0, "last_classified_at": None}
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT COUNT(*), MAX(classified_at) FROM ticker_sector")
+            row = cur.fetchone()
+        return {
+            "enabled": True,
+            "classified": row[0] or 0,
+            "last_classified_at": row[1].isoformat() if row[1] else None,
+        }
+    except Exception as exc:
+        log.warning("alerts: classification_status failed: %s", exc)
+        return {"enabled": True, "classified": 0, "last_classified_at": None}
+
+
+def classify_universe(max_workers: int = 8) -> dict:
+    """Rebuild the ticker -> sector/industry map from yfinance industry
+    data. Slow (~30-40 min for the full universe) and a bit flaky — run
+    weekly via .github/workflows/classify.yml. Partial failures are
+    fine; a re-run fills the gaps."""
+    if not enabled():
+        return {"enabled": False}
+    import yfinance as yf
+    from psycopg2.extras import execute_values
+    from tickers import all_tickers
+
+    tk = all_tickers()
+    log.info("classify: fetching sector/industry for %d tickers", len(tk))
+
+    def _one(t: str):
+        try:
+            info = yf.Ticker(t).info or {}
+            return (t, info.get("sector"), info.get("industry"))
+        except Exception:
+            return (t, None, None)
+
+    rows: list[tuple] = []
+    done = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for t, sector, industry in pool.map(_one, tk):
+            done += 1
+            if sector or industry:
+                rows.append((t, sector or None, industry or None))
+            if done % 1000 == 0:
+                log.info("classify: %d/%d processed, %d tagged", done, len(tk), len(rows))
+
+    written = 0
+    if rows:
+        try:
+            with snapshots._conn() as c, c.cursor() as cur:
+                execute_values(
+                    cur,
+                    "INSERT INTO ticker_sector (ticker, sector, industry) VALUES %s "
+                    "ON CONFLICT (ticker) DO UPDATE SET sector = EXCLUDED.sector, "
+                    "industry = EXCLUDED.industry, classified_at = now()",
+                    rows, page_size=500,
+                )
+            written = len(rows)
+        except Exception as exc:
+            log.warning("classify: upsert failed: %s", exc)
+    log.info("classify complete: %d/%d tickers tagged", written, len(tk))
+    return {"enabled": True, "tagged": written, "total": len(tk)}
 
 
 # --- dedup state -----------------------------------------------------------
 
-def already_alerted(ticker: str, trigger_date: str) -> bool:
+def already_sent(rule_id: int, ticker: str, trigger_date: str) -> bool:
     if not enabled():
         return False
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM alert_state WHERE ticker = %s AND trigger_date = %s",
-                (ticker, trigger_date),
+                "SELECT 1 FROM alert_sent WHERE rule_id = %s AND ticker = %s "
+                "AND trigger_date = %s",
+                (rule_id, ticker, trigger_date),
             )
             return cur.fetchone() is not None
     except Exception as exc:
-        log.warning("alerts: already_alerted failed: %s", exc)
+        log.warning("alerts: already_sent failed: %s", exc)
         return False
 
 
-def record_alert(ticker: str, trigger_date: str, detail: str) -> None:
+def record_sent(rule_id: int, ticker: str, trigger_date: str, detail: str) -> None:
     if not enabled():
         return
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
-                "INSERT INTO alert_state (ticker, trigger_date, detail) "
-                "VALUES (%s, %s, %s) ON CONFLICT (ticker, trigger_date) DO NOTHING",
-                (ticker, trigger_date, detail),
+                "INSERT INTO alert_sent (rule_id, ticker, trigger_date, detail) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (rule_id, ticker, trigger_date) DO NOTHING",
+                (rule_id, ticker, trigger_date, detail),
             )
     except Exception as exc:
-        log.warning("alerts: record_alert failed: %s", exc)
+        log.warning("alerts: record_sent failed: %s", exc)
 
 
 # --- Alpaca market data ----------------------------------------------------
 
-def fetch_daily_bars(symbols: list[str], lookback_days: int = 270) -> dict[str, pd.DataFrame]:
+def fetch_daily_bars(symbols: list[str], lookback_days: int = 270,
+                     chunk: int = 150) -> dict[str, pd.DataFrame]:
     """Fetch daily OHLCV bars for `symbols` from Alpaca. The most recent
     bar is the current (in-progress) trading day, so downstream
-    indicators reflect the live price. Returns {symbol: DataFrame}."""
+    indicators reflect the live price. Symbols are requested in chunks
+    to keep request URLs sane for large sector scopes."""
     if not (ALPACA_API_KEY and ALPACA_SECRET_KEY) or not symbols:
         return {}
     start = (datetime.utcnow() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
@@ -252,27 +468,34 @@ def fetch_daily_bars(symbols: list[str], lookback_days: int = 270) -> dict[str, 
         "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
     }
     collected: dict[str, list] = {}
-    page_token = None
-    while True:
-        params = {
-            "symbols": ",".join(symbols),
-            "timeframe": "1Day",
-            "start": start,
-            "limit": 10000,
-            "feed": "iex",
-            "adjustment": "raw",
-        }
-        if page_token:
-            params["page_token"] = page_token
-        resp = requests.get(f"{ALPACA_DATA_URL}/stocks/bars",
-                            headers=headers, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        for sym, bars in (data.get("bars") or {}).items():
-            collected.setdefault(sym, []).extend(bars)
-        page_token = data.get("next_page_token")
-        if not page_token:
-            break
+    for i in range(0, len(symbols), chunk):
+        batch = symbols[i:i + chunk]
+        page_token = None
+        while True:
+            params = {
+                "symbols": ",".join(batch),
+                "timeframe": "1Day",
+                "start": start,
+                "limit": 10000,
+                "feed": "iex",
+                "adjustment": "raw",
+            }
+            if page_token:
+                params["page_token"] = page_token
+            try:
+                resp = requests.get(f"{ALPACA_DATA_URL}/stocks/bars",
+                                    headers=headers, params=params, timeout=30)
+                resp.raise_for_status()
+            except Exception as exc:
+                log.warning("alerts: Alpaca bars fetch failed (chunk %d): %s",
+                            i // chunk, exc)
+                break
+            data = resp.json()
+            for sym, bars in (data.get("bars") or {}).items():
+                collected.setdefault(sym, []).extend(bars)
+            page_token = data.get("next_page_token")
+            if not page_token:
+                break
     frames: dict[str, pd.DataFrame] = {}
     for sym, bars in collected.items():
         if not bars:
@@ -313,8 +536,9 @@ def send_telegram(text: str) -> bool:
         return False
 
 
-def _format_alert(hit) -> str:
+def _format_alert(rule_name: str, hit) -> str:
     return (
+        f"<b>[{rule_name}]</b>\n"
         f"<b>{hit.ticker}</b> — {hit.name}\n"
         f"Price ${hit.close:.2f} ({hit.pct_change:+.2f}%)\n"
         f"Momentum {hit.momentum_score:.0f}/100\n"
@@ -362,58 +586,83 @@ def run() -> int:
         log.info("market closed (%s ET) — skipping", now.strftime("%a %H:%M"))
         return 0
 
-    watchlist = get_watchlist()
-    if not watchlist:
-        log.info("alert watchlist empty — nothing to evaluate")
+    rules = list_rules(enabled_only=True)
+    if not rules:
+        log.info("no enabled alert rules — nothing to evaluate")
         return 0
     if not (ALPACA_API_KEY and ALPACA_SECRET_KEY):
         log.error("ALPACA_API_KEY / ALPACA_SECRET_KEY not set")
         return 1
 
-    params = get_alert_params()
+    # Resolve every rule's scope, then fetch the union of tickers once so
+    # overlapping rules don't double-fetch.
+    rule_tickers: dict[int, list[str]] = {}
+    universe: set[str] = set()
+    for rule in rules:
+        ts = tickers_for_scope(rule["scope_type"], rule["scope_value"])
+        rule_tickers[rule["id"]] = ts
+        universe.update(ts)
+    if not universe:
+        log.info("rules resolved to 0 tickers (empty watchlist / unclassified "
+                 "sector?) — nothing to do")
+        return 0
+
+    log.info("evaluating %d rule(s) over %d distinct tickers",
+             len(rules), len(universe))
+    frames = fetch_daily_bars(sorted(universe))
     today = now.strftime("%Y-%m-%d")
-    log.info("evaluating %d watchlist tickers", len(watchlist))
 
-    try:
-        frames = fetch_daily_bars(watchlist)
-    except Exception as exc:
-        log.error("Alpaca fetch failed: %s", exc)
-        return 1
-
-    triggered = []
-    for ticker in watchlist:
-        if already_alerted(ticker, today):
-            continue
-        df = frames.get(ticker)
-        if df is None or len(df) < 40:
-            continue
-        try:
-            # Reuse the screener's evaluation by injecting the live frame
-            # into its in-memory cache, then calling evaluate_ticker — the
-            # same code path the web UI uses, so alert logic can't drift
-            # from screen logic.
-            enriched = screener._enrich(df.copy())
-            screener._PRICE_CACHE[ticker] = (time.time(), enriched)
-            hit = screener.evaluate_ticker(ticker, **params)
-        except Exception as exc:
-            log.warning("evaluate failed for %s: %s", ticker, exc)
-            continue
-        if hit is None:
-            continue
-        triggered.append(hit)
-        record_alert(ticker, today, f"momentum={hit.momentum_score}")
+    triggered: list[tuple[dict, str, object]] = []  # (rule, raw_ticker, hit)
+    for rule in rules:
+        for ticker in rule_tickers[rule["id"]]:
+            if already_sent(rule["id"], ticker, today):
+                continue
+            df = frames.get(ticker)
+            if df is None or len(df) < 40:
+                continue
+            try:
+                # Reuse the screener's evaluation by injecting the live
+                # frame into its in-memory cache, then calling
+                # evaluate_ticker — the exact code path the web UI uses.
+                enriched = screener._enrich(df.copy())
+                screener._PRICE_CACHE[ticker] = (time.time(), enriched)
+                hit = screener.evaluate_ticker(ticker, **rule["params"])
+            except Exception as exc:
+                log.warning("evaluate failed for %s (rule %s): %s",
+                            ticker, rule["id"], exc)
+                continue
+            if hit is not None:
+                triggered.append((rule, ticker, hit))
 
     if not triggered:
         log.info("no new alerts this run")
         return 0
 
     sent = 0
-    for hit in triggered:
-        if send_telegram(_format_alert(hit)):
+    for rule, ticker, hit in triggered:
+        if send_telegram(_format_alert(rule["name"], hit)):
+            record_sent(rule["id"], ticker, today,
+                        f"momentum={hit.momentum_score}")
             sent += 1
     log.info("alerts: %d triggered, %d sent to Telegram", len(triggered), sent)
     return 0
 
 
+def classify_main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    if not enabled():
+        log.error("DATABASE_URL not set — cannot classify")
+        return 1
+    init_tables()
+    result = classify_universe()
+    log.info("classify result: %s", result)
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "classify":
+        raise SystemExit(classify_main())
     raise SystemExit(run())

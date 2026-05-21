@@ -23,7 +23,14 @@ const els = {
   alertsBody: $('#alerts-body'),
   alertsStatus: $('#alerts-status'),
   alertsWatchlist: $('#alerts-watchlist'),
-  alertsSaveFiltersBtn: $('#alerts-save-filters-btn'),
+  rulesToggle: $('#rules-toggle'),
+  rulesBody: $('#rules-body'),
+  rulesList: $('#rules-list'),
+  rulesClassifyNote: $('#rules-classify-note'),
+  ruleName: $('#rule-name'),
+  ruleScopeType: $('#rule-scope-type'),
+  ruleScopeValue: $('#rule-scope-value'),
+  ruleCreateBtn: $('#rule-create-btn'),
   diagnoseTicker: $('#diagnose-ticker'),
   diagnoseBtn: $('#diagnose-btn'),
   diagnoseClearBtn: $('#diagnose-clear-btn'),
@@ -1251,22 +1258,7 @@ async function removeFromAlerts(ticker) {
   } catch (_) { /* silent */ }
 }
 
-async function saveAlertFilters() {
-  try {
-    const res = await fetch('/api/alerts/config?' + buildQuery(), { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setStatus('save alert criteria failed: ' + (data.error || ('HTTP ' + res.status)));
-      return;
-    }
-    setStatus('alert criteria saved — the engine will use these filters');
-  } catch (_) {
-    setStatus('save alert criteria failed');
-  }
-}
-
 if (els.alertsAddBtn) els.alertsAddBtn.addEventListener('click', addSelectedToAlerts);
-if (els.alertsSaveFiltersBtn) els.alertsSaveFiltersBtn.addEventListener('click', saveAlertFilters);
 if (els.alertsWatchlist) {
   els.alertsWatchlist.addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-remove]');
@@ -1275,6 +1267,170 @@ if (els.alertsWatchlist) {
 }
 wireCollapse(els.alertsToggle, els.alertsBody, 'collapse_alerts');
 loadAlertWatchlist();
+
+
+// --- alert rules ----------------------------------------------------------
+// Each rule scans a watchlist / sector / industry against its own filter
+// criteria; the alert engine (alerts.py) walks every enabled rule each run.
+
+let _alertScopes = { sectors: [], industries: [] };
+
+function renderRules(data) {
+  const rules = (data && data.rules) || [];
+  // Classification coverage note — sector/industry rules need the
+  // ticker_sector map, which the weekly "Classify universe" workflow builds.
+  if (els.rulesClassifyNote) {
+    const cl = (data && data.classification) || {};
+    if (!data || data.enabled === false) {
+      els.rulesClassifyNote.textContent = 'Alerts disabled — DATABASE_URL not set on the server.';
+    } else if (!cl.classified) {
+      els.rulesClassifyNote.textContent = 'Sector/industry map is empty — run the "Classify universe" workflow in GitHub Actions once to enable sector & industry rules. Watchlist rules work without it.';
+    } else {
+      els.rulesClassifyNote.textContent = `Sector/industry map: ${cl.classified.toLocaleString()} tickers classified`
+        + (cl.last_classified_at ? ` (updated ${cl.last_classified_at.slice(0, 10)})` : '') + '.';
+    }
+  }
+  if (!els.rulesList) return;
+  if (!rules.length) {
+    els.rulesList.innerHTML = '<p class="muted history-empty">No alert rules yet — create one above.</p>';
+    return;
+  }
+  els.rulesList.innerHTML = '';
+  for (const r of rules) {
+    const scopeTxt = r.scope_type === 'watchlist'
+      ? 'watchlist'
+      : `${r.scope_type}: ${r.scope_value}`;
+    const row = document.createElement('div');
+    row.className = 'rule-row' + (r.enabled ? '' : ' rule-off');
+    row.dataset.id = r.id;
+    row.innerHTML = `
+      <span class="rule-name">${escapeHtml(r.name)}</span>
+      <span class="rule-scope">${escapeHtml(scopeTxt)}</span>
+      <span class="rule-spacer"></span>
+      <button type="button" data-act="toggle">${r.enabled ? 'Disable' : 'Enable'}</button>
+      <button type="button" data-act="update" title="Replace this rule's criteria with the filters currently set above">Update criteria</button>
+      <button type="button" class="rule-delete" data-act="delete" title="Delete rule">×</button>
+    `;
+    els.rulesList.appendChild(row);
+  }
+}
+
+async function loadRules() {
+  if (!els.rulesList) return;
+  try {
+    const res = await fetch('/api/alerts/rules');
+    if (!res.ok) return;
+    renderRules(await res.json());
+  } catch (_) { /* silent */ }
+}
+
+async function loadAlertScopes() {
+  try {
+    const res = await fetch('/api/alerts/scopes');
+    if (!res.ok) return;
+    _alertScopes = await res.json();
+    populateScopeValues();
+  } catch (_) { /* silent */ }
+}
+
+function populateScopeValues() {
+  if (!els.ruleScopeType || !els.ruleScopeValue) return;
+  const type = els.ruleScopeType.value;
+  if (type === 'watchlist') {
+    els.ruleScopeValue.innerHTML = '<option value="">(the watchlist)</option>';
+    els.ruleScopeValue.disabled = true;
+    return;
+  }
+  const list = type === 'sector' ? _alertScopes.sectors : _alertScopes.industries;
+  els.ruleScopeValue.disabled = false;
+  if (!list || !list.length) {
+    els.ruleScopeValue.innerHTML = '<option value="">— run Classify universe first —</option>';
+    return;
+  }
+  els.ruleScopeValue.innerHTML = list
+    .map((s) => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} (${s.count})</option>`)
+    .join('');
+}
+
+async function createRule() {
+  if (!els.ruleName) return;
+  const name = (els.ruleName.value || '').trim();
+  const scopeType = els.ruleScopeType.value;
+  const scopeValue = scopeType === 'watchlist' ? '' : els.ruleScopeValue.value;
+  if (!name) { setStatus('enter a rule name'); return; }
+  if (scopeType !== 'watchlist' && !scopeValue) {
+    setStatus('pick a sector / industry for this rule');
+    return;
+  }
+  try {
+    // Criteria come from the current screener filters (query string);
+    // name + scope come in the JSON body.
+    const res = await fetch('/api/alerts/rules?' + buildQuery(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, scope_type: scopeType, scope_value: scopeValue }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus('create rule failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    els.ruleName.value = '';
+    renderRules({ enabled: true, rules: data.rules, classification: data.classification });
+    loadRules();
+    setStatus(`alert rule "${name}" created`);
+  } catch (_) {
+    setStatus('create rule failed');
+  }
+}
+
+async function ruleAction(id, act) {
+  let url, body;
+  if (act === 'delete') {
+    url = '/api/alerts/rules/delete'; body = { id };
+  } else if (act === 'toggle') {
+    const row = els.rulesList.querySelector(`.rule-row[data-id="${id}"]`);
+    const enabling = row && row.classList.contains('rule-off');
+    url = '/api/alerts/rules/toggle'; body = { id, enabled: !!enabling };
+  } else if (act === 'update') {
+    url = '/api/alerts/rules/update-criteria?' + buildQuery(); body = { id };
+  } else {
+    return;
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus('rule update failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    renderRules({ enabled: true, rules: data.rules });
+    loadRules();
+    if (act === 'update') setStatus('rule criteria updated to current filters');
+  } catch (_) {
+    setStatus('rule update failed');
+  }
+}
+
+if (els.ruleScopeType) {
+  els.ruleScopeType.addEventListener('change', populateScopeValues);
+}
+if (els.ruleCreateBtn) els.ruleCreateBtn.addEventListener('click', createRule);
+if (els.rulesList) {
+  els.rulesList.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    const row = ev.target.closest('.rule-row');
+    if (btn && row) ruleAction(Number(row.dataset.id), btn.dataset.act);
+  });
+}
+wireCollapse(els.rulesToggle, els.rulesBody, 'collapse_rules');
+populateScopeValues();
+loadAlertScopes();
+loadRules();
 
 
 // --- bootstrap -------------------------------------------------------------
