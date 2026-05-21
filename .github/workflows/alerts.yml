@@ -4,9 +4,11 @@ name: Realtime alerts
 # 13:00-21:00 UTC brackets 9:30am-4:00pm ET across both EST and EDT;
 # alerts.py does the precise ET market-hours check and exits early when
 # the session is closed, so off-hours invocations are cheap no-ops.
+# Minutes are offset from :00 — GitHub delays/drops scheduled runs that
+# land on the top of the hour during peak load.
 on:
   schedule:
-    - cron: '*/15 13-21 * * 1-5'
+    - cron: '2,17,32,47 13-21 * * 1-5'
   workflow_dispatch: {}   # allow manual runs from the Actions tab
 
 # Don't pile up overlapping runs if one is slow.
