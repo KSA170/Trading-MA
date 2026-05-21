@@ -347,6 +347,7 @@ def api_snapshot_status():
     return jsonify({
         "enabled": snapshots.enabled(),
         "available_dates": snapshots.available_dates(10),
+        "date_counts": snapshots.date_counts(10),
         "retention_days": snapshots.RETENTION_DAYS,
         "diagnostics": snapshots.diagnostics(),
         **screener.snapshot_status(),
