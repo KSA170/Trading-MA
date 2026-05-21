@@ -9,7 +9,16 @@ name: Realtime alerts
 on:
   schedule:
     - cron: '2,17,32,47 13-21 * * 1-5'
-  workflow_dispatch: {}   # allow manual runs from the Actions tab
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force-run: evaluate rules even if the market is closed'
+        type: boolean
+        default: false
+      test_telegram:
+        description: 'Test only: send a Telegram message and exit'
+        type: boolean
+        default: false
 
 # Don't pile up overlapping runs if one is slow.
 concurrency:
@@ -35,4 +44,6 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ALERT_FORCE_RUN: ${{ inputs.force_run }}
+          ALERT_TEST_TELEGRAM: ${{ inputs.test_telegram }}
         run: python alerts.py
