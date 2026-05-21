@@ -454,12 +454,61 @@ def record_sent(rule_id: int, ticker: str, trigger_date: str, detail: str) -> No
 
 # --- Alpaca market data ----------------------------------------------------
 
+def _alpaca_bars_request(batch: list[str], start: str, headers: dict) -> dict[str, list]:
+    """Fetch daily bars for `batch` from Alpaca, following pagination.
+    On a 4xx/5xx, recursively split the batch in half and retry — this
+    adapts automatically to Alpaca's per-request symbol cap and isolates
+    a single rejected symbol so it doesn't sink the rest of the batch.
+    Returns {symbol: [bar, ...]}."""
+    out: dict[str, list] = {}
+    page_token = None
+    while True:
+        params = {
+            "symbols": ",".join(batch),
+            "timeframe": "1Day",
+            "start": start,
+            "limit": 10000,
+            "feed": "iex",
+            "adjustment": "raw",
+        }
+        if page_token:
+            params["page_token"] = page_token
+        try:
+            resp = requests.get(f"{ALPACA_DATA_URL}/stocks/bars",
+                                headers=headers, params=params, timeout=30)
+        except Exception as exc:
+            log.warning("alerts: Alpaca request error (%d symbols): %s",
+                        len(batch), exc)
+            return out
+        if resp.status_code >= 400:
+            body = (resp.text or "").strip().replace("\n", " ")[:160]
+            if len(batch) > 1:
+                # Too many symbols for one request, or one bad symbol in
+                # the batch — split in half and retry each side.
+                log.info("alerts: Alpaca HTTP %d on %d-symbol batch — "
+                         "splitting (%s)", resp.status_code, len(batch), body)
+                mid = len(batch) // 2
+                merged = _alpaca_bars_request(batch[:mid], start, headers)
+                merged.update(_alpaca_bars_request(batch[mid:], start, headers))
+                return merged
+            log.warning("alerts: Alpaca dropped %s — HTTP %d (%s)",
+                        batch[0], resp.status_code, body)
+            return out
+        data = resp.json()
+        for sym, bars in (data.get("bars") or {}).items():
+            out.setdefault(sym, []).extend(bars)
+        page_token = data.get("next_page_token")
+        if not page_token:
+            break
+    return out
+
+
 def fetch_daily_bars(symbols: list[str], lookback_days: int = 270,
-                     chunk: int = 150) -> dict[str, pd.DataFrame]:
+                     chunk: int = 50) -> dict[str, pd.DataFrame]:
     """Fetch daily OHLCV bars for `symbols` from Alpaca. The most recent
     bar is the current (in-progress) trading day, so downstream
-    indicators reflect the live price. Symbols are requested in chunks
-    to keep request URLs sane for large sector scopes."""
+    indicators reflect the live price. Symbols are requested in chunks;
+    _alpaca_bars_request splits any chunk Alpaca rejects."""
     if not (ALPACA_API_KEY and ALPACA_SECRET_KEY) or not symbols:
         return {}
     start = (datetime.utcnow() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
@@ -469,33 +518,7 @@ def fetch_daily_bars(symbols: list[str], lookback_days: int = 270,
     }
     collected: dict[str, list] = {}
     for i in range(0, len(symbols), chunk):
-        batch = symbols[i:i + chunk]
-        page_token = None
-        while True:
-            params = {
-                "symbols": ",".join(batch),
-                "timeframe": "1Day",
-                "start": start,
-                "limit": 10000,
-                "feed": "iex",
-                "adjustment": "raw",
-            }
-            if page_token:
-                params["page_token"] = page_token
-            try:
-                resp = requests.get(f"{ALPACA_DATA_URL}/stocks/bars",
-                                    headers=headers, params=params, timeout=30)
-                resp.raise_for_status()
-            except Exception as exc:
-                log.warning("alerts: Alpaca bars fetch failed (chunk %d): %s",
-                            i // chunk, exc)
-                break
-            data = resp.json()
-            for sym, bars in (data.get("bars") or {}).items():
-                collected.setdefault(sym, []).extend(bars)
-            page_token = data.get("next_page_token")
-            if not page_token:
-                break
+        collected.update(_alpaca_bars_request(symbols[i:i + chunk], start, headers))
     frames: dict[str, pd.DataFrame] = {}
     for sym, bars in collected.items():
         if not bars:
