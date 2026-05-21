@@ -459,12 +459,17 @@ def _alpaca_bars_request(batch: list[str], start: str, headers: dict) -> dict[st
     On a 4xx/5xx, recursively split the batch in half and retry — this
     adapts automatically to Alpaca's per-request symbol cap and isolates
     a single rejected symbol so it doesn't sink the rest of the batch.
-    Returns {symbol: [bar, ...]}."""
+    Returns {symbol: [bar, ...]} keyed by the caller's original symbols."""
     out: dict[str, list] = {}
+    # The SEC universe writes share classes with a hyphen (BRK-B);
+    # Alpaca expects a dot (BRK.B). Translate for the request, then map
+    # the response keys back to the caller's original symbols.
+    req_for = {s: s.replace("-", ".") for s in batch}
+    orig_for = {a: s for s, a in req_for.items()}
     page_token = None
     while True:
         params = {
-            "symbols": ",".join(batch),
+            "symbols": ",".join(req_for[s] for s in batch),
             "timeframe": "1Day",
             "start": start,
             "limit": 10000,
@@ -496,7 +501,7 @@ def _alpaca_bars_request(batch: list[str], start: str, headers: dict) -> dict[st
             return out
         data = resp.json()
         for sym, bars in (data.get("bars") or {}).items():
-            out.setdefault(sym, []).extend(bars)
+            out.setdefault(orig_for.get(sym, sym), []).extend(bars)
         page_token = data.get("next_page_token")
         if not page_token:
             break
@@ -538,8 +543,9 @@ def fetch_daily_bars(symbols: list[str], lookback_days: int = 270,
 # --- Telegram --------------------------------------------------------------
 
 def send_telegram(text: str) -> bool:
-    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
-        log.warning("alerts: Telegram not configured — skipping send")
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        missing = "TELEGRAM_BOT_TOKEN" if not TELEGRAM_BOT_TOKEN else "TELEGRAM_CHAT_ID"
+        log.warning("alerts: Telegram not configured — the %s secret is missing", missing)
         return False
     try:
         resp = requests.post(
@@ -552,11 +558,17 @@ def send_telegram(text: str) -> bool:
             },
             timeout=15,
         )
-        resp.raise_for_status()
-        return True
     except Exception as exc:
-        log.warning("alerts: Telegram send failed: %s", exc)
+        log.warning("alerts: Telegram request error: %s", exc)
         return False
+    if resp.status_code >= 400:
+        # Telegram's error body carries a "description" (e.g. "chat not
+        # found", "Unauthorized") — log it verbatim so the cause is clear.
+        body = (resp.text or "").strip().replace("\n", " ")[:200]
+        log.warning("alerts: Telegram rejected the message — HTTP %d: %s",
+                    resp.status_code, body)
+        return False
+    return True
 
 
 def _format_alert(rule_name: str, hit) -> str:
