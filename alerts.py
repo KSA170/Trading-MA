@@ -599,6 +599,22 @@ def run() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # Manual-run toggles (workflow_dispatch inputs, passed as env vars).
+    # Empty for scheduled runs.
+    force_run = os.environ.get("ALERT_FORCE_RUN", "").strip().lower() in ("true", "1", "yes")
+    test_telegram = os.environ.get("ALERT_TEST_TELEGRAM", "").strip().lower() in ("true", "1", "yes")
+
+    # "Test Telegram" toggle — proves the bot token + chat id + delivery
+    # work, independent of rules / Alpaca / whether anything matches.
+    if test_telegram:
+        ts = _now_et().strftime("%Y-%m-%d %H:%M ET")
+        ok = send_telegram(
+            "<b>Trading-MA</b>\nAlert engine test — Telegram delivery is "
+            f"working.\nSent {ts}."
+        )
+        log.info("test Telegram message: %s", "sent OK" if ok else "FAILED")
+        return 0 if ok else 1
+
     if not enabled():
         log.error("DATABASE_URL not set — cannot run alerts")
         return 1
@@ -606,8 +622,11 @@ def run() -> int:
 
     now = _now_et()
     if not market_is_open(now):
-        log.info("market closed (%s ET) — skipping", now.strftime("%a %H:%M"))
-        return 0
+        if not force_run:
+            log.info("market closed (%s ET) — skipping", now.strftime("%a %H:%M"))
+            return 0
+        log.info("force_run: market closed (%s ET) — evaluating anyway on the "
+                 "most recent available bars", now.strftime("%a %H:%M"))
 
     rules = list_rules(enabled_only=True)
     if not rules:
