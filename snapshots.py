@@ -182,6 +182,26 @@ def available_dates(limit: int = 30) -> list[str]:
         return []
 
 
+def date_counts(limit: int = 10) -> list[dict]:
+    """Distinct as_of dates with their actual row counts, most recent
+    first. Lets the UI report how many rows are *really* in the DB for a
+    date, instead of last_written (which only reflects the latest run)."""
+    if not enabled():
+        return []
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT as_of, COUNT(*) FROM daily_snapshot GROUP BY as_of "
+                "ORDER BY as_of DESC LIMIT %s",
+                (limit,),
+            )
+            rows = cur.fetchall()
+        return [{"date": r[0].strftime("%Y-%m-%d"), "rows": r[1]} for r in rows]
+    except Exception as exc:
+        log.warning("snapshots.date_counts failed: %s", exc)
+        return []
+
+
 _LOAD_COLS = (
     "ticker", "close", "prior_close", "volume", "avg_volume",
     "ema21", "ema50", "rsi14", "rsi_sma9",

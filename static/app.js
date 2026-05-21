@@ -215,10 +215,18 @@ async function refreshSnapshotStatus() {
       return;
     }
     const latest = dates[0];
-    const wroteTxt = `, ${wrote.toLocaleString()} rows`;
-    els.snapshotStatus.textContent = `snapshot: ${latest}${wroteTxt} · click to refresh`;
+    const counts = s.date_counts || [];
+    const latestEntry = counts.find((d) => d.date === latest);
+    // Show the real number of rows in the DB for the date — not
+    // last_written, which only reflects the most recent write run.
+    const dbRows = latestEntry ? latestEntry.rows : wrote;
+    els.snapshotStatus.textContent = `snapshot: ${latest}, ${dbRows.toLocaleString()} rows · click to refresh`;
     els.snapshotStatus.classList.remove('cold', 'warn');
-    els.snapshotStatus.title = `Snapshot dates: ${dates.join(', ')}. Retention: ${s.retention_days} days. Click to write a fresh snapshot from the current pickle cache.`;
+    const byDate = counts.map((d) => `${d.date}=${d.rows.toLocaleString()}`).join(', ');
+    els.snapshotStatus.title = `Rows in DB by date: ${byDate || '(none)'}. `
+      + `Last write run added ${wrote.toLocaleString()} rows. `
+      + `Retention: ${s.retention_days} days. `
+      + `Click to write a fresh snapshot from the current pickle cache.`;
   } catch (_) { /* silent */ }
 }
 
