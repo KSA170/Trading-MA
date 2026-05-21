@@ -2,12 +2,12 @@ name: Classify universe (sector / industry)
 
 # Rebuilds the ticker -> sector/industry map (ticker_sector table) from
 # yfinance industry data. Slow (~30-40 min for the full universe) and a
-# bit flaky, but sector classifications change rarely so weekly is plenty.
-# Run it manually once after first setting up sector alerts, then it keeps
-# itself fresh. Re-running fills any gaps left by yfinance hiccups.
+# bit flaky, but sector/industry classifications change very rarely, so
+# running monthly is plenty. Run it manually once after first setting up
+# sector alerts; re-running fills any gaps left by yfinance hiccups.
 on:
   schedule:
-    - cron: '0 8 * * 6'   # Saturdays 08:00 UTC
+    - cron: '0 8 1 * *'   # 1st of each month, 08:00 UTC
   workflow_dispatch: {}
 
 concurrency:
