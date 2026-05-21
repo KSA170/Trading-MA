@@ -35,6 +35,7 @@ const els = {
   ruleScopeType: $('#rule-scope-type'),
   ruleScopeValue: $('#rule-scope-value'),
   ruleCreateBtn: $('#rule-create-btn'),
+  rulesMsg: $('#rules-msg'),
   diagnoseTicker: $('#diagnose-ticker'),
   diagnoseBtn: $('#diagnose-btn'),
   diagnoseClearBtn: $('#diagnose-clear-btn'),
@@ -1616,16 +1617,30 @@ function populateScopeValues() {
     .join('');
 }
 
+// Feedback for the rules panel — shown inline (the topbar status line is
+// off-screen when you're working down at the rules panel).
+function setRulesMsg(text, kind) {
+  if (!els.rulesMsg) return;
+  els.rulesMsg.textContent = text || '';
+  els.rulesMsg.style.color = kind === 'error' ? 'var(--red)'
+    : kind === 'ok' ? 'var(--green)' : 'var(--muted)';
+}
+
 async function createRule() {
-  if (!els.ruleName) return;
+  if (!els.ruleName || !els.ruleScopeType || !els.ruleScopeValue) return;
   const name = (els.ruleName.value || '').trim();
   const scopeType = els.ruleScopeType.value;
   const scopeValue = scopeType === 'watchlist' ? '' : els.ruleScopeValue.value;
-  if (!name) { setStatus('enter a rule name'); return; }
-  if (scopeType !== 'watchlist' && !scopeValue) {
-    setStatus('pick a sector / industry for this rule');
+  if (!name) {
+    setRulesMsg('Enter a rule name first.', 'error');
+    els.ruleName.focus();
     return;
   }
+  if (scopeType !== 'watchlist' && !scopeValue) {
+    setRulesMsg('Pick a sector / industry for this rule — run "Classify universe" if the list is empty.', 'error');
+    return;
+  }
+  setRulesMsg('Creating rule…');
   try {
     // Criteria come from the current screener filters (query string);
     // name + scope come in the JSON body.
@@ -1636,15 +1651,15 @@ async function createRule() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setStatus('create rule failed: ' + (data.error || ('HTTP ' + res.status)));
+      setRulesMsg('Create rule failed: ' + (data.error || ('HTTP ' + res.status)), 'error');
       return;
     }
     els.ruleName.value = '';
     renderRules({ enabled: true, rules: data.rules, classification: data.classification });
     loadRules();
-    setStatus(`alert rule "${name}" created`);
-  } catch (_) {
-    setStatus('create rule failed');
+    setRulesMsg(`Alert rule "${name}" created.`, 'ok');
+  } catch (err) {
+    setRulesMsg('Create rule failed: ' + (err && err.message ? err.message : 'network error'), 'error');
   }
 }
 
@@ -1669,14 +1684,16 @@ async function ruleAction(id, act) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setStatus('rule update failed: ' + (data.error || ('HTTP ' + res.status)));
+      setRulesMsg('Rule update failed: ' + (data.error || ('HTTP ' + res.status)), 'error');
       return;
     }
     renderRules({ enabled: true, rules: data.rules });
     loadRules();
-    if (act === 'update') setStatus('rule criteria updated to current filters');
-  } catch (_) {
-    setStatus('rule update failed');
+    if (act === 'update') setRulesMsg('Rule criteria updated to the current filters.', 'ok');
+    else if (act === 'delete') setRulesMsg('Rule deleted.', 'ok');
+    else setRulesMsg('Rule ' + (data.rules ? 'updated' : 'changed') + '.', 'ok');
+  } catch (err) {
+    setRulesMsg('Rule update failed: ' + (err && err.message ? err.message : 'network error'), 'error');
   }
 }
 

@@ -686,6 +686,7 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 .rules-create input:focus,
 .rules-create select:focus { outline: none; border-color: var(--accent); }
 .rules-create #rule-name { flex: 1 1 200px; }
+.rules-msg { font-size: 12px; margin: 6px 0 4px; min-height: 1em; }
 #rules-classify-note { font-size: 12px; margin: 4px 0 8px; }
 #rules-list { display: flex; flex-direction: column; gap: 6px; }
 .rule-row {
