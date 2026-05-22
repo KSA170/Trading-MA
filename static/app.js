@@ -45,6 +45,9 @@ const els = {
   diagnoseToggle: $('#diagnose-toggle'),
   filtersSection: $('#filters-section'),
   filtersToggle: $('#filters-toggle'),
+  saveDefaultsBtn: $('#save-defaults-btn'),
+  resetDefaultsBtn: $('#reset-defaults-btn'),
+  defaultsMsg: $('#defaults-msg'),
   historyBody: $('#history-body'),
   historyToggle: $('#history-toggle'),
   hoverChart: $('#hover-chart'),
@@ -313,6 +316,73 @@ function syncDisabledStates() {
   }
 }
 
+// --- saved filter defaults ------------------------------------------------
+// Snapshot the current filter values, group toggles and exchange selection
+// so they auto-load on the next visit. Stored in localStorage — the app
+// has no per-user server account.
+
+const FILTER_DEFAULTS_KEY = 'filter_defaults_v1';
+
+function setDefaultsMsg(text, kind) {
+  if (!els.defaultsMsg) return;
+  els.defaultsMsg.textContent = text || '';
+  els.defaultsMsg.style.color = kind === 'error' ? 'var(--red)'
+    : kind === 'ok' ? 'var(--green)' : '';
+}
+
+function collectFilterState() {
+  const state = { inputs: {}, toggles: {}, exchanges: [] };
+  for (const [k, el] of Object.entries(inputs)) {
+    if (el) state.inputs[k] = el.value;
+  }
+  for (const [k, el] of Object.entries(toggles)) {
+    if (el) state.toggles[k] = el.checked;
+  }
+  state.exchanges = listCheckboxes.filter((cb) => cb.checked).map((cb) => cb.dataset.listKey);
+  return state;
+}
+
+function applyFilterState(state) {
+  if (!state || typeof state !== 'object') return;
+  for (const [k, v] of Object.entries(state.inputs || {})) {
+    if (inputs[k] != null && v != null) inputs[k].value = v;
+  }
+  for (const [k, v] of Object.entries(state.toggles || {})) {
+    if (toggles[k] != null) toggles[k].checked = !!v;
+  }
+  if (Array.isArray(state.exchanges)) {
+    const want = new Set(state.exchanges);
+    listCheckboxes.forEach((cb) => { cb.checked = want.has(cb.dataset.listKey); });
+  }
+  syncDisabledStates();
+  updateListAllState();
+  updateHighHeader();
+}
+
+function saveFilterDefaults() {
+  try {
+    localStorage.setItem(FILTER_DEFAULTS_KEY, JSON.stringify(collectFilterState()));
+    setDefaultsMsg('Saved — these filters will load automatically next visit.', 'ok');
+  } catch (_) {
+    setDefaultsMsg('Could not save (browser storage unavailable).', 'error');
+  }
+}
+
+function loadFilterDefaults() {
+  try {
+    const raw = localStorage.getItem(FILTER_DEFAULTS_KEY);
+    if (!raw) return;
+    applyFilterState(JSON.parse(raw));
+  } catch (_) { /* ignore corrupt saved state */ }
+}
+
+function resetFilterDefaults() {
+  try { localStorage.removeItem(FILTER_DEFAULTS_KEY); } catch (_) {}
+  // The built-in defaults are the HTML `value=` attributes — a reload
+  // restores them cleanly.
+  location.reload();
+}
+
 async function loadDates() {
   if (!asOfSelect) return;
   try {
@@ -437,46 +507,62 @@ function sortedResults() {
 
 const COLUMN_DEFS = [
   { key: 'ticker', label: 'Ticker', type: 'text',
+    title: 'Stock ticker symbol. Hover a ticker in a row to pop up its price chart. Click the header to sort; drag it to reorder columns.',
     render: (r) => `<td data-ticker="${escapeHtml(r.ticker)}"><strong>${escapeHtml(r.ticker)}</strong></td>` },
   { key: 'momentum_score', label: 'Momentum', type: 'num',
-    title: 'Heuristic 0-100 momentum continuation score: weighted blend of RSI position, EMA stack, MACD strength + slope, RVol, streak breakout, and turnover. NOT a calibrated probability — a ranking signal.',
+    title: 'Heuristic 0-100 momentum-continuation score: a weighted blend of RSI position, EMA stack, MACD strength + slope, relative volume, streak breakout, and turnover. Higher = more indicators aligned for further upside. A ranking signal, not a calibrated probability.',
     render: (r) => {
       const m = r.momentum_score;
       const c = (m == null) ? '' : (m >= 70 ? 'pos' : (m < 40 ? 'neg' : ''));
       return `<td class="num ${c}"><strong>${m == null ? '—' : fmtNum(m, 1)}</strong></td>`;
     } },
   { key: 'name', label: 'Name', type: 'text',
+    title: 'Company name.',
     render: (r) => `<td>${escapeHtml(r.name || '')}</td>` },
   { key: 'exchange', label: 'Ex.', type: 'text',
+    title: 'Listing exchange — US or TSX (Canada).',
     render: (r) => `<td><span class="chip">${escapeHtml(r.exchange || '')}</span></td>` },
   { key: 'close', label: 'Prev close', type: 'num',
+    title: "The previous trading day's closing price, in dollars — the bar the screen evaluates.",
     render: (r) => `<td class="num">${fmtNum(r.close)}</td>` },
   { key: 'pct_change', label: '% chg', type: 'num',
+    title: "Percent change of the close versus the prior day's close. Green = up, red = down.",
     render: (r) => `<td class="num ${r.pct_change >= 0 ? 'pos' : 'neg'}">${r.pct_change >= 0 ? '+' : ''}${fmtNum(r.pct_change)}%</td>` },
   { key: 'high_lookback', label: '2d HH', type: 'num',
+    title: 'End-of-streak value — the latest higher-high (or higher-close, per the streak mode) that completes the consecutive-up price streak.',
     render: (r) => `<td class="num">${fmtNum(r.high_lookback)}</td>` },
   { key: 'rsi', label: 'RSI(14)', type: 'num',
+    title: 'Wilder RSI(14): a 0-100 momentum oscillator. Below ~30 is oversold, above ~70 overbought.',
     render: (r) => `<td class="num">${fmtNum(r.rsi)}</td>` },
   { key: 'rsi_sma9', label: '9d SMA', type: 'num',
+    title: '9-day simple moving average of RSI(14) — a smoothed RSI baseline to compare the current RSI against.',
     render: (r) => `<td class="num">${fmtNum(r.rsi_sma9)}</td>` },
   { key: 'rsi_dev_pct', label: 'RSI dev', type: 'num',
+    title: 'How far RSI(14) sits above (+) or below (-) its own 9-day average, in percent.',
     render: (r) => `<td class="num ${r.rsi_dev_pct >= 0 ? 'pos' : 'neg'}">${r.rsi_dev_pct >= 0 ? '+' : ''}${fmtNum(r.rsi_dev_pct)}%</td>` },
   { key: 'ema21', label: 'EMA(21)', type: 'num',
+    title: '21-day exponential moving average of the closing price.',
     render: (r) => `<td class="num">${fmtNum(r.ema21)}</td>` },
   { key: 'price_ema21_dev_pct', label: 'vs EMA21', type: 'num',
+    title: 'How far the close sits above (+) or below (-) the EMA(21), in percent.',
     render: (r) => `<td class="num ${r.price_ema21_dev_pct >= 0 ? 'pos' : 'neg'}">${r.price_ema21_dev_pct >= 0 ? '+' : ''}${fmtNum(r.price_ema21_dev_pct)}%</td>` },
   { key: 'ema50', label: 'EMA(50)', type: 'num',
+    title: '50-day exponential moving average of the closing price.',
     render: (r) => `<td class="num">${fmtNum(r.ema50)}</td>` },
   { key: 'ema21_ema50_dev_pct', label: '21 vs 50', type: 'num',
+    title: 'How far the EMA(21) sits above (+) or below (-) the EMA(50), in percent — a measure of uptrend strength.',
     render: (r) => `<td class="num ${r.ema21_ema50_dev_pct >= 0 ? 'pos' : 'neg'}">${r.ema21_ema50_dev_pct >= 0 ? '+' : ''}${fmtNum(r.ema21_ema50_dev_pct)}%</td>` },
   { key: 'macd_hist', label: 'MACD hist', type: 'num',
+    title: 'MACD histogram: the MACD line (EMA12 - EMA26) minus its 9-day signal line. Positive and rising signals strengthening upward momentum.',
     render: (r) => `<td class="num ${r.macd_hist >= 0 ? 'pos' : 'neg'}">${fmtNum(r.macd_hist, 4)}</td>` },
   { key: 'rel_volume', label: 'RVol', type: 'num',
+    title: "Relative volume: the day's volume divided by the average volume of the prior N days. Above 1× means the stock traded busier than usual.",
     render: (r) => `<td class="num">${fmtNum(r.rel_volume)}×</td>` },
   { key: 'volume', label: 'Volume', type: 'num',
+    title: 'Number of shares traded on the previous trading day.',
     render: (r) => `<td class="num">${fmtVol(r.volume)}</td>` },
   { key: 'turnover_pct', label: 'Turnover %', type: 'num',
-    title: 'Daily volume / market cap × 100 — equivalently volume / shares outstanding.',
+    title: 'Daily volume as a share of market cap (volume / shares outstanding × 100) — how much of the company changed hands that day.',
     render: (r) => `<td class="num" title="${r.market_cap ? 'mkt cap ' + fmtVol(r.market_cap) : 'shares outstanding unknown'}">${r.turnover_pct == null ? '—' : fmtNum(r.turnover_pct, 2) + '%'}</td>` },
 ];
 const COLUMN_BY_KEY = Object.fromEntries(COLUMN_DEFS.map((d) => [d.key, d]));
@@ -1725,7 +1811,10 @@ loadRules();
 els.runBtn.addEventListener('click', runScreen);
 
 Object.values(toggles).forEach((t) => t && t.addEventListener('change', syncDisabledStates));
+loadFilterDefaults();  // apply the user's saved filter defaults, if any
 syncDisabledStates();
+if (els.saveDefaultsBtn) els.saveDefaultsBtn.addEventListener('click', saveFilterDefaults);
+if (els.resetDefaultsBtn) els.resetDefaultsBtn.addEventListener('click', resetFilterDefaults);
 
 if (els.thead) els.thead.addEventListener('click', onSortHeaderClick);
 if (inputs.high_lookback) inputs.high_lookback.addEventListener('input', updateHighHeader);

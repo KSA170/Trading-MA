@@ -309,6 +309,16 @@ button.warn:hover { filter: brightness(1.05); }
   padding-top: 4px;
 }
 
+.filter-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+.filter-actions #defaults-msg { font-size: 12px; }
+
 .content {
   display: block;
   padding: 16px 20px;
