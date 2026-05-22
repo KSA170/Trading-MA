@@ -458,7 +458,7 @@ td.check input[type="checkbox"] {
   margin: 0;
 }
 
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow: auto; max-height: 72vh; }
 table {
   width: 100%;
   border-collapse: collapse;
@@ -471,6 +471,13 @@ th, td {
   white-space: nowrap;
 }
 th { color: var(--muted); font-weight: 500; font-size: 12px; }
+/* Freeze the header row while the ticker rows scroll inside .table-wrap. */
+#results-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel-2);
+}
 td { font-size: 13px; }
 .num { text-align: right; }
 tr.empty td { text-align: center; color: var(--muted); padding: 20px; }

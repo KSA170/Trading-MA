@@ -1402,10 +1402,16 @@ if (els.historyBody) {
       btn.textContent = hidden ? 'Show filters' : 'Hide filters';
       if (!hidden && !panel.dataset.filled) {
         const p = ctx.entry.params || {};
-        const rows = HISTORY_PARAM_KEYS
-          .filter((k) => k in p)
-          .map((k) => `<div><span class="k">${escapeHtml(k)}</span>: ${escapeHtml(fmtParamValue(k, p[k]))}</div>`);
-        if (p.lists) rows.unshift(`<div><span class="k">lists</span>: ${escapeHtml(fmtParamValue('lists', p.lists))}</div>`);
+        // Show only the filters that were active (apply_* = true) for
+        // this run — summarised the same way as the alert-rule criteria.
+        const active = summarizeRuleParams(p);
+        const rows = active.map((c) => `<div>${escapeHtml(c)}</div>`);
+        if (p.lists) {
+          rows.unshift(`<div><span class="k">Exchanges</span>: ${escapeHtml(fmtParamValue('lists', p.lists))}</div>`);
+        }
+        if (!active.length) {
+          rows.push('<div class="muted">No indicator filters were active for this run.</div>');
+        }
         panel.innerHTML = rows.join('');
         panel.dataset.filled = '1';
       }
