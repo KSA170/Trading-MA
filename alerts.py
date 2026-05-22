@@ -571,7 +571,7 @@ def send_telegram(text: str) -> bool:
     return True
 
 
-def _format_alert(rule_name: str, hit) -> str:
+def _format_alert(rule_name: str, hit, as_of: datetime) -> str:
     return (
         f"<b>[{rule_name}]</b>\n"
         f"<b>{hit.ticker}</b> — {hit.name}\n"
@@ -579,7 +579,8 @@ def _format_alert(rule_name: str, hit) -> str:
         f"Momentum {hit.momentum_score:.0f}/100\n"
         f"RSI {hit.rsi:.1f} | MACD hist {hit.macd_hist:+.3f} | "
         f"RVol {hit.rel_volume:.2f}x\n"
-        f"Matched alert criteria — as of {hit.as_of_date}"
+        f"Matched alert criteria — market data as of "
+        f"{as_of.strftime('%Y-%m-%d %H:%M')} ET"
     )
 
 
@@ -694,7 +695,7 @@ def run() -> int:
 
     sent = 0
     for rule, ticker, hit in triggered:
-        if send_telegram(_format_alert(rule["name"], hit)):
+        if send_telegram(_format_alert(rule["name"], hit, now)):
             record_sent(rule["id"], ticker, today,
                         f"momentum={hit.momentum_score}")
             sent += 1
