@@ -1632,6 +1632,10 @@ function renderRules(data) {
     const critHtml = crit.length
       ? crit.map((c) => `<span class="rule-crit">${escapeHtml(c)}</span>`).join('')
       : '<span class="rule-crit-none">no filters enabled — every ticker in scope would alert</span>';
+    const lastTxt = r.last_triggered_at
+      ? `Last: ${formatTriggerTime(r.last_triggered_at)} · ${r.last_match_count} ${r.last_match_count === 1 ? 'ticker' : 'tickers'}`
+      : 'Never triggered yet';
+    const lastClass = r.last_triggered_at ? 'rule-last' : 'rule-last rule-last-none';
     const row = document.createElement('div');
     row.className = 'rule-row' + (r.enabled ? '' : ' rule-off');
     row.dataset.id = r.id;
@@ -1639,14 +1643,60 @@ function renderRules(data) {
       <div class="rule-head">
         <span class="rule-name">${escapeHtml(r.name)}</span>
         <span class="rule-scope">${escapeHtml(scopeTxt)}</span>
+        <span class="${lastClass}">${escapeHtml(lastTxt)}</span>
         <span class="rule-spacer"></span>
         <button type="button" data-act="toggle">${r.enabled ? 'Disable' : 'Enable'}</button>
         <button type="button" data-act="update" title="Replace this rule's criteria with the filters currently set above">Update criteria</button>
+        <button type="button" data-act="history" title="Show this rule's recent trigger events (date, time, match count)">History</button>
         <button type="button" class="rule-delete" data-act="delete" title="Delete rule">×</button>
       </div>
       <div class="rule-criteria">${critHtml}</div>
+      <div class="rule-history hidden"></div>
     `;
     els.rulesList.appendChild(row);
+  }
+}
+
+// Format an ISO timestamp from Postgres for display in the user's locale.
+function formatTriggerTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso).slice(0, 16);
+  return d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+async function ruleShowHistory(id) {
+  const row = els.rulesList && els.rulesList.querySelector(`.rule-row[data-id="${id}"]`);
+  if (!row) return;
+  const panel = row.querySelector('.rule-history');
+  const btn = row.querySelector('button[data-act="history"]');
+  if (!panel) return;
+  const willShow = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !willShow);
+  if (btn) btn.textContent = willShow ? 'Hide history' : 'History';
+  if (!willShow) return;
+  // Always re-fetch on open so the latest triggers are visible.
+  panel.innerHTML = '<div class="muted">Loading…</div>';
+  try {
+    const res = await fetch(`/api/alerts/rules/history?id=${id}&limit=15`);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const events = data.history || [];
+    if (!events.length) {
+      panel.innerHTML = '<div class="muted">No triggers yet for this rule.</div>';
+      return;
+    }
+    panel.innerHTML = events.map((e) => `
+      <div class="rule-event">
+        <span class="rule-event-time">${escapeHtml(formatTriggerTime(e.triggered_at))}</span>
+        <span class="rule-event-count">${e.match_count} ${e.match_count === 1 ? 'ticker' : 'tickers'}</span>
+      </div>
+    `).join('');
+  } catch (err) {
+    panel.innerHTML = `<div style="color:var(--red)">Failed to load: ${escapeHtml(err.message || 'error')}</div>`;
   }
 }
 
@@ -1758,6 +1808,10 @@ async function createRule() {
 }
 
 async function ruleAction(id, act) {
+  if (act === 'history') {
+    await ruleShowHistory(id);
+    return;
+  }
   let url, body;
   if (act === 'delete') {
     url = '/api/alerts/rules/delete'; body = { id };

@@ -742,6 +742,34 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
   padding: 0 4px;
 }
 .rule-row .rule-delete:hover { color: var(--red); }
+.rule-row .rule-last {
+  font-size: 11px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.rule-row .rule-last-none { color: var(--muted); font-style: italic; }
+
+.rule-row .rule-history {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+.rule-row .rule-history.hidden { display: none; }
+.rule-row .rule-event {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.rule-row .rule-event-time { color: var(--muted); min-width: 11em; }
+.rule-row .rule-event-count { color: var(--accent); font-weight: 600; }
+
 .rule-row .rule-criteria {
   display: flex;
   flex-wrap: wrap;

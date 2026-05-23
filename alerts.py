@@ -223,6 +223,55 @@ def remove_from_watchlist(ticker: str) -> bool:
 
 # --- alert rules -----------------------------------------------------------
 
+def rules_with_last_trigger() -> dict:
+    """For every rule with at least one alert sent, return the most
+    recent trigger event (per-minute grouping — one alerts.py run sends
+    its matches within a single minute, so per-minute is one trigger).
+    Returns {rule_id: (datetime, match_count)}."""
+    if not enabled():
+        return {}
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "WITH events AS ("
+                "  SELECT rule_id, date_trunc('minute', sent_at) AS t, "
+                "         COUNT(*)::int AS cnt "
+                "  FROM alert_sent GROUP BY rule_id, t"
+                ") "
+                "SELECT DISTINCT ON (rule_id) rule_id, t, cnt "
+                "FROM events ORDER BY rule_id, t DESC"
+            )
+            rows = cur.fetchall()
+        return {r[0]: (r[1], int(r[2])) for r in rows}
+    except Exception as exc:
+        log.warning("alerts: rules_with_last_trigger failed: %s", exc)
+        return {}
+
+
+def rule_trigger_history(rule_id: int, limit: int = 20) -> list[dict]:
+    """Recent trigger events for a single rule, newest first. Each event
+    is the per-minute aggregation of alert_sent rows for that rule."""
+    if not enabled():
+        return []
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT date_trunc('minute', sent_at) AS t, COUNT(*)::int "
+                "FROM alert_sent WHERE rule_id = %s "
+                "GROUP BY t ORDER BY t DESC LIMIT %s",
+                (int(rule_id), int(limit)),
+            )
+            rows = cur.fetchall()
+        return [
+            {"triggered_at": r[0].isoformat() if r[0] else None,
+             "match_count": int(r[1])}
+            for r in rows
+        ]
+    except Exception as exc:
+        log.warning("alerts: rule_trigger_history failed: %s", exc)
+        return []
+
+
 def list_rules(enabled_only: bool = False) -> list[dict]:
     if not enabled():
         return []
@@ -235,18 +284,22 @@ def list_rules(enabled_only: bool = False) -> list[dict]:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(sql)
             rows = cur.fetchall()
-        out = []
-        for r in rows:
-            params = r[4] if isinstance(r[4], dict) else (json.loads(r[4]) if r[4] else {})
-            out.append({
-                "id": r[0], "name": r[1], "scope_type": r[2],
-                "scope_value": r[3], "params": _clean_params(params),
-                "enabled": bool(r[5]),
-            })
-        return out
     except Exception as exc:
         log.warning("alerts: list_rules failed: %s", exc)
         return []
+    latest = rules_with_last_trigger()
+    out = []
+    for r in rows:
+        params = r[4] if isinstance(r[4], dict) else (json.loads(r[4]) if r[4] else {})
+        ts, cnt = latest.get(r[0], (None, 0))
+        out.append({
+            "id": r[0], "name": r[1], "scope_type": r[2],
+            "scope_value": r[3], "params": _clean_params(params),
+            "enabled": bool(r[5]),
+            "last_triggered_at": ts.isoformat() if ts is not None else None,
+            "last_match_count": cnt,
+        })
+    return out
 
 
 def add_rule(name: str, scope_type: str, scope_value: str, params: dict) -> int | None:
