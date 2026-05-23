@@ -603,6 +603,25 @@ def api_alerts_rule_update_criteria():
     return jsonify({"updated": ok, "rules": alerts.list_rules()})
 
 
+@app.route("/api/alerts/rules/history", methods=["GET"])
+def api_alerts_rule_history():
+    """Recent trigger events for one rule — (timestamp, match count) per
+    minute-grouped event, newest first."""
+    try:
+        rule_id = int(request.args.get("id", "0"))
+    except (TypeError, ValueError):
+        rule_id = 0
+    try:
+        limit = int(request.args.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 100))
+    return jsonify({
+        "id": rule_id,
+        "history": alerts.rule_trigger_history(rule_id, limit),
+    })
+
+
 @app.route("/api/alerts/scopes", methods=["GET"])
 def api_alerts_scopes():
     """Distinct sectors and industries for the rule-builder dropdowns."""
