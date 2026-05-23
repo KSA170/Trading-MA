@@ -22,6 +22,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 import screener
 import snapshots
 import alerts
+import pattern_scan
 from tickers import LIST_LABELS, refresh_universe, last_fetch_errors
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -351,6 +352,44 @@ def api_snapshot_status():
         "retention_days": snapshots.RETENTION_DAYS,
         "diagnostics": snapshots.diagnostics(),
         **screener.snapshot_status(),
+    })
+
+
+@app.route("/api/setups")
+def api_setups():
+    """Scan the most recent snapshot for base-breakout / momentum-
+    ignition setups. Synchronous — typically 5-15s on a ~1k-candidate
+    pre-filtered pool. Query params:
+      date       YYYY-MM-DD (defaults to the latest snapshot)
+      min_score  0-100 (defaults to 65)
+      limit      max results (defaults to 25, capped at 100)
+    """
+    if not snapshots.enabled():
+        return jsonify({"error": "DATABASE_URL not set — snapshot required"}), 400
+    raw_date = (request.args.get("date") or "").strip()
+    available = snapshots.available_dates(50)
+    if not available:
+        return jsonify({"error": "no snapshot rows yet — warm the cache first"}), 400
+    as_of = raw_date if raw_date in available else available[0]
+    try:
+        min_score = float(request.args.get("min_score", "65"))
+    except (TypeError, ValueError):
+        min_score = 65.0
+    try:
+        limit = int(request.args.get("limit", "25"))
+    except (TypeError, ValueError):
+        limit = 25
+    limit = max(1, min(limit, 100))
+    started = time.time()
+    results = pattern_scan.scan_setups(as_of, min_score=min_score, limit=limit)
+    elapsed = round(time.time() - started, 1)
+    return jsonify({
+        "as_of": as_of,
+        "available_dates": available,
+        "min_score": min_score,
+        "limit": limit,
+        "results": results,
+        "elapsed_sec": elapsed,
     })
 
 
