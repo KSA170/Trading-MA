@@ -67,6 +67,8 @@ const els = {
   setupsExportTvBtn: $('#setups-export-tv-btn'),
   setupsShareBtn: $('#setups-share-btn'),
   setupsClearSelectionBtn: $('#setups-clear-selection-btn'),
+  setupsCreateAlertBtn: $('#setups-create-alert-btn'),
+  ruleType: $('#rule-type'),
   hoverChart: $('#hover-chart'),
   hoverChartTitle: $('#hover-chart-title'),
   hoverChartStatus: $('#hover-chart-status'),
@@ -1643,10 +1645,13 @@ function renderRules(data) {
   }
   els.rulesList.innerHTML = '';
   for (const r of rules) {
+    const isSetup = r.rule_type === 'setup';
     const scopeTxt = r.scope_type === 'watchlist'
       ? 'watchlist'
-      : `${r.scope_type}: ${r.scope_value}`;
-    const crit = summarizeRuleParams(r.params || {});
+      : r.scope_type === 'all'
+        ? 'all snapshot tickers'
+        : `${r.scope_type}: ${r.scope_value}`;
+    const crit = summarizeRuleParams(r.params || {}, r.rule_type);
     const critHtml = crit.length
       ? crit.map((c) => `<span class="rule-crit">${escapeHtml(c)}</span>`).join('')
       : '<span class="rule-crit-none">no filters enabled — every ticker in scope would alert</span>';
@@ -1668,10 +1673,16 @@ function renderRules(data) {
       ? `Last scan: ${scanParts.join(' · ')} · ${formatTriggerTime(r.last_run_at)}`
       : 'Not scanned yet (the alert engine hasn’t run since this rule was created).';
     const row = document.createElement('div');
-    row.className = 'rule-row' + (r.enabled ? '' : ' rule-off');
+    row.className = 'rule-row'
+      + (r.enabled ? '' : ' rule-off')
+      + (isSetup ? ' rule-setup' : '');
     row.dataset.id = r.id;
+    const typeChip = isSetup
+      ? '<span class="rule-type-chip rule-type-setup">Setup</span>'
+      : '<span class="rule-type-chip rule-type-screener">Screener</span>';
     row.innerHTML = `
       <div class="rule-head">
+        ${typeChip}
         <span class="rule-name">${escapeHtml(r.name)}</span>
         <span class="rule-scope">${escapeHtml(scopeTxt)}</span>
         <span class="${lastClass}">${escapeHtml(lastTxt)}</span>
@@ -1740,9 +1751,17 @@ function streakModeLabel(m) {
     : m === 'close_green' ? 'higher closes + green'
     : 'higher highs';
 }
-function summarizeRuleParams(p) {
-  const out = [];
+function summarizeRuleParams(p, ruleType) {
   const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
+  if (ruleType === 'setup') {
+    const out = [`Setup score ≥ ${n(p.score_min)}`];
+    if (p.min_price != null && p.max_price != null) {
+      out.push(`Price $${n(p.min_price)}–$${n(p.max_price)}`);
+    }
+    if (p.min_dollar_vol != null) out.push(`$-vol/day ≥ $${n(p.min_dollar_vol)}`);
+    return out;
+  }
+  const out = [];
   if (p.apply_price) out.push(`Price $${n(p.price_min)}–$${n(p.price_max)}`);
   if (p.apply_high) out.push(`Streak ${p.high_lookback}d ${streakModeLabel(p.streak_mode)}`);
   if (p.apply_rsi) out.push(`RSI(14) ${n(p.rsi_min)}–${n(p.rsi_max)}`);
@@ -1782,6 +1801,11 @@ function populateScopeValues() {
     els.ruleScopeValue.disabled = true;
     return;
   }
+  if (type === 'all') {
+    els.ruleScopeValue.innerHTML = '<option value="">(every snapshot ticker)</option>';
+    els.ruleScopeValue.disabled = true;
+    return;
+  }
   const list = type === 'sector' ? _alertScopes.sectors : _alertScopes.industries;
   els.ruleScopeValue.disabled = false;
   if (!list || !list.length) {
@@ -1802,28 +1826,49 @@ function setRulesMsg(text, kind) {
     : kind === 'ok' ? 'var(--green)' : 'var(--muted)';
 }
 
+function currentSetupParams() {
+  return {
+    score_min: Number(els.setupsMinScore && els.setupsMinScore.value) || 70,
+    min_price: Number(els.setupsMinPrice && els.setupsMinPrice.value) || 0,
+    max_price: Number(els.setupsMaxPrice && els.setupsMaxPrice.value) || 1000,
+    min_dollar_vol: Number(els.setupsMinDollarVol && els.setupsMinDollarVol.value) || 0,
+  };
+}
+
 async function createRule() {
   if (!els.ruleName || !els.ruleScopeType || !els.ruleScopeValue) return;
   const name = (els.ruleName.value || '').trim();
+  const ruleType = (els.ruleType && els.ruleType.value) || 'screener';
   const scopeType = els.ruleScopeType.value;
-  const scopeValue = scopeType === 'watchlist' ? '' : els.ruleScopeValue.value;
+  const scopeValue = (scopeType === 'watchlist' || scopeType === 'all') ? '' : els.ruleScopeValue.value;
   if (!name) {
     setRulesMsg('Enter a rule name first.', 'error');
     els.ruleName.focus();
     return;
   }
-  if (scopeType !== 'watchlist' && !scopeValue) {
+  if (scopeType === 'all' && ruleType !== 'setup') {
+    setRulesMsg('"All snapshot tickers" scope is only valid for Setup rules.', 'error');
+    return;
+  }
+  if (scopeType !== 'watchlist' && scopeType !== 'all' && !scopeValue) {
     setRulesMsg('Pick a sector / industry for this rule — run "Classify universe" if the list is empty.', 'error');
     return;
   }
   setRulesMsg('Creating rule…');
   try {
-    // Criteria come from the current screener filters (query string);
-    // name + scope come in the JSON body.
-    const res = await fetch('/api/alerts/rules?' + buildQuery(), {
+    // Setup rules: criteria come from the Setups toolbar (JSON body).
+    // Screener rules: criteria come from the current screener filters (query string).
+    const body = { name, scope_type: scopeType, scope_value: scopeValue, rule_type: ruleType };
+    let url = '/api/alerts/rules';
+    if (ruleType === 'setup') {
+      body.setup_params = currentSetupParams();
+    } else {
+      url += '?' + buildQuery();
+    }
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, scope_type: scopeType, scope_value: scopeValue }),
+      body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -1852,7 +1897,17 @@ async function ruleAction(id, act) {
     const enabling = row && row.classList.contains('rule-off');
     url = '/api/alerts/rules/toggle'; body = { id, enabled: !!enabling };
   } else if (act === 'update') {
-    url = '/api/alerts/rules/update-criteria?' + buildQuery(); body = { id };
+    // For setup rules send the current Setups toolbar values; for
+    // screener rules use the screener filter query string.
+    const row = els.rulesList && els.rulesList.querySelector(`.rule-row[data-id="${id}"]`);
+    const isSetup = row && row.classList.contains('rule-setup');
+    if (isSetup) {
+      url = '/api/alerts/rules/update-criteria';
+      body = { id, setup_params: currentSetupParams() };
+    } else {
+      url = '/api/alerts/rules/update-criteria?' + buildQuery();
+      body = { id };
+    }
   } else {
     return;
   }
@@ -2077,6 +2132,46 @@ if (els.setupsExportTvBtn) {
 if (els.setupsShareBtn) {
   els.setupsShareBtn.addEventListener('click', () => shareSelected(selectedSetupRows(), summariseSetup));
 }
+if (els.setupsCreateAlertBtn) {
+  els.setupsCreateAlertBtn.addEventListener('click', () => {
+    // Pre-populate the rule-create row with setup type + 'all' scope, then
+    // scroll the user to it so they can name the rule and submit.
+    if (els.ruleType) els.ruleType.value = 'setup';
+    if (els.ruleScopeType) {
+      els.ruleScopeType.value = 'all';
+      populateScopeValues();
+    }
+    syncRuleTypeUI();
+    if (els.ruleName) {
+      els.ruleName.focus();
+      els.ruleName.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    setRulesMsg('Name this setup alert, then click "Create rule".');
+  });
+}
+
+// 'All' scope is setup-only — toggle its visibility, and toggle the create
+// button label so it accurately describes which form's values it'll use.
+function syncRuleTypeUI() {
+  const isSetup = els.ruleType && els.ruleType.value === 'setup';
+  if (els.ruleScopeType) {
+    const allOpt = els.ruleScopeType.querySelector('option[value="all"]');
+    if (allOpt) allOpt.hidden = !isSetup;
+    // If we just switched to screener while 'all' is selected, reset it.
+    if (!isSetup && els.ruleScopeType.value === 'all') {
+      els.ruleScopeType.value = 'watchlist';
+      populateScopeValues();
+    }
+  }
+  if (els.ruleCreateBtn) {
+    els.ruleCreateBtn.textContent = isSetup
+      ? 'Create rule (uses Setups filters)'
+      : 'Create rule (uses screener filters)';
+  }
+}
+if (els.ruleType) els.ruleType.addEventListener('change', syncRuleTypeUI);
+syncRuleTypeUI();
+
 wireCollapse(els.setupsToggle, els.setupsBody, 'collapse_setups');
 
 
