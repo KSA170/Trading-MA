@@ -1305,8 +1305,8 @@ window.addEventListener('scroll', hideHoverChart, true);
 
 if (els.selectAll) els.selectAll.addEventListener('change', onSelectAllChange);
 if (els.emailBtn) els.emailBtn.addEventListener('click', emailSelected);
-if (els.shareBtn) els.shareBtn.addEventListener('click', shareSelected);
-if (els.exportTvBtn) els.exportTvBtn.addEventListener('click', exportForTradingView);
+if (els.shareBtn) els.shareBtn.addEventListener('click', () => shareSelected());
+if (els.exportTvBtn) els.exportTvBtn.addEventListener('click', () => exportForTradingView());
 if (els.saveHistoryBtn) els.saveHistoryBtn.addEventListener('click', saveSelectionToHistory);
 if (els.exportBtn) els.exportBtn.addEventListener('click', exportSelected);
 if (els.clearSelectionBtn) els.clearSelectionBtn.addEventListener('click', clearSelection);
@@ -1606,7 +1606,7 @@ async function removeFromAlerts(ticker) {
   } catch (_) { /* silent */ }
 }
 
-if (els.alertsAddBtn) els.alertsAddBtn.addEventListener('click', addSelectedToAlerts);
+if (els.alertsAddBtn) els.alertsAddBtn.addEventListener('click', () => addSelectedToAlerts());
 if (els.alertsWatchlist) {
   els.alertsWatchlist.addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-remove]');
