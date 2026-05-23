@@ -161,7 +161,30 @@ def score_base_breakout(bars: list[dict],
     vol_ratio = base_avg_vol / overall_vol if overall_vol else 1.0
     vol_quiet_score = 1.0 / (1.0 + math.exp((vol_ratio - 0.75) * 6))
 
-    base_quality = (tightness_score + ma_score + vol_quiet_score) / 3.0
+    # Flatness — was the base actually flat (not trending)? R² of a
+    # linear fit through the base closes: near 0 = noisy/flat (good),
+    # near 1 = smoothly trending (bad — could be a late-stage uptrend
+    # or a downtrend feeding a V-bounce). This is the signal that
+    # separates real base-breakouts from continuation-of-trend and
+    # bounce-off-drop patterns that satisfy the surface filters.
+    flatness_score = 0.5
+    r_squared = None
+    if len(base_closes) >= 8:
+        try:
+            x_arr = np.arange(len(base_closes), dtype=float)
+            y_arr = base_closes.values.astype(float)
+            slope, intercept = np.polyfit(x_arr, y_arr, 1)
+            y_pred = slope * x_arr + intercept
+            ss_res = float(np.sum((y_arr - y_pred) ** 2))
+            ss_tot = float(np.sum((y_arr - y_arr.mean()) ** 2))
+            if ss_tot > 0:
+                r_squared = 1.0 - ss_res / ss_tot
+                flatness_score = max(0.0, min(1.0, 1.0 - r_squared))
+        except Exception:
+            pass
+
+    base_quality = (tightness_score + ma_score + vol_quiet_score
+                    + flatness_score) / 4.0
 
     # --- Ignition strength ---------------------------------------------
     above_ema21 = last_close > last_ema21
@@ -235,16 +258,43 @@ def score_base_breakout(bars: list[dict],
     rsi_surge_score = min(1.0, max(0.0, rsi_delta / 20.0))
     rsi_score = (rsi_pos_score + rsi_surge_score) / 2.0
 
-    # Weighted blend — the truly ignition-specific signals (volume
-    # burst, MACD flipping positive + rising, RSI surge) dominate over
-    # "price happens to be near the MAs", which a sideways stock can
-    # satisfy without a real ignition.
+    # Range expansion — did the ignition period actually show bigger
+    # daily price ranges than the base? This is the smoking gun that
+    # separates a real breakout from a smooth uptrend continuation:
+    # HYLN expanded 3-5×, EP-PC-style trend continuations don't.
+    def _range_pct(window):
+        if len(window) < 2:
+            return 0.0
+        m = float(window.mean())
+        if m <= 0:
+            return 0.0
+        return float((window.max() - window.min()) / m)
+
+    ignition_closes = closes.iloc[base_end:]
+    base_range_pct = _range_pct(base_closes)
+    ign_range_pct = _range_pct(ignition_closes)
+    range_exp_ratio = (ign_range_pct / base_range_pct
+                       if base_range_pct > 0.0005 else 0.0)
+    if range_exp_ratio >= 3.0:
+        range_exp_score = 1.0
+    elif range_exp_ratio >= 1.5:
+        range_exp_score = 0.5 + (range_exp_ratio - 1.5) / 3.0
+    elif range_exp_ratio >= 1.0:
+        range_exp_score = max(0.0, range_exp_ratio - 1.0)
+    else:
+        range_exp_score = 0.0
+
+    # Weighted blend — vol burst + range expansion are the truly
+    # distinguishing signals for a real ignition (vs continuation or
+    # bounce). "Price is near the MAs" gets little weight because
+    # smooth uptrends also satisfy it without any real ignition.
     ignition = (
         0.05 * ema_pos_score
-        + 0.20 * cross_score
-        + 0.35 * vol_burst_score
-        + 0.25 * macd_score
-        + 0.15 * rsi_score
+        + 0.15 * cross_score
+        + 0.25 * vol_burst_score
+        + 0.20 * macd_score
+        + 0.10 * rsi_score
+        + 0.25 * range_exp_score
     )
 
     # --- Earliness ------------------------------------------------------
@@ -302,10 +352,14 @@ def score_base_breakout(bars: list[dict],
             "ma_convergence_score": round(ma_score, 3),
             "base_volume_ratio": round(vol_ratio, 3),
             "volume_quiet_score": round(vol_quiet_score, 3),
+            "base_r_squared": round(r_squared, 3) if r_squared is not None else None,
+            "base_flatness_score": round(flatness_score, 3),
             "price_above_emas_score": round(ema_pos_score, 3),
             "cross_recency_score": round(cross_score, 3),
             "volume_burst_x": round(vol_mult, 2),
             "volume_burst_score": round(vol_burst_score, 3),
+            "range_expansion_x": round(range_exp_ratio, 2),
+            "range_expansion_score": round(range_exp_score, 3),
             "macd_score": round(macd_score, 3),
             "rsi_now": round(last_rsi, 1),
             "rsi_base_avg": round(base_rsi_mean, 1),
@@ -319,13 +373,13 @@ def score_base_breakout(bars: list[dict],
     }
 
 
-def _prefilter_sql(as_of: str, min_price: float, min_dollar_vol: float):
+def _prefilter_sql(as_of: str, min_price: float, max_price: float,
+                   min_dollar_vol: float):
     """SQL that returns candidate snapshot rows likely to score well.
     Gates on:
       - the move has started (close > EMA21, MACD > 0, RSI in band)
-      - liquidity (min price + min average daily dollar volume) so the
-        scanner doesn't surface illiquid microcaps and thinly-traded
-        OTC-style names
+      - price band (min_price / max_price)
+      - liquidity (trailing 10-day avg daily dollar volume)
     Cuts the scan from ~7,800 to ~500-1,500 tickers, keeping
     /api/setups responsive."""
     sql = (
@@ -333,7 +387,7 @@ def _prefilter_sql(as_of: str, min_price: float, min_dollar_vol: float):
         "macd_hist_prev, recent_bars "
         "FROM daily_snapshot "
         "WHERE as_of = %s "
-        "  AND close IS NOT NULL AND close >= %s "
+        "  AND close IS NOT NULL AND close >= %s AND close <= %s "
         "  AND ema21 IS NOT NULL AND ema50 IS NOT NULL "
         "  AND close > ema21 "
         "  AND macd_hist IS NOT NULL AND macd_hist > 0 "
@@ -341,19 +395,19 @@ def _prefilter_sql(as_of: str, min_price: float, min_dollar_vol: float):
         "  AND avg_volume IS NOT NULL "
         "  AND avg_volume * close >= %s"
     )
-    return sql, [as_of, float(min_price), float(min_dollar_vol)]
+    return sql, [as_of, float(min_price), float(max_price), float(min_dollar_vol)]
 
 
 def scan_setups(as_of: str, min_score: float = 60.0, limit: int = 25,
-                min_price: float = 3.0,
+                min_price: float = 3.0, max_price: float = 1000.0,
                 min_dollar_vol: float = 1_000_000.0) -> list[dict]:
     """Scan today's snapshot for base-breakout candidates. Filters by
-    score >= `min_score` and the liquidity gates (close >= `min_price`,
-    trailing avg daily dollar volume >= `min_dollar_vol`). Returns up
+    score >= `min_score`, the price band [min_price, max_price], and
+    trailing avg daily dollar volume >= `min_dollar_vol`. Returns up
     to `limit` rows sorted by score descending."""
     if not snapshots.enabled():
         return []
-    sql, args = _prefilter_sql(as_of, min_price, min_dollar_vol)
+    sql, args = _prefilter_sql(as_of, min_price, max_price, min_dollar_vol)
     try:
         with snapshots._conn() as c, c.cursor(name="setups_scan") as cur:
             cur.itersize = 500

@@ -385,13 +385,18 @@ def api_setups():
     except (TypeError, ValueError):
         min_price = 3.0
     try:
+        max_price = float(request.args.get("max_price", "1000"))
+    except (TypeError, ValueError):
+        max_price = 1000.0
+    try:
         min_dollar_vol = float(request.args.get("min_dollar_vol", "1000000"))
     except (TypeError, ValueError):
         min_dollar_vol = 1_000_000.0
     started = time.time()
     results = pattern_scan.scan_setups(
         as_of, min_score=min_score, limit=limit,
-        min_price=min_price, min_dollar_vol=min_dollar_vol,
+        min_price=min_price, max_price=max_price,
+        min_dollar_vol=min_dollar_vol,
     )
     elapsed = round(time.time() - started, 1)
     return jsonify({
@@ -400,6 +405,7 @@ def api_setups():
         "min_score": min_score,
         "limit": limit,
         "min_price": min_price,
+        "max_price": max_price,
         "min_dollar_vol": min_dollar_vol,
         "results": results,
         "elapsed_sec": elapsed,
