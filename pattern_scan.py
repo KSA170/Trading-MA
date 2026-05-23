@@ -183,8 +183,16 @@ def score_base_breakout(bars: list[dict],
         except Exception:
             pass
 
-    base_quality = (tightness_score + ma_score + vol_quiet_score
-                    + flatness_score) / 4.0
+    # Flatness as a gate rather than a 1/4-weighted average component.
+    # Calibrated against real snapshot data: tightness + MA convergence
+    # + quiet volume can all be perfect on a smoothly drifting SPAC base
+    # (R²=0.78, flatness_score=0.22), averaging out to base_quality 0.8.
+    # Treat low flatness (R² > 0.6) as a multiplicative penalty instead
+    # so it can't be diluted by the other three.
+    base_quality_raw = (tightness_score + ma_score + vol_quiet_score
+                        + flatness_score) / 4.0
+    flatness_gate = min(1.0, flatness_score / 0.4)
+    base_quality = base_quality_raw * flatness_gate
 
     # --- Ignition strength ---------------------------------------------
     above_ema21 = last_close > last_ema21
