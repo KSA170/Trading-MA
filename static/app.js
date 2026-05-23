@@ -60,6 +60,13 @@ const els = {
   setupsMinDollarVol: $('#setups-min-dollar-vol'),
   setupsLimit: $('#setups-limit'),
   setupsRunBtn: $('#setups-run-btn'),
+  setupsSelectionToolbar: $('#setups-selection-toolbar'),
+  setupsSelectAll: $('#setups-select-all'),
+  setupsSelectionCount: $('#setups-selection-count'),
+  setupsAddWatchlistBtn: $('#setups-add-watchlist-btn'),
+  setupsExportTvBtn: $('#setups-export-tv-btn'),
+  setupsShareBtn: $('#setups-share-btn'),
+  setupsClearSelectionBtn: $('#setups-clear-selection-btn'),
   hoverChart: $('#hover-chart'),
   hoverChartTitle: $('#hover-chart-title'),
   hoverChartStatus: $('#hover-chart-status'),
@@ -818,10 +825,11 @@ function emailSelected() {
   window.location.href = href;
 }
 
-async function shareSelected() {
-  const rows = selectedRows();
+async function shareSelected(rows, summariser) {
+  rows = rows || selectedRows();
+  summariser = summariser || summariseRow;
   if (!rows.length) return;
-  const text = rows.map(summariseRow).join('\n');
+  const text = rows.map(summariser).join('\n');
   if (navigator.share) {
     try {
       await navigator.share({ title: 'Trading-MA tickers', text });
@@ -843,8 +851,8 @@ async function shareSelected() {
   }
 }
 
-function exportForTradingView() {
-  const rows = selectedRows();
+function exportForTradingView(rows) {
+  rows = rows || selectedRows();
   if (!rows.length) return;
   // TradingView's "Import watchlist" takes a .txt of comma-separated
   // symbols. EXCHANGE:SYMBOL is unambiguous; we fall back to a bare
@@ -1561,8 +1569,8 @@ async function loadAlertWatchlist() {
   } catch (_) { /* silent */ }
 }
 
-async function addSelectedToAlerts() {
-  const rows = selectedRows();
+async function addSelectedToAlerts(rows) {
+  rows = rows || selectedRows();
   if (!rows.length) return;
   const tickers = rows.map((r) => r.ticker);
   try {
@@ -1902,10 +1910,15 @@ function renderSetupBar(label, value) {
   `;
 }
 
+let lastSetupResults = [];
+const selectedSetupTickers = new Set();
+
 function renderSetupCard(r) {
   const sc = r.score || 0;
   const scoreClass = sc >= 80 ? 'setup-score-hi' : sc >= 65 ? 'setup-score-mid' : 'setup-score-lo';
   const b = r.breakdown || {};
+  const checked = selectedSetupTickers.has(r.ticker) ? ' checked' : '';
+  const selClass = checked ? ' setup-card-selected' : '';
   // Compact key-metric chips for at-a-glance interpretation.
   const chipBits = [];
   if (b.volume_burst_x != null) chipBits.push(`vol ${b.volume_burst_x.toFixed(1)}× base`);
@@ -1917,8 +1930,9 @@ function renderSetupCard(r) {
   if (b.price_ema21_pct != null) chipBits.push(`+${b.price_ema21_pct.toFixed(1)}% vs EMA21`);
   if (b.rsi_now != null) chipBits.push(`RSI ${b.rsi_now.toFixed(0)}`);
   return `
-    <div class="setup-card">
+    <div class="setup-card${selClass}">
       <div class="setup-head">
+        <input type="checkbox" class="setup-check" data-setup-select="${escapeHtml(r.ticker)}"${checked} />
         <span class="setup-ticker" data-ticker="${escapeHtml(r.ticker)}"><strong>${escapeHtml(r.ticker)}</strong></span>
         <span class="setup-name">${escapeHtml(r.name || '')}</span>
         <span class="setup-spacer"></span>
@@ -1935,6 +1949,59 @@ function renderSetupCard(r) {
   `;
 }
 
+function selectedSetupRows() {
+  return lastSetupResults.filter((r) => selectedSetupTickers.has(r.ticker));
+}
+
+function summariseSetup(r) {
+  return [
+    r.ticker,
+    r.name ? `— ${r.name}` : '',
+    `$${fmtNum(r.close)}`,
+    `setup ${(r.score || 0).toFixed(1)}/100`,
+    `base ${((r.base_quality || 0) * 100).toFixed(0)}`,
+    `ign ${((r.ignition || 0) * 100).toFixed(0)}`,
+    `early ${((r.earliness || 0) * 100).toFixed(0)}`,
+  ].filter(Boolean).join(' ');
+}
+
+function updateSetupSelectionUI() {
+  const total = lastSetupResults.length;
+  const count = selectedSetupTickers.size;
+  if (els.setupsSelectionToolbar) els.setupsSelectionToolbar.hidden = total === 0;
+  if (els.setupsSelectionCount) els.setupsSelectionCount.textContent = `${count} selected`;
+  const disabled = count === 0;
+  [els.setupsAddWatchlistBtn, els.setupsExportTvBtn, els.setupsShareBtn,
+   els.setupsClearSelectionBtn].forEach((b) => { if (b) b.disabled = disabled; });
+  if (els.setupsSelectAll) {
+    els.setupsSelectAll.checked = total > 0 && count === total;
+    els.setupsSelectAll.indeterminate = count > 0 && count < total;
+  }
+}
+
+function applySetupCheckboxState(ticker, on) {
+  if (!els.setupsList) return;
+  const cb = els.setupsList.querySelector(`[data-setup-select="${CSS.escape(ticker)}"]`);
+  if (!cb) return;
+  cb.checked = on;
+  const card = cb.closest('.setup-card');
+  if (card) card.classList.toggle('setup-card-selected', on);
+}
+
+function toggleSetupSelection(ticker, on) {
+  if (on) selectedSetupTickers.add(ticker);
+  else selectedSetupTickers.delete(ticker);
+  applySetupCheckboxState(ticker, on);
+  updateSetupSelectionUI();
+}
+
+function setAllSetupSelections(on) {
+  selectedSetupTickers.clear();
+  if (on) lastSetupResults.forEach((r) => selectedSetupTickers.add(r.ticker));
+  lastSetupResults.forEach((r) => applySetupCheckboxState(r.ticker, on));
+  updateSetupSelectionUI();
+}
+
 async function runSetupsScan() {
   if (!els.setupsRunBtn || !els.setupsList) return;
   const minScore = Number(els.setupsMinScore && els.setupsMinScore.value) || 65;
@@ -1944,6 +2011,10 @@ async function runSetupsScan() {
   const limit = Number(els.setupsLimit && els.setupsLimit.value) || 20;
   els.setupsRunBtn.disabled = true;
   if (els.setupsStatus) els.setupsStatus.textContent = 'scanning… (5-15s)';
+  // Fresh scan invalidates any prior selection — wipe before the new results render.
+  selectedSetupTickers.clear();
+  lastSetupResults = [];
+  updateSetupSelectionUI();
   els.setupsList.innerHTML = '<p class="muted history-empty">Scanning the snapshot — base/ignition/earliness scoring across the pre-filtered candidate pool…</p>';
   try {
     const qs = new URLSearchParams({
@@ -1968,7 +2039,9 @@ async function runSetupsScan() {
       els.setupsList.innerHTML = `<p class="muted history-empty">No tickers cleared the ${minScore} score threshold for ${escapeHtml(data.as_of)}. Try lowering Min score, or the market just didn't show this setup today.</p>`;
       return;
     }
+    lastSetupResults = results;
     els.setupsList.innerHTML = results.map(renderSetupCard).join('');
+    updateSetupSelectionUI();
   } catch (err) {
     els.setupsList.innerHTML = `<p class="history-empty" style="color:var(--red)">Scan failed: ${escapeHtml(err.message || 'network error')}</p>`;
     if (els.setupsStatus) els.setupsStatus.textContent = '';
@@ -1983,6 +2056,26 @@ if (els.setupsList) {
   // matches table. Re-use the existing handlers.
   els.setupsList.addEventListener('mouseover', onTickerEnter);
   els.setupsList.addEventListener('mouseout', onTickerLeave);
+  els.setupsList.addEventListener('change', (ev) => {
+    const cb = ev.target.closest('[data-setup-select]');
+    if (!cb) return;
+    toggleSetupSelection(cb.dataset.setupSelect, cb.checked);
+  });
+}
+if (els.setupsSelectAll) {
+  els.setupsSelectAll.addEventListener('change', (ev) => setAllSetupSelections(ev.target.checked));
+}
+if (els.setupsClearSelectionBtn) {
+  els.setupsClearSelectionBtn.addEventListener('click', () => setAllSetupSelections(false));
+}
+if (els.setupsAddWatchlistBtn) {
+  els.setupsAddWatchlistBtn.addEventListener('click', () => addSelectedToAlerts(selectedSetupRows()));
+}
+if (els.setupsExportTvBtn) {
+  els.setupsExportTvBtn.addEventListener('click', () => exportForTradingView(selectedSetupRows()));
+}
+if (els.setupsShareBtn) {
+  els.setupsShareBtn.addEventListener('click', () => shareSelected(selectedSetupRows(), summariseSetup));
 }
 wireCollapse(els.setupsToggle, els.setupsBody, 'collapse_setups');
 
