@@ -56,6 +56,7 @@ const els = {
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
+  setupsMaxPrice: $('#setups-max-price'),
   setupsMinDollarVol: $('#setups-min-dollar-vol'),
   setupsLimit: $('#setups-limit'),
   setupsRunBtn: $('#setups-run-btn'),
@@ -1908,8 +1909,10 @@ function renderSetupCard(r) {
   // Compact key-metric chips for at-a-glance interpretation.
   const chipBits = [];
   if (b.volume_burst_x != null) chipBits.push(`vol ${b.volume_burst_x.toFixed(1)}× base`);
+  if (b.range_expansion_x != null && b.range_expansion_x >= 1.5) chipBits.push(`range ${b.range_expansion_x.toFixed(1)}× expansion`);
   if (b.cross_recency_score >= 0.7) chipBits.push('fresh EMA cross');
   if (b.macd_score >= 0.7) chipBits.push('MACD ignition');
+  if (b.base_flatness_score >= 0.7) chipBits.push('flat base');
   if (b.tightness_score >= 0.7) chipBits.push('tight base');
   if (b.price_ema21_pct != null) chipBits.push(`+${b.price_ema21_pct.toFixed(1)}% vs EMA21`);
   if (b.rsi_now != null) chipBits.push(`RSI ${b.rsi_now.toFixed(0)}`);
@@ -1936,6 +1939,7 @@ async function runSetupsScan() {
   if (!els.setupsRunBtn || !els.setupsList) return;
   const minScore = Number(els.setupsMinScore && els.setupsMinScore.value) || 65;
   const minPrice = Number(els.setupsMinPrice && els.setupsMinPrice.value) || 0;
+  const maxPrice = Number(els.setupsMaxPrice && els.setupsMaxPrice.value) || 1000;
   const minDollarVol = Number(els.setupsMinDollarVol && els.setupsMinDollarVol.value) || 0;
   const limit = Number(els.setupsLimit && els.setupsLimit.value) || 20;
   els.setupsRunBtn.disabled = true;
@@ -1945,6 +1949,7 @@ async function runSetupsScan() {
     const qs = new URLSearchParams({
       min_score: String(minScore),
       min_price: String(minPrice),
+      max_price: String(maxPrice),
       min_dollar_vol: String(minDollarVol),
       limit: String(limit),
     });
