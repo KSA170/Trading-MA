@@ -794,12 +794,28 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 }
 .setups-toolbar input:focus { outline: none; border-color: var(--accent); }
 #setups-list { display: flex; flex-direction: column; gap: 8px; }
+.setups-selection-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.setups-select-all-lbl { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.setups-selection-toolbar button:disabled { opacity: 0.45; cursor: not-allowed; }
 .setup-card {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel-2);
   padding: 10px 12px;
+  transition: border-color 0.12s, background-color 0.12s;
 }
+.setup-card-selected { border-color: var(--accent); background: rgba(88, 166, 255, 0.06); }
+.setup-check { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; margin: 0; }
 .setup-head {
   display: flex;
   align-items: baseline;
