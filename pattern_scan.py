@@ -164,11 +164,13 @@ def score_base_breakout(bars: list[dict],
     # Flatness — was the base actually flat (not trending)? R² of a
     # linear fit through the base closes: near 0 = noisy/flat (good),
     # near 1 = smoothly trending (bad — could be a late-stage uptrend
-    # or a downtrend feeding a V-bounce). This is the signal that
-    # separates real base-breakouts from continuation-of-trend and
-    # bounce-off-drop patterns that satisfy the surface filters.
+    # or a downtrend feeding a V-bounce). R² alone misses noisy
+    # uptrends (high variance keeps R² low even when slope is clearly
+    # positive), so we also extract the slope and apply it as a
+    # separate penalty below.
     flatness_score = 0.5
     r_squared = None
+    slope_pct_per_bar = 0.0
     if len(base_closes) >= 8:
         try:
             x_arr = np.arange(len(base_closes), dtype=float)
@@ -180,11 +182,49 @@ def score_base_breakout(bars: list[dict],
             if ss_tot > 0:
                 r_squared = 1.0 - ss_res / ss_tot
                 flatness_score = max(0.0, min(1.0, 1.0 - r_squared))
+            slope_pct_per_bar = (float(slope) / base_mean) if base_mean else 0.0
         except Exception:
             pass
 
-    base_quality = (tightness_score + ma_score + vol_quiet_score
-                    + flatness_score) / 4.0
+    # Slope penalty — catches noisy uptrends that R² misses. A real
+    # flat base has slope ≈ 0%/bar. >0.15%/bar (~5% drift over 35
+    # bars) starts to look like a continuation pattern, not a base.
+    if slope_pct_per_bar <= 0.0015:
+        slope_penalty = 1.0
+    elif slope_pct_per_bar <= 0.005:
+        slope_penalty = max(0.0, 1.0 - (slope_pct_per_bar - 0.0015) / 0.0035)
+    else:
+        slope_penalty = 0.0
+
+    # V-bounce penalty — locate the position of the min close within
+    # the base. In a real flat base the min is sprinkled randomly. A
+    # min sitting in the back half = recent shakeout / drop feeding
+    # the "ignition" bounce (INFU-style), not consolidation.
+    if len(base_closes) >= 8:
+        min_pos_frac = float(np.argmin(base_closes.values)) / max(1, len(base_closes) - 1)
+    else:
+        min_pos_frac = 0.5
+    if min_pos_frac <= 0.5:
+        v_bounce_penalty = 1.0
+    else:
+        v_bounce_penalty = max(0.2, 1.0 - (min_pos_frac - 0.5) * 1.6)
+
+    # Drawdown-within-base penalty — a true tight base has max/min
+    # spread under ~10%. >12% and it's not a base, it's a swing.
+    base_max = float(base_closes.max())
+    base_min_v = float(base_closes.min())
+    drawdown_frac = ((base_max - base_min_v) / base_mean) if base_mean else 0.0
+    if drawdown_frac <= 0.10:
+        drawdown_penalty = 1.0
+    elif drawdown_frac <= 0.25:
+        drawdown_penalty = max(0.0, 1.0 - (drawdown_frac - 0.10) / 0.15)
+    else:
+        drawdown_penalty = 0.0
+
+    base_quality_raw = (tightness_score + ma_score + vol_quiet_score
+                        + flatness_score) / 4.0
+    base_quality = (base_quality_raw * slope_penalty * v_bounce_penalty
+                    * drawdown_penalty)
 
     # --- Ignition strength ---------------------------------------------
     above_ema21 = last_close > last_ema21
@@ -193,14 +233,16 @@ def score_base_breakout(bars: list[dict],
                      else 0.5 if above_ema21 or above_ema50 else 0.0)
 
     # When did EMA21 most recently cross above EMA50? "Crossed below"
-    # requires a *meaningful* gap (>0.5%) so noise-crossings on a flat
-    # series don't masquerade as a real fresh ignition cross.
+    # requires a *meaningful* gap (>1.5%) so noise-crossings on a flat
+    # series don't masquerade as a real fresh ignition cross. We also
+    # skip the first 5 bars to avoid the EMA50 warm-up artifact on
+    # newly listed tickers (SPACs etc.) where EMA50 hasn't settled.
     cross_score = 0.15
     last_below_pos = -1
-    for i in range(n - 1, -1, -1):
+    for i in range(n - 1, 4, -1):
         e21 = ema21.iloc[i]; e50 = ema50.iloc[i]
         if pd.notna(e21) and pd.notna(e50) and e50 > 0:
-            if (e21 - e50) / e50 < -0.005:
+            if (e21 - e50) / e50 < -0.015:
                 last_below_pos = i
                 break
     if last_below_pos >= 0:
@@ -354,6 +396,12 @@ def score_base_breakout(bars: list[dict],
             "volume_quiet_score": round(vol_quiet_score, 3),
             "base_r_squared": round(r_squared, 3) if r_squared is not None else None,
             "base_flatness_score": round(flatness_score, 3),
+            "base_slope_pct_per_bar": round(slope_pct_per_bar * 100, 3),
+            "slope_penalty": round(slope_penalty, 3),
+            "min_pos_frac": round(min_pos_frac, 3),
+            "v_bounce_penalty": round(v_bounce_penalty, 3),
+            "base_drawdown_pct": round(drawdown_frac * 100, 2),
+            "drawdown_penalty": round(drawdown_penalty, 3),
             "price_above_emas_score": round(ema_pos_score, 3),
             "cross_recency_score": round(cross_score, 3),
             "volume_burst_x": round(vol_mult, 2),

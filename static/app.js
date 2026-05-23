@@ -1912,7 +1912,15 @@ function renderSetupCard(r) {
   if (b.range_expansion_x != null && b.range_expansion_x >= 1.5) chipBits.push(`range ${b.range_expansion_x.toFixed(1)}× expansion`);
   if (b.cross_recency_score >= 0.7) chipBits.push('fresh EMA cross');
   if (b.macd_score >= 0.7) chipBits.push('MACD ignition');
-  if (b.base_flatness_score >= 0.7) chipBits.push('flat base');
+  // "Flat base" requires R² flatness AND no positive slope AND min not
+  // in back half AND drawdown contained — otherwise the chip is
+  // misleading on noisy uptrends and pullback-bounces.
+  if (b.base_flatness_score >= 0.7
+      && (b.slope_penalty == null || b.slope_penalty >= 0.8)
+      && (b.v_bounce_penalty == null || b.v_bounce_penalty >= 0.8)
+      && (b.drawdown_penalty == null || b.drawdown_penalty >= 0.8)) {
+    chipBits.push('flat base');
+  }
   if (b.tightness_score >= 0.7) chipBits.push('tight base');
   if (b.price_ema21_pct != null) chipBits.push(`+${b.price_ema21_pct.toFixed(1)}% vs EMA21`);
   if (b.rsi_now != null) chipBits.push(`RSI ${b.rsi_now.toFixed(0)}`);
