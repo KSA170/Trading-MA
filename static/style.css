@@ -753,6 +753,12 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 }
 .rule-row .rule-last-none { color: var(--muted); font-style: italic; }
 
+.rule-row .rule-scan {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  padding-top: 4px;
+}
 .rule-row .rule-history {
   display: flex;
   flex-direction: column;

@@ -1636,6 +1636,19 @@ function renderRules(data) {
       ? `Last: ${formatTriggerTime(r.last_triggered_at)} · ${r.last_match_count} ${r.last_match_count === 1 ? 'ticker' : 'tickers'}`
       : 'Never triggered yet';
     const lastClass = r.last_triggered_at ? 'rule-last' : 'rule-last rule-last-none';
+    // Scan stats from the most recent alerts.py run — explains "scanned
+    // but never matched" cases (you can see scope size + match count).
+    const scanParts = [];
+    if (r.last_run_at) {
+      scanParts.push(`scope ${(r.scan_scope || 0).toLocaleString()}`);
+      scanParts.push(`evaluated ${(r.scan_evaluated || 0).toLocaleString()}`);
+      scanParts.push(`matched ${(r.scan_matched || 0).toLocaleString()}`);
+      if (r.scan_no_data)  scanParts.push(`no_data ${r.scan_no_data.toLocaleString()}`);
+      if (r.scan_errors)   scanParts.push(`errors ${r.scan_errors.toLocaleString()}`);
+    }
+    const scanLine = r.last_run_at
+      ? `Last scan: ${scanParts.join(' · ')} · ${formatTriggerTime(r.last_run_at)}`
+      : 'Not scanned yet (the alert engine hasn’t run since this rule was created).';
     const row = document.createElement('div');
     row.className = 'rule-row' + (r.enabled ? '' : ' rule-off');
     row.dataset.id = r.id;
@@ -1651,6 +1664,7 @@ function renderRules(data) {
         <button type="button" class="rule-delete" data-act="delete" title="Delete rule">×</button>
       </div>
       <div class="rule-criteria">${critHtml}</div>
+      <div class="rule-scan">${escapeHtml(scanLine)}</div>
       <div class="rule-history hidden"></div>
     `;
     els.rulesList.appendChild(row);

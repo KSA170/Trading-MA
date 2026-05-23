@@ -127,6 +127,16 @@ CREATE TABLE IF NOT EXISTS alert_sent (
     sent_at      TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (rule_id, ticker, trigger_date)
 );
+CREATE TABLE IF NOT EXISTS rule_run_stats (
+    rule_id     INT PRIMARY KEY,
+    last_run_at TIMESTAMPTZ,
+    scope       INT NOT NULL DEFAULT 0,
+    evaluated   INT NOT NULL DEFAULT 0,
+    matched     INT NOT NULL DEFAULT 0,
+    deduped     INT NOT NULL DEFAULT 0,
+    no_data     INT NOT NULL DEFAULT 0,
+    errors      INT NOT NULL DEFAULT 0
+);
 """
 
 
@@ -248,6 +258,57 @@ def rules_with_last_trigger() -> dict:
         return {}
 
 
+def rule_last_run_stats() -> dict:
+    """Latest run stats per rule — explains "why didn't this rule fire?"
+    (it scanned N tickers and matched 0). {rule_id: {scope, ...}}."""
+    if not enabled():
+        return {}
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT rule_id, last_run_at, scope, evaluated, matched, "
+                "deduped, no_data, errors FROM rule_run_stats"
+            )
+            rows = cur.fetchall()
+        return {
+            r[0]: {
+                "last_run_at": r[1].isoformat() if r[1] else None,
+                "scope": int(r[2]), "evaluated": int(r[3]),
+                "matched": int(r[4]), "deduped": int(r[5]),
+                "no_data": int(r[6]), "errors": int(r[7]),
+            }
+            for r in rows
+        }
+    except Exception as exc:
+        log.warning("alerts: rule_last_run_stats failed: %s", exc)
+        return {}
+
+
+def _record_rule_run_stats(stats_list: list[dict]) -> None:
+    """Upsert the per-rule scan stats from this run. One row per rule —
+    overwrites the previous run's stats, so the UI always shows the
+    most recent scan."""
+    if not enabled() or not stats_list:
+        return
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            for s in stats_list:
+                cur.execute(
+                    "INSERT INTO rule_run_stats (rule_id, last_run_at, "
+                    "scope, evaluated, matched, deduped, no_data, errors) "
+                    "VALUES (%s, now(), %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (rule_id) DO UPDATE SET "
+                    "last_run_at = now(), scope = EXCLUDED.scope, "
+                    "evaluated = EXCLUDED.evaluated, matched = EXCLUDED.matched, "
+                    "deduped = EXCLUDED.deduped, no_data = EXCLUDED.no_data, "
+                    "errors = EXCLUDED.errors",
+                    (s["rule_id"], s["scope"], s["evaluated"],
+                     s["matched"], s["deduped"], s["no_data"], s["errors"]),
+                )
+    except Exception as exc:
+        log.warning("alerts: _record_rule_run_stats failed: %s", exc)
+
+
 def rule_trigger_history(rule_id: int, limit: int = 20) -> list[dict]:
     """Recent trigger events for a single rule, newest first. Each event
     is the per-minute aggregation of alert_sent rows for that rule."""
@@ -288,16 +349,26 @@ def list_rules(enabled_only: bool = False) -> list[dict]:
         log.warning("alerts: list_rules failed: %s", exc)
         return []
     latest = rules_with_last_trigger()
+    stats = rule_last_run_stats()
     out = []
     for r in rows:
         params = r[4] if isinstance(r[4], dict) else (json.loads(r[4]) if r[4] else {})
         ts, cnt = latest.get(r[0], (None, 0))
+        s = stats.get(r[0], {})
         out.append({
             "id": r[0], "name": r[1], "scope_type": r[2],
             "scope_value": r[3], "params": _clean_params(params),
             "enabled": bool(r[5]),
             "last_triggered_at": ts.isoformat() if ts is not None else None,
             "last_match_count": cnt,
+            # Last scan stats — explains "scanned but no match" cases.
+            "last_run_at": s.get("last_run_at"),
+            "scan_scope": s.get("scope", 0),
+            "scan_evaluated": s.get("evaluated", 0),
+            "scan_matched": s.get("matched", 0),
+            "scan_deduped": s.get("deduped", 0),
+            "scan_no_data": s.get("no_data", 0),
+            "scan_errors": s.get("errors", 0),
         })
     return out
 
@@ -721,13 +792,20 @@ def run() -> int:
     today = now.strftime("%Y-%m-%d")
 
     triggered: list[tuple[dict, str, object]] = []  # (rule, raw_ticker, hit)
+    stats_list: list[dict] = []
     for rule in rules:
-        for ticker in rule_tickers[rule["id"]]:
+        rule_tk = rule_tickers[rule["id"]]
+        scope_n = len(rule_tk)
+        ev = de = nd = er = mt = 0
+        for ticker in rule_tk:
             if already_sent(rule["id"], ticker, today):
+                de += 1
                 continue
             df = frames.get(ticker)
             if df is None or len(df) < 40:
+                nd += 1
                 continue
+            ev += 1
             try:
                 # Reuse the screener's evaluation by injecting the live
                 # frame into its in-memory cache, then calling
@@ -738,9 +816,23 @@ def run() -> int:
             except Exception as exc:
                 log.warning("evaluate failed for %s (rule %s): %s",
                             ticker, rule["id"], exc)
+                er += 1
                 continue
             if hit is not None:
+                mt += 1
                 triggered.append((rule, ticker, hit))
+        log.info(
+            'rule %d "%s" (%s%s): scope=%d evaluated=%d matched=%d '
+            'deduped=%d no_data=%d errors=%d',
+            rule["id"], rule["name"], rule["scope_type"],
+            (":" + rule["scope_value"]) if rule["scope_value"] else "",
+            scope_n, ev, mt, de, nd, er,
+        )
+        stats_list.append({
+            "rule_id": rule["id"], "scope": scope_n, "evaluated": ev,
+            "matched": mt, "deduped": de, "no_data": nd, "errors": er,
+        })
+    _record_rule_run_stats(stats_list)
 
     if not triggered:
         log.info("no new alerts this run")
