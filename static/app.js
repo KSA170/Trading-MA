@@ -55,6 +55,8 @@ const els = {
   setupsList: $('#setups-list'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
+  setupsMinPrice: $('#setups-min-price'),
+  setupsMinDollarVol: $('#setups-min-dollar-vol'),
   setupsLimit: $('#setups-limit'),
   setupsRunBtn: $('#setups-run-btn'),
   hoverChart: $('#hover-chart'),
@@ -1933,12 +1935,19 @@ function renderSetupCard(r) {
 async function runSetupsScan() {
   if (!els.setupsRunBtn || !els.setupsList) return;
   const minScore = Number(els.setupsMinScore && els.setupsMinScore.value) || 65;
+  const minPrice = Number(els.setupsMinPrice && els.setupsMinPrice.value) || 0;
+  const minDollarVol = Number(els.setupsMinDollarVol && els.setupsMinDollarVol.value) || 0;
   const limit = Number(els.setupsLimit && els.setupsLimit.value) || 20;
   els.setupsRunBtn.disabled = true;
   if (els.setupsStatus) els.setupsStatus.textContent = 'scanning… (5-15s)';
-  els.setupsList.innerHTML = '<p class="muted history-empty">Scanning the snapshot — base/ignition/earliness scoring across ~1k pre-filtered tickers…</p>';
+  els.setupsList.innerHTML = '<p class="muted history-empty">Scanning the snapshot — base/ignition/earliness scoring across the pre-filtered candidate pool…</p>';
   try {
-    const qs = new URLSearchParams({ min_score: String(minScore), limit: String(limit) });
+    const qs = new URLSearchParams({
+      min_score: String(minScore),
+      min_price: String(minPrice),
+      min_dollar_vol: String(minDollarVol),
+      limit: String(limit),
+    });
     const res = await fetch('/api/setups?' + qs.toString());
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {

@@ -238,6 +238,12 @@
           <label>Min score
             <input id="setups-min-score" type="number" min="0" max="100" step="5" value="65" />
           </label>
+          <label title="Skip stocks closing below this price — most illiquid microcaps are sub-$3.">Min price&nbsp;$
+            <input id="setups-min-price" type="number" min="0" step="0.5" value="3" />
+          </label>
+          <label title="Skip stocks whose trailing 10-day average daily dollar volume (avg_volume × close) is below this. $1M/day excludes most illiquid names while keeping tradeable small caps.">Min $-vol/day&nbsp;$
+            <input id="setups-min-dollar-vol" type="number" min="0" step="100000" value="1000000" />
+          </label>
           <label>Limit
             <input id="setups-limit" type="number" min="5" max="100" step="5" value="20" />
           </label>

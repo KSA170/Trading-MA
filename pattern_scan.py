@@ -319,32 +319,41 @@ def score_base_breakout(bars: list[dict],
     }
 
 
-def _prefilter_sql(as_of: str):
-    """SQL that returns candidate snapshot rows likely to score well —
-    we want price already above EMA21 (move started), MACD positive
-    (ignition begun), and RSI in a healthy band. Cuts the scan from
-    ~7,800 to ~500-1,500 tickers, keeping a synchronous /api/setups
-    request reasonably fast."""
+def _prefilter_sql(as_of: str, min_price: float, min_dollar_vol: float):
+    """SQL that returns candidate snapshot rows likely to score well.
+    Gates on:
+      - the move has started (close > EMA21, MACD > 0, RSI in band)
+      - liquidity (min price + min average daily dollar volume) so the
+        scanner doesn't surface illiquid microcaps and thinly-traded
+        OTC-style names
+    Cuts the scan from ~7,800 to ~500-1,500 tickers, keeping
+    /api/setups responsive."""
     sql = (
         "SELECT ticker, close, ema21, ema50, rsi14, macd_hist, "
         "macd_hist_prev, recent_bars "
         "FROM daily_snapshot "
         "WHERE as_of = %s "
-        "  AND close IS NOT NULL "
+        "  AND close IS NOT NULL AND close >= %s "
         "  AND ema21 IS NOT NULL AND ema50 IS NOT NULL "
         "  AND close > ema21 "
         "  AND macd_hist IS NOT NULL AND macd_hist > 0 "
-        "  AND rsi14 BETWEEN 45 AND 80"
+        "  AND rsi14 BETWEEN 45 AND 80 "
+        "  AND avg_volume IS NOT NULL "
+        "  AND avg_volume * close >= %s"
     )
-    return sql, [as_of]
+    return sql, [as_of, float(min_price), float(min_dollar_vol)]
 
 
-def scan_setups(as_of: str, min_score: float = 60.0, limit: int = 25) -> list[dict]:
-    """Scan today's snapshot for base-breakout candidates with score >=
-    `min_score`. Returns up to `limit` rows sorted by score descending."""
+def scan_setups(as_of: str, min_score: float = 60.0, limit: int = 25,
+                min_price: float = 3.0,
+                min_dollar_vol: float = 1_000_000.0) -> list[dict]:
+    """Scan today's snapshot for base-breakout candidates. Filters by
+    score >= `min_score` and the liquidity gates (close >= `min_price`,
+    trailing avg daily dollar volume >= `min_dollar_vol`). Returns up
+    to `limit` rows sorted by score descending."""
     if not snapshots.enabled():
         return []
-    sql, args = _prefilter_sql(as_of)
+    sql, args = _prefilter_sql(as_of, min_price, min_dollar_vol)
     try:
         with snapshots._conn() as c, c.cursor(name="setups_scan") as cur:
             cur.itersize = 500
