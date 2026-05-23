@@ -412,6 +412,59 @@ def api_setups():
     })
 
 
+@app.route("/api/setups/inspect")
+def api_setups_inspect():
+    """Score one or more named tickers regardless of any threshold or
+    prefilter — for calibrating the Setups scoring against real data.
+    Query params:
+      tickers  comma-separated ticker symbols (required)
+      date     YYYY-MM-DD (defaults to the latest snapshot)
+    Returns the full breakdown dict for each ticker, plus a `note`
+    when a ticker has no snapshot row or insufficient bars.
+    """
+    if not snapshots.enabled():
+        return jsonify({"error": "DATABASE_URL not set — snapshot required"}), 400
+    raw = (request.args.get("tickers") or "").strip()
+    if not raw:
+        return jsonify({"error": "tickers query param required"}), 400
+    tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
+    if not tickers:
+        return jsonify({"error": "no valid tickers parsed"}), 400
+    raw_date = (request.args.get("date") or "").strip()
+    available = snapshots.available_dates(50)
+    if not available:
+        return jsonify({"error": "no snapshot rows yet"}), 400
+    as_of = raw_date if raw_date in available else available[0]
+    found: dict[str, dict] = {}
+    for t, row in snapshots.iter_for_date(as_of, tickers=tickers):
+        found[t] = row
+    out = []
+    for t in tickers:
+        row = found.get(t)
+        if not row:
+            out.append({"ticker": t, "note": "no snapshot row for this date"})
+            continue
+        bars_payload = row.get("recent_bars") or {}
+        if isinstance(bars_payload, str):
+            import json as _json
+            try:
+                bars_payload = _json.loads(bars_payload)
+            except Exception:
+                bars_payload = {}
+        bars = (bars_payload or {}).get("bars") or []
+        try:
+            result = pattern_scan.score_base_breakout(bars, row)
+        except Exception as exc:
+            out.append({"ticker": t, "note": f"score error: {exc}"})
+            continue
+        if result is None:
+            out.append({"ticker": t, "note": "insufficient bars"})
+            continue
+        result["ticker"] = t
+        out.append(result)
+    return jsonify({"as_of": as_of, "tickers": tickers, "results": out})
+
+
 @app.route("/api/admin/cache-status")
 def api_cache_status():
     """Report disk-cache freshness for the currently-selected universe.
