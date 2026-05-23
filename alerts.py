@@ -87,7 +87,20 @@ DEFAULT_ALERT_PARAMS: dict = {
 # Only these keys are valid kwargs for screener.evaluate_ticker.
 _PARAM_KEYS = frozenset(DEFAULT_ALERT_PARAMS.keys())
 
-SCOPE_TYPES = ("watchlist", "sector", "industry")
+# Setup-type rules run pattern_scan.scan_setups against the daily snapshot
+# instead of evaluate_ticker on live bars. Their params drive scan_setups.
+SETUP_DEFAULT_PARAMS: dict = {
+    "score_min": 70.0,
+    "min_price": 3.0,
+    "max_price": 1000.0,
+    "min_dollar_vol": 1_000_000.0,
+}
+_SETUP_PARAM_KEYS = frozenset(SETUP_DEFAULT_PARAMS.keys())
+
+RULE_TYPES = ("screener", "setup")
+# 'all' is a setup-only scope ("score every ticker the snapshot pre-filter
+# returns") — using it with a screener rule would blow up Alpaca quota.
+SCOPE_TYPES = ("watchlist", "sector", "industry", "all")
 
 
 # --- schema ----------------------------------------------------------------
@@ -115,10 +128,13 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     name        TEXT NOT NULL,
     scope_type  TEXT NOT NULL,
     scope_value TEXT NOT NULL DEFAULT '',
+    rule_type   TEXT NOT NULL DEFAULT 'screener',
     params      JSONB,
     enabled     BOOLEAN NOT NULL DEFAULT TRUE,
     created_at  TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE alert_rules
+    ADD COLUMN IF NOT EXISTS rule_type TEXT NOT NULL DEFAULT 'screener';
 CREATE TABLE IF NOT EXISTS alert_sent (
     rule_id      INT  NOT NULL,
     ticker       TEXT NOT NULL,
@@ -178,8 +194,16 @@ def init_tables() -> None:
         log.warning("alerts: init_tables failed: %s", exc)
 
 
-def _clean_params(raw: dict | None) -> dict:
-    """Keep only valid evaluate_ticker kwargs; fill gaps with defaults."""
+def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
+    """Keep only the params that apply to this rule type, filling gaps
+    with that type's defaults. Setup rules carry score_min + price /
+    dollar-volume band; screener rules carry the evaluate_ticker kwargs."""
+    if rule_type == "setup":
+        params = dict(SETUP_DEFAULT_PARAMS)
+        for k, v in (raw or {}).items():
+            if k in _SETUP_PARAM_KEYS:
+                params[k] = v
+        return params
     params = dict(DEFAULT_ALERT_PARAMS)
     for k, v in (raw or {}).items():
         if k in _PARAM_KEYS:
@@ -336,8 +360,8 @@ def rule_trigger_history(rule_id: int, limit: int = 20) -> list[dict]:
 def list_rules(enabled_only: bool = False) -> list[dict]:
     if not enabled():
         return []
-    sql = ("SELECT id, name, scope_type, scope_value, params, enabled "
-           "FROM alert_rules")
+    sql = ("SELECT id, name, scope_type, scope_value, params, enabled, "
+           "rule_type FROM alert_rules")
     if enabled_only:
         sql += " WHERE enabled = TRUE"
     sql += " ORDER BY id"
@@ -353,11 +377,13 @@ def list_rules(enabled_only: bool = False) -> list[dict]:
     out = []
     for r in rows:
         params = r[4] if isinstance(r[4], dict) else (json.loads(r[4]) if r[4] else {})
+        rule_type = r[6] or "screener"
         ts, cnt = latest.get(r[0], (None, 0))
         s = stats.get(r[0], {})
         out.append({
             "id": r[0], "name": r[1], "scope_type": r[2],
-            "scope_value": r[3], "params": _clean_params(params),
+            "scope_value": r[3], "rule_type": rule_type,
+            "params": _clean_params(params, rule_type),
             "enabled": bool(r[5]),
             "last_triggered_at": ts.isoformat() if ts is not None else None,
             "last_match_count": cnt,
@@ -373,20 +399,29 @@ def list_rules(enabled_only: bool = False) -> list[dict]:
     return out
 
 
-def add_rule(name: str, scope_type: str, scope_value: str, params: dict) -> int | None:
+def add_rule(name: str, scope_type: str, scope_value: str, params: dict,
+             rule_type: str = "screener") -> int | None:
     name = (name or "").strip()
     scope_type = (scope_type or "").strip().lower()
     scope_value = (scope_value or "").strip()
+    rule_type = (rule_type or "screener").strip().lower()
     if not enabled() or not name or scope_type not in SCOPE_TYPES:
         return None
-    if scope_type != "watchlist" and not scope_value:
+    if rule_type not in RULE_TYPES:
+        return None
+    # 'all' is setup-only; setup rules accept watchlist/sector/industry/all.
+    if scope_type == "all" and rule_type != "setup":
+        return None
+    if scope_type in ("sector", "industry") and not scope_value:
         return None
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
                 "INSERT INTO alert_rules (name, scope_type, scope_value, "
-                "params, enabled) VALUES (%s, %s, %s, %s, TRUE) RETURNING id",
-                (name, scope_type, scope_value, json.dumps(_clean_params(params))),
+                "rule_type, params, enabled) VALUES (%s, %s, %s, %s, %s, TRUE) "
+                "RETURNING id",
+                (name, scope_type, scope_value, rule_type,
+                 json.dumps(_clean_params(params, rule_type))),
             )
             return cur.fetchone()[0]
     except Exception as exc:
@@ -424,8 +459,16 @@ def set_rule_params(rule_id: int, params: dict) -> bool:
         return False
     try:
         with snapshots._conn() as c, c.cursor() as cur:
+            # Read rule_type so we apply the correct param filter on update.
+            cur.execute("SELECT rule_type FROM alert_rules WHERE id = %s",
+                        (int(rule_id),))
+            row = cur.fetchone()
+            if not row:
+                return False
+            rule_type = row[0] or "screener"
             cur.execute("UPDATE alert_rules SET params = %s WHERE id = %s",
-                        (json.dumps(_clean_params(params)), int(rule_id)))
+                        (json.dumps(_clean_params(params, rule_type)),
+                         int(rule_id)))
             return (cur.rowcount or 0) > 0
     except Exception as exc:
         log.warning("alerts: set_rule_params failed: %s", exc)
@@ -434,8 +477,12 @@ def set_rule_params(rule_id: int, params: dict) -> bool:
 
 # --- sector / industry map -------------------------------------------------
 
-def tickers_for_scope(scope_type: str, scope_value: str) -> list[str]:
-    """Resolve a rule's scope to a concrete ticker list."""
+def tickers_for_scope(scope_type: str, scope_value: str) -> list[str] | None:
+    """Resolve a rule's scope to a concrete ticker list. Returns None for
+    scope_type='all' (setup-only, means "no scope filter — score every
+    ticker the setup pre-filter SQL returns")."""
+    if scope_type == "all":
+        return None
     if scope_type == "watchlist":
         return get_watchlist()
     if scope_type not in ("sector", "industry") or not enabled():
@@ -708,6 +755,22 @@ def _format_alert(rule_name: str, hit, as_of: datetime) -> str:
     )
 
 
+def _format_setup_alert(rule_name: str, result: dict, snapshot_date: str) -> str:
+    """Telegram body for a setup-rule trigger. Surfaces the three
+    sub-scores (base / ignition / earliness) which together explain
+    *why* the overall setup score is what it is."""
+    return (
+        f"<b>[{rule_name}]</b>  Setup\n"
+        f"<b>{result['ticker']}</b> — {result.get('name', '')}\n"
+        f"Setup score <b>{result['score']:.0f}</b>/100  "
+        f"(base {result['base_quality']*100:.0f} · "
+        f"ign {result['ignition']*100:.0f} · "
+        f"early {result['earliness']*100:.0f})\n"
+        f"Price ${result['close']:.2f}\n"
+        f"Snapshot {snapshot_date}"
+    )
+
+
 # --- market clock ----------------------------------------------------------
 
 def _now_et() -> datetime:
@@ -769,82 +832,151 @@ def run() -> int:
     if not rules:
         log.info("no enabled alert rules — nothing to evaluate")
         return 0
-    if not (ALPACA_API_KEY and ALPACA_SECRET_KEY):
-        log.error("ALPACA_API_KEY / ALPACA_SECRET_KEY not set")
-        return 1
 
-    # Resolve every rule's scope, then fetch the union of tickers once so
-    # overlapping rules don't double-fetch.
-    rule_tickers: dict[int, list[str]] = {}
-    universe: set[str] = set()
-    for rule in rules:
-        ts = tickers_for_scope(rule["scope_type"], rule["scope_value"])
-        rule_tickers[rule["id"]] = ts
-        universe.update(ts)
-    if not universe:
-        log.info("rules resolved to 0 tickers (empty watchlist / unclassified "
-                 "sector?) — nothing to do")
-        return 0
+    screener_rules = [r for r in rules if r.get("rule_type") != "setup"]
+    setup_rules = [r for r in rules if r.get("rule_type") == "setup"]
 
-    log.info("evaluating %d rule(s) over %d distinct tickers",
-             len(rules), len(universe))
-    frames = fetch_daily_bars(sorted(universe))
+    triggered_screener: list[tuple[dict, str, object]] = []   # (rule, ticker, hit)
+    triggered_setup: list[tuple[dict, dict]] = []             # (rule, result)
+    stats_list: list[dict] = []
     today = now.strftime("%Y-%m-%d")
 
-    triggered: list[tuple[dict, str, object]] = []  # (rule, raw_ticker, hit)
-    stats_list: list[dict] = []
-    for rule in rules:
-        rule_tk = rule_tickers[rule["id"]]
-        scope_n = len(rule_tk)
-        ev = de = nd = er = mt = 0
-        for ticker in rule_tk:
-            if already_sent(rule["id"], ticker, today):
-                de += 1
-                continue
-            df = frames.get(ticker)
-            if df is None or len(df) < 40:
-                nd += 1
-                continue
-            ev += 1
-            try:
-                # Reuse the screener's evaluation by injecting the live
-                # frame into its in-memory cache, then calling
-                # evaluate_ticker — the exact code path the web UI uses.
-                enriched = screener._enrich(df.copy())
-                screener._PRICE_CACHE[ticker] = (time.time(), enriched)
-                hit = screener.evaluate_ticker(ticker, **rule["params"])
-            except Exception as exc:
-                log.warning("evaluate failed for %s (rule %s): %s",
-                            ticker, rule["id"], exc)
-                er += 1
-                continue
-            if hit is not None:
-                mt += 1
-                triggered.append((rule, ticker, hit))
-        log.info(
-            'rule %d "%s" (%s%s): scope=%d evaluated=%d matched=%d '
-            'deduped=%d no_data=%d errors=%d',
-            rule["id"], rule["name"], rule["scope_type"],
-            (":" + rule["scope_value"]) if rule["scope_value"] else "",
-            scope_n, ev, mt, de, nd, er,
-        )
-        stats_list.append({
-            "rule_id": rule["id"], "scope": scope_n, "evaluated": ev,
-            "matched": mt, "deduped": de, "no_data": nd, "errors": er,
-        })
+    # --- screener-type rules (Alpaca-driven, existing path) ---------------
+    if screener_rules:
+        if not (ALPACA_API_KEY and ALPACA_SECRET_KEY):
+            log.error("ALPACA_API_KEY / ALPACA_SECRET_KEY not set — "
+                      "skipping screener rules")
+        else:
+            # Resolve every rule's scope, then fetch the union of tickers
+            # once so overlapping rules don't double-fetch.
+            rule_tickers: dict[int, list[str]] = {}
+            universe: set[str] = set()
+            for rule in screener_rules:
+                ts = tickers_for_scope(rule["scope_type"], rule["scope_value"]) or []
+                rule_tickers[rule["id"]] = ts
+                universe.update(ts)
+            if universe:
+                log.info("evaluating %d screener rule(s) over %d distinct tickers",
+                         len(screener_rules), len(universe))
+                frames = fetch_daily_bars(sorted(universe))
+                for rule in screener_rules:
+                    rule_tk = rule_tickers[rule["id"]]
+                    scope_n = len(rule_tk)
+                    ev = de = nd = er = mt = 0
+                    for ticker in rule_tk:
+                        if already_sent(rule["id"], ticker, today):
+                            de += 1
+                            continue
+                        df = frames.get(ticker)
+                        if df is None or len(df) < 40:
+                            nd += 1
+                            continue
+                        ev += 1
+                        try:
+                            enriched = screener._enrich(df.copy())
+                            screener._PRICE_CACHE[ticker] = (time.time(), enriched)
+                            hit = screener.evaluate_ticker(ticker, **rule["params"])
+                        except Exception as exc:
+                            log.warning("evaluate failed for %s (rule %s): %s",
+                                        ticker, rule["id"], exc)
+                            er += 1
+                            continue
+                        if hit is not None:
+                            mt += 1
+                            triggered_screener.append((rule, ticker, hit))
+                    log.info(
+                        'rule %d "%s" (screener %s%s): scope=%d evaluated=%d '
+                        'matched=%d deduped=%d no_data=%d errors=%d',
+                        rule["id"], rule["name"], rule["scope_type"],
+                        (":" + rule["scope_value"]) if rule["scope_value"] else "",
+                        scope_n, ev, mt, de, nd, er,
+                    )
+                    stats_list.append({
+                        "rule_id": rule["id"], "scope": scope_n, "evaluated": ev,
+                        "matched": mt, "deduped": de, "no_data": nd, "errors": er,
+                    })
+            else:
+                log.info("screener rules resolved to 0 tickers — skipping")
+
+    # --- setup-type rules (snapshot-driven, no Alpaca dependency) ---------
+    snapshot_as_of: str | None = None
+    if setup_rules:
+        import pattern_scan
+        available = snapshots.available_dates(1)
+        if not available:
+            log.info("setup rules: no snapshot rows yet — skipping")
+        else:
+            snapshot_as_of = available[0]
+            for rule in setup_rules:
+                p = rule["params"]
+                scope_filter = tickers_for_scope(rule["scope_type"], rule["scope_value"])
+                # scope_filter is None for 'all'; a list (possibly empty)
+                # for watchlist/sector/industry.
+                if scope_filter is not None and not scope_filter:
+                    log.info('rule %d "%s" (setup): scope resolved to 0 tickers — skipping',
+                             rule["id"], rule["name"])
+                    stats_list.append({
+                        "rule_id": rule["id"], "scope": 0, "evaluated": 0,
+                        "matched": 0, "deduped": 0, "no_data": 0, "errors": 0,
+                    })
+                    continue
+                scope_set = set(scope_filter) if scope_filter is not None else None
+                try:
+                    results = pattern_scan.scan_setups(
+                        snapshot_as_of,
+                        min_score=float(p.get("score_min", 70.0)),
+                        limit=10_000,
+                        min_price=float(p.get("min_price", 3.0)),
+                        max_price=float(p.get("max_price", 1000.0)),
+                        min_dollar_vol=float(p.get("min_dollar_vol", 1_000_000.0)),
+                    )
+                except Exception as exc:
+                    log.warning("setup rule %d scan failed: %s", rule["id"], exc)
+                    results = []
+                if scope_set is not None:
+                    results = [r for r in results if r.get("ticker") in scope_set]
+                de = mt = 0
+                for res in results:
+                    ticker = res.get("ticker")
+                    if not ticker:
+                        continue
+                    if already_sent(rule["id"], ticker, today):
+                        de += 1
+                        continue
+                    mt += 1
+                    triggered_setup.append((rule, res))
+                scope_n = len(scope_filter) if scope_filter is not None else len(results) + de
+                log.info(
+                    'rule %d "%s" (setup %s%s): scope=%d matched=%d deduped=%d',
+                    rule["id"], rule["name"], rule["scope_type"],
+                    (":" + rule["scope_value"]) if rule["scope_value"] else "",
+                    scope_n, mt, de,
+                )
+                stats_list.append({
+                    "rule_id": rule["id"], "scope": scope_n,
+                    "evaluated": mt + de, "matched": mt, "deduped": de,
+                    "no_data": 0, "errors": 0,
+                })
+
     _record_rule_run_stats(stats_list)
 
-    if not triggered:
+    if not triggered_screener and not triggered_setup:
         log.info("no new alerts this run")
         return 0
 
     sent = 0
-    for rule, ticker, hit in triggered:
+    for rule, ticker, hit in triggered_screener:
         if send_telegram(_format_alert(rule["name"], hit, now)):
             record_sent(rule["id"], ticker, today,
                         f"momentum={hit.momentum_score}")
             sent += 1
-    log.info("alerts: %d triggered, %d sent to Telegram", len(triggered), sent)
+    for rule, res in triggered_setup:
+        if send_telegram(_format_setup_alert(rule["name"], res, snapshot_as_of or today)):
+            record_sent(rule["id"], res["ticker"], today,
+                        f"setup_score={res.get('score')}")
+            sent += 1
+    total = len(triggered_screener) + len(triggered_setup)
+    log.info("alerts: %d triggered, %d sent to Telegram", total, sent)
     return 0
 
 

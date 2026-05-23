@@ -660,24 +660,40 @@ def api_alerts_rules():
 
 @app.route("/api/alerts/rules", methods=["POST"])
 def api_alerts_rule_create():
-    """Create an alert rule. JSON body: {name, scope_type, scope_value}.
-    The rule's criteria are taken from the current screener filters
-    passed in the query string (same params /api/screen accepts)."""
+    """Create an alert rule. JSON body: {name, scope_type, scope_value,
+    rule_type, setup_params?}.
+      - rule_type='screener' (default): criteria taken from screener
+        filters in the query string (same params /api/screen accepts).
+      - rule_type='setup': criteria from `setup_params` in the JSON body
+        — {score_min, min_price, max_price, min_dollar_vol}.
+    """
     if not alerts.enabled():
         return jsonify({"error": "DATABASE_URL not set"}), 400
     payload = request.get_json(silent=True) or {}
     name = (payload.get("name") or "").strip()
     scope_type = (payload.get("scope_type") or "").strip().lower()
     scope_value = (payload.get("scope_value") or "").strip()
+    rule_type = (payload.get("rule_type") or "screener").strip().lower()
     if not name:
         return jsonify({"error": "rule name required"}), 400
+    if rule_type not in alerts.RULE_TYPES:
+        return jsonify({"error": "invalid rule_type"}), 400
     if scope_type not in alerts.SCOPE_TYPES:
         return jsonify({"error": "invalid scope_type"}), 400
-    if scope_type != "watchlist" and not scope_value:
+    if scope_type == "all" and rule_type != "setup":
+        return jsonify({"error": "scope 'all' is only valid for setup rules"}), 400
+    if scope_type in ("sector", "industry") and not scope_value:
         return jsonify({"error": "scope_value required for sector/industry rules"}), 400
-    params = _parse_params()
-    params.pop("lists", None)  # not an evaluate_ticker kwarg
-    rule_id = alerts.add_rule(name, scope_type, scope_value, params)
+    if rule_type == "setup":
+        sp = payload.get("setup_params") or {}
+        params = {
+            k: sp[k] for k in ("score_min", "min_price", "max_price", "min_dollar_vol")
+            if k in sp
+        }
+    else:
+        params = _parse_params()
+        params.pop("lists", None)  # not an evaluate_ticker kwarg
+    rule_id = alerts.add_rule(name, scope_type, scope_value, params, rule_type=rule_type)
     if rule_id is None:
         return jsonify({"error": "could not create rule"}), 500
     return jsonify({"id": rule_id, "rules": alerts.list_rules()})
@@ -703,14 +719,23 @@ def api_alerts_rule_toggle():
 
 @app.route("/api/alerts/rules/update-criteria", methods=["POST"])
 def api_alerts_rule_update_criteria():
-    """Replace a rule's criteria with the current screener filters
-    (rule id in the JSON body, filters in the query string)."""
+    """Replace a rule's criteria with the current filters. For screener
+    rules, criteria come from the query string (same params /api/screen
+    accepts). For setup rules, send `setup_params` in the JSON body."""
     if not alerts.enabled():
         return jsonify({"error": "DATABASE_URL not set"}), 400
     payload = request.get_json(silent=True) or {}
-    params = _parse_params()
-    params.pop("lists", None)
-    ok = alerts.set_rule_params(int(payload.get("id", 0)), params)
+    rule_id = int(payload.get("id", 0))
+    sp = payload.get("setup_params")
+    if sp:
+        params = {
+            k: sp[k] for k in ("score_min", "min_price", "max_price", "min_dollar_vol")
+            if k in sp
+        }
+    else:
+        params = _parse_params()
+        params.pop("lists", None)
+    ok = alerts.set_rule_params(rule_id, params)
     return jsonify({"updated": ok, "rules": alerts.list_rules()})
 
 

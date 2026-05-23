@@ -251,6 +251,7 @@
             <input id="setups-limit" type="number" min="5" max="100" step="5" value="20" />
           </label>
           <button id="setups-run-btn" type="button">Find setups</button>
+          <button id="setups-create-alert-btn" type="button" title="Create a Telegram alert rule using the current Setups filter values. You'll be jumped to the Alert rules panel to name it and pick a scope.">Create setup alert…</button>
           <span id="setups-status" class="muted"></span>
         </div>
         <div id="setups-selection-toolbar" class="setups-selection-toolbar" hidden>
@@ -299,10 +300,15 @@
       <div id="rules-body" class="history-body">
         <div class="rules-create">
           <input id="rule-name" type="text" placeholder="Rule name — e.g. Biotech momentum" autocomplete="off" />
+          <select id="rule-type" title="Screener rules use the main filter form; Setup rules use the Setups panel toolbar above.">
+            <option value="screener">Screener filters</option>
+            <option value="setup">Setup score</option>
+          </select>
           <select id="rule-scope-type" title="What set of stocks this rule scans">
             <option value="watchlist">Watchlist</option>
             <option value="industry">Industry</option>
             <option value="sector">Sector</option>
+            <option value="all" data-rule-type="setup">All snapshot tickers</option>
           </select>
           <select id="rule-scope-value" title="Which sector / industry" disabled>
             <option value="">—</option>
