@@ -2150,18 +2150,22 @@ if (els.setupsCreateAlertBtn) {
   });
 }
 
-// 'All' scope is setup-only — toggle its visibility, and toggle the create
-// button label so it accurately describes which form's values it'll use.
+// 'All' scope is setup-only — toggle its visibility, default the scope to
+// the most useful value for the chosen rule type ('all' for Setup, since
+// setups are EOD and the snapshot pre-filter keeps it cheap; 'watchlist'
+// for Screener, since scanning the universe over Alpaca would blow up
+// quota), and update the create button label.
 function syncRuleTypeUI() {
   const isSetup = els.ruleType && els.ruleType.value === 'setup';
   if (els.ruleScopeType) {
     const allOpt = els.ruleScopeType.querySelector('option[value="all"]');
     if (allOpt) allOpt.hidden = !isSetup;
-    // If we just switched to screener while 'all' is selected, reset it.
-    if (!isSetup && els.ruleScopeType.value === 'all') {
+    if (isSetup) {
+      els.ruleScopeType.value = 'all';
+    } else if (els.ruleScopeType.value === 'all') {
       els.ruleScopeType.value = 'watchlist';
-      populateScopeValues();
     }
+    populateScopeValues();
   }
   if (els.ruleCreateBtn) {
     els.ruleCreateBtn.textContent = isSetup
