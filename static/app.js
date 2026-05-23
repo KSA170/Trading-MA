@@ -50,6 +50,13 @@ const els = {
   defaultsMsg: $('#defaults-msg'),
   historyBody: $('#history-body'),
   historyToggle: $('#history-toggle'),
+  setupsToggle: $('#setups-toggle'),
+  setupsBody: $('#setups-body'),
+  setupsList: $('#setups-list'),
+  setupsStatus: $('#setups-status'),
+  setupsMinScore: $('#setups-min-score'),
+  setupsLimit: $('#setups-limit'),
+  setupsRunBtn: $('#setups-run-btn'),
   hoverChart: $('#hover-chart'),
   hoverChartTitle: $('#hover-chart-title'),
   hoverChartStatus: $('#hover-chart-status'),
@@ -1258,7 +1265,7 @@ function drawHoverChart(data) {
 }
 
 function onTickerEnter(ev) {
-  const cell = ev.target.closest('td[data-ticker]');
+  const cell = ev.target.closest('[data-ticker]');
   if (!cell) return;
   const ticker = cell.dataset.ticker;
   if (!ticker || _hoverTicker === ticker) return;
@@ -1269,7 +1276,7 @@ function onTickerEnter(ev) {
 }
 
 function onTickerLeave(ev) {
-  const cell = ev.target.closest('td[data-ticker]');
+  const cell = ev.target.closest('[data-ticker]');
   if (!cell) return;
   const related = ev.relatedTarget;
   if (related && cell.contains(related)) return;
@@ -1874,6 +1881,96 @@ wireCollapse(els.rulesToggle, els.rulesBody, 'collapse_rules');
 populateScopeValues();
 loadAlertScopes();
 loadRules();
+
+
+// --- setups scanner ------------------------------------------------------
+// Hits /api/setups, ranks tickers from the latest snapshot by the
+// base-breakout / momentum-ignition score and renders the top N.
+
+function renderSetupBar(label, value) {
+  const v = Math.max(0, Math.min(1, value || 0));
+  const pct = Math.round(v * 100);
+  return `
+    <div class="setup-bar">
+      <span class="setup-bar-label">${escapeHtml(label)}</span>
+      <span class="setup-bar-track"><span class="setup-bar-fill" style="width:${pct}%"></span></span>
+      <span class="setup-bar-val">${pct}</span>
+    </div>
+  `;
+}
+
+function renderSetupCard(r) {
+  const sc = r.score || 0;
+  const scoreClass = sc >= 80 ? 'setup-score-hi' : sc >= 65 ? 'setup-score-mid' : 'setup-score-lo';
+  const b = r.breakdown || {};
+  // Compact key-metric chips for at-a-glance interpretation.
+  const chipBits = [];
+  if (b.volume_burst_x != null) chipBits.push(`vol ${b.volume_burst_x.toFixed(1)}× base`);
+  if (b.cross_recency_score >= 0.7) chipBits.push('fresh EMA cross');
+  if (b.macd_score >= 0.7) chipBits.push('MACD ignition');
+  if (b.tightness_score >= 0.7) chipBits.push('tight base');
+  if (b.price_ema21_pct != null) chipBits.push(`+${b.price_ema21_pct.toFixed(1)}% vs EMA21`);
+  if (b.rsi_now != null) chipBits.push(`RSI ${b.rsi_now.toFixed(0)}`);
+  return `
+    <div class="setup-card">
+      <div class="setup-head">
+        <span class="setup-ticker" data-ticker="${escapeHtml(r.ticker)}"><strong>${escapeHtml(r.ticker)}</strong></span>
+        <span class="setup-name">${escapeHtml(r.name || '')}</span>
+        <span class="setup-spacer"></span>
+        <span class="setup-close">$${fmtNum(r.close)}</span>
+        <span class="setup-score ${scoreClass}">${sc.toFixed(1)}</span>
+      </div>
+      <div class="setup-bars">
+        ${renderSetupBar('Base', r.base_quality)}
+        ${renderSetupBar('Ignition', r.ignition)}
+        ${renderSetupBar('Earliness', r.earliness)}
+      </div>
+      ${chipBits.length ? `<div class="setup-chips">${chipBits.map((c) => `<span class="setup-chip">${escapeHtml(c)}</span>`).join('')}</div>` : ''}
+    </div>
+  `;
+}
+
+async function runSetupsScan() {
+  if (!els.setupsRunBtn || !els.setupsList) return;
+  const minScore = Number(els.setupsMinScore && els.setupsMinScore.value) || 65;
+  const limit = Number(els.setupsLimit && els.setupsLimit.value) || 20;
+  els.setupsRunBtn.disabled = true;
+  if (els.setupsStatus) els.setupsStatus.textContent = 'scanning… (5-15s)';
+  els.setupsList.innerHTML = '<p class="muted history-empty">Scanning the snapshot — base/ignition/earliness scoring across ~1k pre-filtered tickers…</p>';
+  try {
+    const qs = new URLSearchParams({ min_score: String(minScore), limit: String(limit) });
+    const res = await fetch('/api/setups?' + qs.toString());
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      els.setupsList.innerHTML = `<p class="history-empty" style="color:var(--red)">Scan failed: ${escapeHtml(data.error || ('HTTP ' + res.status))}</p>`;
+      if (els.setupsStatus) els.setupsStatus.textContent = '';
+      return;
+    }
+    const results = data.results || [];
+    if (els.setupsStatus) {
+      els.setupsStatus.textContent = `${results.length} setup${results.length === 1 ? '' : 's'} (score ≥ ${minScore}) · as of ${data.as_of} · ${data.elapsed_sec}s`;
+    }
+    if (!results.length) {
+      els.setupsList.innerHTML = `<p class="muted history-empty">No tickers cleared the ${minScore} score threshold for ${escapeHtml(data.as_of)}. Try lowering Min score, or the market just didn't show this setup today.</p>`;
+      return;
+    }
+    els.setupsList.innerHTML = results.map(renderSetupCard).join('');
+  } catch (err) {
+    els.setupsList.innerHTML = `<p class="history-empty" style="color:var(--red)">Scan failed: ${escapeHtml(err.message || 'network error')}</p>`;
+    if (els.setupsStatus) els.setupsStatus.textContent = '';
+  } finally {
+    els.setupsRunBtn.disabled = false;
+  }
+}
+
+if (els.setupsRunBtn) els.setupsRunBtn.addEventListener('click', runSetupsScan);
+if (els.setupsList) {
+  // Hover a setup card's ticker to open the same chart popover as the
+  // matches table. Re-use the existing handlers.
+  els.setupsList.addEventListener('mouseover', onTickerEnter);
+  els.setupsList.addEventListener('mouseout', onTickerLeave);
+}
+wireCollapse(els.setupsToggle, els.setupsBody, 'collapse_setups');
 
 
 // --- bootstrap -------------------------------------------------------------

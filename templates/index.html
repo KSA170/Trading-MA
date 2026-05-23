@@ -229,6 +229,27 @@
       </div>
     </section>
 
+    <section class="match-history setups-panel">
+      <button id="setups-toggle" type="button" class="section-toggle" aria-controls="setups-body" aria-expanded="true">
+        <span class="chevron">▾</span> Setups <span class="muted">(base-breakout / momentum-ignition candidates from the latest snapshot)</span>
+      </button>
+      <div id="setups-body" class="history-body">
+        <div class="setups-toolbar">
+          <label>Min score
+            <input id="setups-min-score" type="number" min="0" max="100" step="5" value="65" />
+          </label>
+          <label>Limit
+            <input id="setups-limit" type="number" min="5" max="100" step="5" value="20" />
+          </label>
+          <button id="setups-run-btn" type="button">Find setups</button>
+          <span id="setups-status" class="muted"></span>
+        </div>
+        <div id="setups-list">
+          <p class="muted history-empty">Click "Find setups" to rank the snapshot's tickers by the base-breakout / momentum-ignition score.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="match-history">
       <button id="history-toggle" type="button" class="section-toggle" aria-controls="history-body" aria-expanded="true">
         <span class="chevron">▾</span> Match history <span class="muted">(last 10 runs — your saved selections)</span>
