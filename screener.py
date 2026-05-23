@@ -516,6 +516,7 @@ _snapshot_state: dict = {
     "skipped_unenriched": 0,  # rsi14 column absent (old-format pickle)
     "skipped_corrupt": 0,     # pd.read_pickle raised
     "skipped_short": 0,       # df had < 2 bars
+    "skipped_row_none": 0,    # last bar's Close/Volume was NaN -> row None
     "last_error": None,       # most recent upsert error, if any
 }
 _snapshot_lock = threading.Lock()
@@ -642,6 +643,17 @@ def _read_pickle_for_snapshot(ticker: str) -> tuple[pd.DataFrame | None, str]:
         return None, "corrupt"
     if df is None or df.empty:
         return None, "empty"
+    # Older pickles (and the occasional yfinance edge case) can carry rows
+    # with NaN Close/Volume at the tail. _row_from_df would then silently
+    # reject the ticker because its last bar has no usable close — strip
+    # those rows here so a usable last bar is used.
+    try:
+        if "Close" in df.columns and "Volume" in df.columns:
+            df = df.dropna(subset=["Close", "Volume"])
+    except Exception:
+        return None, "corrupt"
+    if df is None or df.empty:
+        return None, "empty"
     if len(df) < 2:
         return None, "short"
     if "rsi14" not in df.columns:
@@ -689,6 +701,10 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
     skip_counts = {
         "missing": 0, "stale": 0, "unenriched": 0,
         "corrupt": 0, "empty": 0, "short": 0,
+        # _row_from_df returns None when the last bar's Close/Volume is
+        # unusable — track it so the gap between warm-cache count and
+        # snapshot rows is fully accounted for.
+        "row_none": 0,
     }
     skip_lock = threading.Lock()
 
@@ -715,10 +731,14 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
                 skip_counts[reason] = skip_counts.get(reason, 0) + 1
             return None
         try:
-            return _row_from_df(t, df)
+            row = _row_from_df(t, df)
         except Exception as exc:
             log.warning("snapshot row build failed for %s: %s", t, exc)
             raise
+        if row is None:
+            with skip_lock:
+                skip_counts["row_none"] = skip_counts.get("row_none", 0) + 1
+        return row
 
     try:
         with _snapshot_lock:
@@ -757,6 +777,7 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
                 skipped_unenriched=skip_counts["unenriched"],
                 skipped_corrupt=skip_counts["corrupt"],
                 skipped_short=skip_counts["empty"] + skip_counts["short"],
+                skipped_row_none=skip_counts.get("row_none", 0),
             )
         log.info(
             "snapshot complete: as_of=%s written=%d trimmed=%d skipped=%s last_error=%s",

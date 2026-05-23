@@ -194,14 +194,15 @@ async function refreshSnapshotStatus() {
 
     // Latest run wrote 0 rows: foreground the skip breakdown right in
     // the pill text so the user can see *why* without hovering.
+    const skipParts = [
+      ['missing', s.skipped_missing],
+      ['stale', s.skipped_stale],
+      ['unenriched', s.skipped_unenriched],
+      ['corrupt', s.skipped_corrupt],
+      ['short', s.skipped_short],
+      ['row_none', s.skipped_row_none],
+    ].filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n.toLocaleString()}`);
     if (ran && wrote === 0) {
-      const skipParts = [
-        ['missing', s.skipped_missing],
-        ['stale', s.skipped_stale],
-        ['unenriched', s.skipped_unenriched],
-        ['corrupt', s.skipped_corrupt],
-        ['short', s.skipped_short],
-      ].filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n.toLocaleString()}`);
       const skipTxt = skipParts.length ? ` (${skipParts.join(', ')})` : '';
       const errTxt = s.last_error ? ' · DB error' : '';
       els.snapshotStatus.textContent = `snapshot: 0 rows${skipTxt}${errTxt} · click to retry`;
@@ -232,8 +233,9 @@ async function refreshSnapshotStatus() {
     els.snapshotStatus.textContent = `snapshot: ${latest}, ${dbRows.toLocaleString()} rows · click to refresh`;
     els.snapshotStatus.classList.remove('cold', 'warn');
     const byDate = counts.map((d) => `${d.date}=${d.rows.toLocaleString()}`).join(', ');
+    const skipTip = skipParts.length ? ` Skipped on last run: ${skipParts.join(', ')}.` : '';
     els.snapshotStatus.title = `Rows in DB by date: ${byDate || '(none)'}. `
-      + `Last write run added ${wrote.toLocaleString()} rows. `
+      + `Last write run added ${wrote.toLocaleString()} rows.${skipTip} `
       + `Retention: ${s.retention_days} days. `
       + `Click to write a fresh snapshot from the current pickle cache.`;
   } catch (_) { /* silent */ }
