@@ -16,6 +16,11 @@ Universe of US and Canadian stock tickers, grouped by *exchange*:
               Curated subset of active names — the full TSXV is ~1,700
               names, mostly micro-cap shells with no daily volume.
 
+Both directories are filtered to common-share / trust-unit equivalents:
+ETFs, mutual funds, closed-end funds, preferred shares, warrants, rights,
+debentures, and subscription receipts are dropped. REITs (which often
+carry "Trust" in their legal name) are preserved via an allow-override.
+
 A ticker may appear in several lists. Membership is exposed via
 :func:`lists_for` so the screener can filter by exchange. Curated index
 lists (S&P 500, Dow 30, Russell 2000) are kept here as constants but are
@@ -563,6 +568,7 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
     out: dict[str, list[str]] = {"nyse": [], "nasdaq": []}
     seen: set[str] = set()
     exch_values: dict[str, int] = {}
+    fund_drops = 0
     need_len = max(ti, ei, ni) + 1
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) < need_len:
@@ -583,20 +589,31 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
             bucket = "nyse"
         else:
             continue  # OTC, CBOE, blank, etc.
+        # Drop ETFs / mutual funds / closed-end funds / debt notes by
+        # name match. SEC has no instrument-type field, so name is the
+        # only signal we have — REITs are kept via the allow-override
+        # in _is_fund_or_derivative_name.
+        name = str(row[ni] or "").strip() if ni >= 0 else ""
+        if name and _is_fund_or_derivative_name(name):
+            fund_drops += 1
+            continue
         seen.add(ticker)
         out[bucket].append(ticker)
         # Capture the company name for free — saves a heavy yfinance
         # get_info() call per match in the screener.
-        if ni >= 0:
-            name = str(row[ni] or "").strip()
-            if name:
-                _TICKER_NAMES[ticker] = name
+        if name:
+            _TICKER_NAMES[ticker] = name
     # Log the distinct exchange labels SEC uses so a future mismatch is
     # diagnosable from Render's logs.
     log.info(
         "SEC exchange field values: %s",
         ", ".join(f"{k or '(blank)'}={v}" for k, v in sorted(exch_values.items())),
     )
+    if fund_drops:
+        log.info(
+            "SEC parser dropped %d rows by name (ETF / fund / notes filter)",
+            fund_drops,
+        )
     return out
 
 
@@ -611,6 +628,108 @@ def _is_clean_symbol(symbol: str) -> bool:
     if symbol.endswith(".W") or symbol.endswith(".U") or symbol.endswith(".R"):
         return False
     return True
+
+
+# --- non-equity filters ----------------------------------------------------
+# The SEC and TMX directories include ETFs, mutual funds, closed-end funds,
+# preferred shares, warrants, rights, debentures, and subscription receipts
+# — none of which are useful for a price/volume momentum screener. The
+# filters below identify them by company-name keywords and (for TSX)
+# by symbol-class suffix.
+#
+# Policy mirrors the original curated lists: keep common shares + Class A/B
+# subordinate-voting variants + trust units (REITs, infrastructure LPs).
+# Drop everything else.
+
+import re as _re
+
+# Word-boundary patterns for company-name based filtering. Matches against
+# both SEC company names and TMX issuer names. Conservative — only patterns
+# that have a near-zero false-positive rate against real operating companies.
+_FUND_NAME_RE = _re.compile(
+    r"\b("
+    r"etf|etfs|"
+    r"fund|funds|"
+    r"warrant|warrants|"
+    r"rights|"
+    r"debenture|debentures|"
+    r"closed[- ]end|"
+    r"index\s+units?|"
+    r"subscription\s+receipts?|"
+    r"installment\s+receipts?|"
+    r"capital\s+notes?|"
+    r"senior\s+notes?|"
+    r"unsecured\s+notes?"
+    r")\b",
+    _re.IGNORECASE,
+)
+# Override: keep REITs and similar operating real-estate entities even
+# though their names contain "Trust" or "Real Estate Investment Trust".
+_REIT_NAME_RE = _re.compile(
+    r"\b("
+    r"reit|"
+    r"real\s+estate\s+investment\s+trust|"
+    r"realty\s+income|"
+    r"realty\s+(corp|corporation|inc|incorporated)"
+    r")\b",
+    _re.IGNORECASE,
+)
+
+
+def _is_fund_or_derivative_name(name: str) -> bool:
+    """Heuristic: True for ETFs / mutual funds / closed-end funds /
+    debt instruments / warrants / rights. False for operating companies,
+    REITs (allow-override), and trust units. Used to exclude non-equity
+    listings that the SEC + TMX directories include but that the
+    screener has no business looking at."""
+    if not name:
+        return False
+    if _REIT_NAME_RE.search(name):
+        return False
+    return bool(_FUND_NAME_RE.search(name))
+
+
+# TSX-specific symbol suffixes for share classes the screener does not
+# want: preferreds (-PR-), debentures (-DB-), warrants (-WT-), installment
+# receipts (-IR-). These are checked after the dot→hyphen normalisation,
+# so the literal infix `-PR-` matches `RY-PR-A`, `BNS-PR-Z`, etc.
+_TSX_DERIVATIVE_INFIXES = ("-PR-", "-DB-", "-WT-", "-IR-")
+
+
+def _is_derivative_tsx_symbol(base: str) -> bool:
+    """True if a normalized TSX base symbol (no .TO suffix yet) is a
+    preferred / debenture / warrant / installment receipt class."""
+    return any(infix in base for infix in _TSX_DERIVATIVE_INFIXES)
+
+
+# TMX instrumentType values (when the field is populated in the response)
+# that should be dropped. Substring match, case-insensitive.
+_TSX_DROP_INSTRUMENT_TYPES = (
+    "preferred",
+    "preference",
+    "warrant",
+    "rights",
+    "debenture",
+    "subscription receipt",
+    "installment receipt",
+    "etf",
+    "exchange traded fund",
+    "exchange-traded fund",
+    "index unit",
+    "closed-end",
+    "closed end",
+    "mutual fund",
+    "investment fund",
+)
+
+
+def _is_drop_instrument_type(instrument_type: str) -> bool:
+    """True if a TMX `instrumentType` field marks the row as non-common
+    equity. Empty / unknown types return False (defer to other filters)."""
+    if not instrument_type:
+        return False
+    needle = instrument_type.lower()
+    return any(p in needle for p in _TSX_DROP_INSTRUMENT_TYPES)
 
 
 def _parse_nasdaqlisted(text: str) -> list[str]:
@@ -739,6 +858,8 @@ def _fetch_tsx_listings() -> list[str] | None:
     # starting with a digit or symbol — needed for names like 5N Plus.
     letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["0"]
     errors: list[str] = []
+    raw_total = 0
+    drops = {"symbol_class": 0, "instrument_type": 0, "name": 0}
     for letter in letters:
         url = _TSX_DIRECTORY_URL_TMPL.format(letter=letter)
         try:
@@ -757,16 +878,49 @@ def _fetch_tsx_listings() -> list[str] | None:
             raw = (row.get("symbol") or row.get("dottedSymbol") or "").strip().upper()
             if not raw:
                 continue
+            raw_total += 1
             # TMX uses dots for share-class suffixes (BIP.UN, RY.PR.A);
             # yfinance Canadian listings want hyphens (BIP-UN.TO, RY-PR-A.TO).
             base = raw.replace(".", "-")
             if not _is_clean_symbol(base):
                 continue
+            # Filter 1: drop preferreds (-PR-), debentures (-DB-),
+            # warrants (-WT-), installment receipts (-IR-). Trust units
+            # (-UN suffix, e.g. BIP-UN, REI-UN) and Class A/B common
+            # (-A, -B suffix) are kept — they represent operating
+            # equity ownership.
+            if _is_derivative_tsx_symbol(base):
+                drops["symbol_class"] += 1
+                continue
+            # Filter 2: TMX `instrumentType` (when populated) — catches
+            # ETFs, mutual funds, closed-end funds that have plain
+            # symbols indistinguishable from common stock.
+            inst_type = str(
+                row.get("instrumentType")
+                or row.get("securityType")
+                or ""
+            ).strip()
+            if not inst_type:
+                # Some responses nest the type inside `instruments[0]`.
+                instruments = row.get("instruments")
+                if isinstance(instruments, list) and instruments:
+                    first = instruments[0] if isinstance(instruments[0], dict) else {}
+                    inst_type = str(first.get("instrumentType") or "").strip()
+            if _is_drop_instrument_type(inst_type):
+                drops["instrument_type"] += 1
+                continue
             yf_sym = f"{base}.TO"
             if yf_sym in seen:
                 continue
-            seen.add(yf_sym)
             name = str(row.get("name") or row.get("companyName") or "").strip()
+            # Filter 3: name-based — last-line defence for ETFs/funds
+            # when neither symbol class nor instrumentType caught them
+            # (TMX has been known to omit instrumentType on a subset
+            # of rows).
+            if _is_fund_or_derivative_name(name):
+                drops["name"] += 1
+                continue
+            seen.add(yf_sym)
             issuers.append((yf_sym, name))
             if name:
                 _TICKER_NAMES[yf_sym] = name
@@ -790,7 +944,13 @@ def _fetch_tsx_listings() -> list[str] | None:
     except Exception as exc:
         log.warning("failed to cache TSX directory: %s", exc)
     _LAST_FETCH_ERROR.pop(_TSX_CACHE_NAME, None)
-    log.info("loaded TSX directory from TMX — %d issuers", len(issuers))
+    log.info(
+        "loaded TSX directory from TMX — %d issuers kept "
+        "(from %d raw; dropped %d preferreds/warrants/debentures, "
+        "%d ETFs/funds by instrument type, %d ETFs/funds by name)",
+        len(issuers), raw_total,
+        drops["symbol_class"], drops["instrument_type"], drops["name"],
+    )
     return [sym for sym, _ in issuers]
 
 
