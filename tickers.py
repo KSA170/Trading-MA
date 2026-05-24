@@ -7,9 +7,14 @@ Universe of US and Canadian stock tickers, grouped by *exchange*:
     - NASDAQ — Nasdaq Stock Market
     - AMEX   — NYSE American
 
-  Canada (curated — TMX does not publish a free symbol directory):
+  Canada:
     - TSX    — Toronto Stock Exchange  (yfinance suffix `.TO`)
+              Full listed directory fetched from TMX's per-letter JSON
+              endpoint, cached to disk for 24h. Falls back to a curated
+              ~160-name list when the fetch fails.
     - TSXV   — TSX Venture Exchange    (yfinance suffix `.V`)
+              Curated subset of active names — the full TSXV is ~1,700
+              names, mostly micro-cap shells with no daily volume.
 
 A ticker may appear in several lists. Membership is exposed via
 :func:`lists_for` so the screener can filter by exchange. Curated index
@@ -669,16 +674,158 @@ def company_name(ticker: str) -> str:
     return _TICKER_NAMES.get((ticker or "").strip().upper(), ticker)
 
 
+# --- TMX directory (full TSX listings) -------------------------------------
+# TMX exposes a per-letter JSON directory at
+# tsx.com/json/company-directory/search/tsx/<letter> — the same endpoint
+# the public "listed company directory" page uses. The full TSX has ~1,500
+# issuers vs. the 162-name curated _TSX_BASE fallback.
+#
+# Defensive design: if the endpoint is unreachable or returns fewer than
+# _TSX_MIN_OK rows (TMX schema change, Akamai bot-check, partial outage),
+# we fall back to the curated _TSX_BASE constant so the screener never
+# regresses below the previously-shipped universe.
+
+_TSX_DIRECTORY_URL_TMPL = "https://www.tsx.com/json/company-directory/search/tsx/{letter}"
+_TSX_CACHE_NAME = "tsx_directory.json"
+_TSX_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) "
+        "Gecko/20100101 Firefox/120.0"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.tsx.com/listings/current-market-statistics",
+    "X-Requested-With": "XMLHttpRequest",
+}
+# Anything materially smaller than the curated fallback (162) means the
+# fetch was broken — treat as failure and keep the static list.
+_TSX_MIN_OK = 400
+
+_TSX_FETCH_CACHE: list[str] | None = None
+
+
+def _fetch_tsx_listings() -> list[str] | None:
+    """Fetch the full TSX listed-issuer directory from TMX. Returns a list
+    of yfinance-formatted symbols (e.g. ``["RY.TO", "BIP-UN.TO", ...]``) or
+    None on any failure. Persists the merged result to disk so subsequent
+    runs skip the 27 letter-by-letter HTTPS calls."""
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+    except Exception:
+        pass
+
+    import json
+
+    cache_path = _CACHE_DIR / _TSX_CACHE_NAME
+    fresh = cache_path.exists() and (time.time() - cache_path.stat().st_mtime) < _CACHE_TTL_SEC
+    if fresh:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            issuers = cached.get("issuers") or []
+            if isinstance(issuers, list) and len(issuers) >= _TSX_MIN_OK:
+                for entry in issuers:
+                    if isinstance(entry, (list, tuple)) and len(entry) >= 2 and entry[1]:
+                        _TICKER_NAMES[entry[0]] = entry[1]
+                return [entry[0] for entry in issuers
+                        if isinstance(entry, (list, tuple)) and entry]
+        except Exception:
+            pass  # fall through to a fresh fetch
+
+    import requests
+
+    issuers: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    # TMX's directory is keyed by leading character. "0" returns everything
+    # starting with a digit or symbol — needed for names like 5N Plus.
+    letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["0"]
+    errors: list[str] = []
+    for letter in letters:
+        url = _TSX_DIRECTORY_URL_TMPL.format(letter=letter)
+        try:
+            r = requests.get(url, timeout=20, headers=_TSX_HEADERS)
+            r.raise_for_status()
+            body = r.json()
+        except Exception as exc:
+            errors.append(f"{letter}: {exc}")
+            continue
+        rows = body.get("results") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw = (row.get("symbol") or row.get("dottedSymbol") or "").strip().upper()
+            if not raw:
+                continue
+            # TMX uses dots for share-class suffixes (BIP.UN, RY.PR.A);
+            # yfinance Canadian listings want hyphens (BIP-UN.TO, RY-PR-A.TO).
+            base = raw.replace(".", "-")
+            if not _is_clean_symbol(base):
+                continue
+            yf_sym = f"{base}.TO"
+            if yf_sym in seen:
+                continue
+            seen.add(yf_sym)
+            name = str(row.get("name") or row.get("companyName") or "").strip()
+            issuers.append((yf_sym, name))
+            if name:
+                _TICKER_NAMES[yf_sym] = name
+
+    if len(issuers) < _TSX_MIN_OK:
+        _LAST_FETCH_ERROR[_TSX_CACHE_NAME] = (
+            f"only {len(issuers)} issuers (< {_TSX_MIN_OK}); "
+            f"errors: {'; '.join(errors[:3]) or '(none)'}"
+        )
+        log.warning(
+            "TMX TSX fetch yielded only %d issuers — falling back to curated list",
+            len(issuers),
+        )
+        return None
+
+    try:
+        cache_path.write_text(
+            json.dumps({"issuers": issuers}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        log.warning("failed to cache TSX directory: %s", exc)
+    _LAST_FETCH_ERROR.pop(_TSX_CACHE_NAME, None)
+    log.info("loaded TSX directory from TMX — %d issuers", len(issuers))
+    return [sym for sym, _ in issuers]
+
+
+def fetch_tsx_listings() -> list[str]:
+    """Cached wrapper over :func:`_fetch_tsx_listings`. On failure, returns
+    the curated :data:`TSX` constant so the universe never regresses."""
+    global _TSX_FETCH_CACHE
+    if _TSX_FETCH_CACHE is not None:
+        return _TSX_FETCH_CACHE
+    fetched = _fetch_tsx_listings()
+    if fetched is None:
+        _TSX_FETCH_CACHE = TSX
+        return _TSX_FETCH_CACHE
+    # Union with the curated list — if TMX ever drops a name we've already
+    # validated as liquid, we keep screening it.
+    have = set(fetched)
+    merged = list(fetched)
+    for sym in TSX:
+        if sym not in have:
+            merged.append(sym)
+    _TSX_FETCH_CACHE = merged
+    return _TSX_FETCH_CACHE
+
+
 def refresh_universe() -> dict[str, int]:
     """Invalidate the in-memory + disk caches and rebuild from a fresh fetch.
     Returns the new size of each list (after refresh)."""
-    global _US_EXCHANGE_CACHE, _LISTS, _MEMBERSHIP
+    global _US_EXCHANGE_CACHE, _LISTS, _MEMBERSHIP, _TSX_FETCH_CACHE
     _US_EXCHANGE_CACHE = None
     _LISTS = None
     _MEMBERSHIP = None
+    _TSX_FETCH_CACHE = None
     _TICKER_NAMES.clear()
     try:
-        for name in ("nasdaqlisted.txt", "otherlisted.txt", _SEC_CACHE_NAME):
+        for name in ("nasdaqlisted.txt", "otherlisted.txt", _SEC_CACHE_NAME, _TSX_CACHE_NAME):
             p = _CACHE_DIR / name
             if p.exists():
                 try:
@@ -752,7 +899,7 @@ def _build_lists() -> dict[str, list[str]]:
     return {
         "nyse": us.get("nyse", []),
         "nasdaq": us.get("nasdaq", []),
-        "tsx": TSX,
+        "tsx": fetch_tsx_listings(),
         "tsxv": TSXV,
     }
 
