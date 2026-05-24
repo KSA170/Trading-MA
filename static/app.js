@@ -16,17 +16,12 @@ const els = {
   shareBtn: $('#share-btn'),
   exportTvBtn: $('#export-tv-btn'),
   alertsAddBtn: $('#alerts-add-btn'),
-  saveHistoryBtn: $('#save-history-btn'),
   exportBtn: $('#export-btn'),
   clearSelectionBtn: $('#clear-selection-btn'),
   columnsBtn: $('#columns-btn'),
   columnMenu: $('#column-menu'),
   exchangeDdBtn: $('#exchange-dd-btn'),
   exchangeDdMenu: $('#exchange-dd-menu'),
-  alertsToggle: $('#alerts-toggle'),
-  alertsBody: $('#alerts-body'),
-  alertsStatus: $('#alerts-status'),
-  alertsWatchlist: $('#alerts-watchlist'),
   rulesToggle: $('#rules-toggle'),
   rulesBody: $('#rules-body'),
   rulesList: $('#rules-list'),
@@ -48,8 +43,6 @@ const els = {
   saveDefaultsBtn: $('#save-defaults-btn'),
   resetDefaultsBtn: $('#reset-defaults-btn'),
   defaultsMsg: $('#defaults-msg'),
-  historyBody: $('#history-body'),
-  historyToggle: $('#history-toggle'),
   setupsToggle: $('#setups-toggle'),
   setupsBody: $('#setups-body'),
   setupsList: $('#setups-list'),
@@ -78,7 +71,6 @@ const els = {
 const selectedTickers = new Set();
 
 let lastResults = [];
-let lastRunData = null;  // the most recent /api/screen response — for "Save to history"
 let sortState = { key: null, dir: null }; // dir: 'asc' | 'desc'
 
 const inputs = {
@@ -463,7 +455,6 @@ async function runScreen() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     lastResults = data.results || [];
-    lastRunData = data;  // kept for "Save to history" — see saveSelectionToHistory
     renderTable();
     if (els.asOfLabel) {
       const d = data.as_of_date || (asOfSelect && asOfSelect.options[asOfSelect.selectedIndex]?.text) || '';
@@ -762,7 +753,7 @@ function updateSelectionUI() {
   if (els.selectionCount) {
     els.selectionCount.textContent = count === 1 ? '1 selected' : `${count} selected`;
   }
-  [els.emailBtn, els.shareBtn, els.exportTvBtn, els.alertsAddBtn, els.saveHistoryBtn,
+  [els.emailBtn, els.shareBtn, els.exportTvBtn, els.alertsAddBtn,
    els.exportBtn, els.clearSelectionBtn].forEach((b) => {
     if (b) b.disabled = count === 0;
   });
@@ -1307,7 +1298,6 @@ if (els.selectAll) els.selectAll.addEventListener('change', onSelectAllChange);
 if (els.emailBtn) els.emailBtn.addEventListener('click', emailSelected);
 if (els.shareBtn) els.shareBtn.addEventListener('click', () => shareSelected());
 if (els.exportTvBtn) els.exportTvBtn.addEventListener('click', () => exportForTradingView());
-if (els.saveHistoryBtn) els.saveHistoryBtn.addEventListener('click', saveSelectionToHistory);
 if (els.exportBtn) els.exportBtn.addEventListener('click', exportSelected);
 if (els.clearSelectionBtn) els.clearSelectionBtn.addEventListener('click', clearSelection);
 
@@ -1358,8 +1348,6 @@ if (els.diagnoseTicker) {
 // Collapse / expand the filter and diagnose sections, persisted in
 // localStorage so the user's preference survives reloads.
 wireCollapse(els.filtersToggle, els.filtersSection, 'collapse_filters');
-wireCollapse(els.historyToggle, els.historyBody, 'collapse_history');
-renderHistory();
 wireCollapse(
   els.diagnoseToggle,
   [els.diagnoseBody, els.diagnoseOutput],
@@ -1368,208 +1356,10 @@ wireCollapse(
 
 updateSelectionUI();
 
-// --- match history (last 10 saved selections) -----------------------------
-// Persisted in localStorage so it survives reloads. Each entry stores the
-// run's filter params + only the rows the user *selected* from that run,
-// so "Restore" puts that hand-picked set back into the table.
-
-const HISTORY_KEY = 'match_history_v1';
-const HISTORY_MAX = 10;
-
-// Subset of the params dict that's actually filter-relevant (everything
-// except the lists tuple, which we render separately for readability).
-const HISTORY_PARAM_KEYS = [
-  'high_lookback', 'streak_mode',
-  'rsi_min', 'rsi_max', 'rsi_dev_min_pct', 'rsi_dev_max_pct',
-  'price_min', 'price_max', 'price_dev_min_pct', 'price_dev_max_pct',
-  'ema_dev_min_pct', 'ema_dev_max_pct',
-  'macd_hist_min', 'macd_require_rising',
-  'rvol_lookback', 'rvol_min', 'avg_volume_min',
-  'turnover_min_pct', 'turnover_max_pct',
-  'apply_high', 'apply_rsi', 'apply_rsi_dev', 'apply_rvol', 'apply_avg_volume',
-  'apply_price', 'apply_price_dev', 'apply_ema_dev', 'apply_macd', 'apply_turnover',
-  'as_of_offset',
-];
-
-function loadHistory() {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch (_) {
-    return [];
-  }
-}
-
-function saveHistory(entries) {
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_MAX)));
-  } catch (err) {
-    // quotaExceeded most likely — drop the oldest entry and retry once.
-    if (entries.length > 1) {
-      try { localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, entries.length - 1))); } catch (_) {}
-    }
-  }
-}
-
-function saveSelectionToHistory() {
-  const rows = selectedRows();
-  if (!rows.length) { setStatus('select some tickers first'); return; }
-  if (!lastRunData) { setStatus('run a screen first'); return; }
-  const entry = {
-    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    ranAt: new Date().toISOString(),
-    asOfDate: lastRunData.as_of_date || null,
-    matchCount: rows.length,
-    params: pickParams(lastRunData.params || {}),
-    results: rows.slice(),  // only the user's hand-picked selection
-  };
-  const existing = loadHistory();
-  existing.unshift(entry);
-  saveHistory(existing.slice(0, HISTORY_MAX));
-  renderHistory();
-  setStatus(`saved ${rows.length} ticker${rows.length > 1 ? 's' : ''} to history`);
-}
-
-function pickParams(p) {
-  const out = {};
-  for (const k of HISTORY_PARAM_KEYS) {
-    if (p[k] !== undefined) out[k] = p[k];
-  }
-  if (Array.isArray(p.lists)) out.lists = p.lists.slice();
-  return out;
-}
-
-function fmtParamValue(k, v) {
-  if (Array.isArray(v)) return v.join(', ') || '(all)';
-  if (typeof v === 'boolean') return v ? 'on' : 'off';
-  if (typeof v === 'number') {
-    return Number.isInteger(v) ? String(v) : (v.toLocaleString(undefined, { maximumFractionDigits: 3 }));
-  }
-  return String(v);
-}
-
-function renderHistory() {
-  if (!els.historyBody) return;
-  const entries = loadHistory();
-  if (!entries.length) {
-    els.historyBody.innerHTML = '<p class="muted history-empty">No saved runs yet — select tickers from a run and click "Save to history".</p>';
-    return;
-  }
-  els.historyBody.innerHTML = '';
-  for (const e of entries) {
-    const div = document.createElement('div');
-    div.className = 'history-entry';
-    div.dataset.id = e.id;
-    const ts = new Date(e.ranAt);
-    const tsTxt = ts.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
-    const asOf = e.asOfDate ? `<span class="muted">as of ${escapeHtml(e.asOfDate)}</span>` : '';
-    div.innerHTML = `
-      <div class="entry-meta">
-        <span class="entry-time">${escapeHtml(tsTxt)}</span>
-        ${asOf}
-        <span class="entry-count">${e.matchCount} ticker${e.matchCount === 1 ? '' : 's'}</span>
-        <button class="entry-restore" type="button">Restore</button>
-        <button class="entry-toggle-filters" type="button">Show filters</button>
-        <button class="entry-delete" type="button" title="Delete this entry">×</button>
-      </div>
-      <div class="entry-filters hidden"></div>
-    `;
-    els.historyBody.appendChild(div);
-  }
-}
-
-function entryFromEvent(ev) {
-  const node = ev.target.closest('.history-entry');
-  if (!node) return null;
-  const id = node.dataset.id;
-  const all = loadHistory();
-  const idx = all.findIndex((e) => e.id === id);
-  return { node, id, idx, entry: all[idx], all };
-}
-
-if (els.historyBody) {
-  els.historyBody.addEventListener('click', (ev) => {
-    const btn = ev.target.closest('button');
-    if (!btn) return;
-    const ctx = entryFromEvent(ev);
-    if (!ctx || !ctx.entry) return;
-    if (btn.classList.contains('entry-restore')) {
-      lastResults = ctx.entry.results || [];
-      renderTable();
-      if (els.matchCount) els.matchCount.textContent = `(${lastResults.length})`;
-      if (els.asOfLabel) {
-        els.asOfLabel.textContent = ctx.entry.asOfDate ? `as of ${ctx.entry.asOfDate}` : '';
-      }
-      setStatus(`restored ${lastResults.length} ticker${lastResults.length === 1 ? '' : 's'} from ${new Date(ctx.entry.ranAt).toLocaleString()}`);
-    } else if (btn.classList.contains('entry-toggle-filters')) {
-      const panel = ctx.node.querySelector('.entry-filters');
-      if (!panel) return;
-      const hidden = panel.classList.toggle('hidden');
-      btn.textContent = hidden ? 'Show filters' : 'Hide filters';
-      if (!hidden && !panel.dataset.filled) {
-        const p = ctx.entry.params || {};
-        // Show only the filters that were active (apply_* = true) for
-        // this run — summarised the same way as the alert-rule criteria.
-        const active = summarizeRuleParams(p);
-        const rows = active.map((c) => `<div>${escapeHtml(c)}</div>`);
-        if (p.lists) {
-          rows.unshift(`<div><span class="k">Exchanges</span>: ${escapeHtml(fmtParamValue('lists', p.lists))}</div>`);
-        }
-        if (!active.length) {
-          rows.push('<div class="muted">No indicator filters were active for this run.</div>');
-        }
-        panel.innerHTML = rows.join('');
-        panel.dataset.filled = '1';
-      }
-    } else if (btn.classList.contains('entry-delete')) {
-      ctx.all.splice(ctx.idx, 1);
-      saveHistory(ctx.all);
-      renderHistory();
-    }
-  });
-}
-
-
-// --- alert watchlist ------------------------------------------------------
-// The realtime alert engine (alerts.py, run by a GitHub Actions cron)
-// monitors these tickers and pushes Telegram messages when they match the
-// saved alert criteria. This panel just manages the watchlist + criteria.
-
-function renderAlertWatchlist(data) {
-  const tickers = (data && data.tickers) || [];
-  if (els.alertsStatus) {
-    if (!data || data.enabled === false) {
-      els.alertsStatus.textContent = 'alerts disabled — DATABASE_URL not set on the server';
-    } else {
-      els.alertsStatus.textContent = tickers.length
-        ? `${tickers.length} ticker${tickers.length === 1 ? '' : 's'} monitored`
-        : 'no tickers monitored yet';
-    }
-  }
-  if (!els.alertsWatchlist) return;
-  if (!tickers.length) {
-    els.alertsWatchlist.innerHTML = '<p class="muted history-empty">Watchlist empty — select rows above and click "Add to alerts".</p>';
-    return;
-  }
-  els.alertsWatchlist.innerHTML = '';
-  for (const t of tickers) {
-    const chip = document.createElement('span');
-    chip.className = 'alert-chip';
-    chip.innerHTML = `<span>${escapeHtml(t)}</span><button type="button" data-remove="${escapeHtml(t)}" title="Remove ${escapeHtml(t)} from alerts">×</button>`;
-    els.alertsWatchlist.appendChild(chip);
-  }
-}
-
-async function loadAlertWatchlist() {
-  if (!els.alertsWatchlist) return;
-  try {
-    const res = await fetch('/api/alerts/watchlist');
-    if (!res.ok) return;
-    renderAlertWatchlist(await res.json());
-  } catch (_) { /* silent */ }
-}
+// --- watchlist add ------------------------------------------------------
+// The realtime alert engine (alerts.py) uses this watchlist as the scope
+// for watchlist-scoped rules. The list itself isn't surfaced anywhere in
+// the UI — adding feeds rules without needing a display panel.
 
 async function addSelectedToAlerts(rows) {
   rows = rows || selectedRows();
@@ -1586,35 +1376,13 @@ async function addSelectedToAlerts(rows) {
       setStatus('alert add failed: ' + (data.error || ('HTTP ' + res.status)));
       return;
     }
-    renderAlertWatchlist({ enabled: true, tickers: data.tickers });
     setStatus(`added ${tickers.length} to alert watchlist`);
   } catch (_) {
     setStatus('alert add failed');
   }
 }
 
-async function removeFromAlerts(ticker) {
-  try {
-    const res = await fetch('/api/alerts/watchlist/remove', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker }),
-    });
-    if (!res.ok) return;
-    const data = await res.json();
-    renderAlertWatchlist({ enabled: true, tickers: data.tickers });
-  } catch (_) { /* silent */ }
-}
-
 if (els.alertsAddBtn) els.alertsAddBtn.addEventListener('click', () => addSelectedToAlerts());
-if (els.alertsWatchlist) {
-  els.alertsWatchlist.addEventListener('click', (ev) => {
-    const btn = ev.target.closest('button[data-remove]');
-    if (btn) removeFromAlerts(btn.dataset.remove);
-  });
-}
-wireCollapse(els.alertsToggle, els.alertsBody, 'collapse_alerts');
-loadAlertWatchlist();
 
 
 // --- alert rules ----------------------------------------------------------

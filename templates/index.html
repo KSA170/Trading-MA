@@ -207,7 +207,6 @@
         <button id="share-btn" type="button" disabled>Share</button>
         <button id="export-tv-btn" type="button" disabled title="Download selected tickers as a TradingView-importable watchlist (.txt)">Export for TradingView</button>
         <button id="alerts-add-btn" type="button" disabled title="Add selected tickers to the realtime alert watchlist (Telegram)">Add to alerts</button>
-        <button id="save-history-btn" type="button" disabled title="Save the selected tickers from this run to Match history">Save to history</button>
         <button id="export-btn" type="button" disabled>Export to Excel</button>
         <button id="clear-selection-btn" type="button" disabled>Clear</button>
         <div class="column-menu-wrap">
@@ -266,29 +265,6 @@
         </div>
         <div id="setups-list">
           <p class="muted history-empty">Click "Find setups" to rank the snapshot's tickers by the base-breakout / momentum-ignition score.</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="match-history">
-      <button id="history-toggle" type="button" class="section-toggle" aria-controls="history-body" aria-expanded="true">
-        <span class="chevron">▾</span> Match history <span class="muted">(last 10 runs — your saved selections)</span>
-      </button>
-      <div id="history-body" class="history-body">
-        <p class="muted history-empty">No saved runs yet — select tickers from a run and click "Save to history".</p>
-      </div>
-    </section>
-
-    <section class="match-history alerts-panel">
-      <button id="alerts-toggle" type="button" class="section-toggle" aria-controls="alerts-body" aria-expanded="true">
-        <span class="chevron">▾</span> Alert watchlist <span class="muted">(tickers used by watchlist-scoped rules)</span>
-      </button>
-      <div id="alerts-body" class="history-body">
-        <div class="alerts-toolbar">
-          <span id="alerts-status" class="muted">—</span>
-        </div>
-        <div id="alerts-watchlist" class="alerts-watchlist">
-          <p class="muted history-empty">Watchlist empty — select rows above and click "Add to alerts".</p>
         </div>
       </div>
     </section>
