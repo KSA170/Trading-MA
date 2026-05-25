@@ -275,11 +275,11 @@
       </button>
       <div id="rules-body" class="history-body">
         <div class="rules-create">
-          <input id="rule-name" type="text" placeholder="Rule name — e.g. Biotech momentum" autocomplete="off" />
-          <select id="rule-type" title="Screener rules use the main filter form; Setup rules use the Setups panel toolbar above.">
+          <select id="rule-type" title="Screener rules use the filter dialog; Setup rules use the Setups panel toolbar above.">
             <option value="screener">Screener filters</option>
             <option value="setup">Setup score</option>
           </select>
+          <input id="rule-name" type="text" placeholder="Rule name — e.g. Biotech momentum" autocomplete="off" />
           <select id="rule-scope-type" title="What set of stocks this rule scans">
             <option value="all" data-rule-type="setup" hidden>All snapshot tickers</option>
             <option value="watchlist">Watchlist</option>
@@ -313,6 +313,117 @@
       <span><span class="dot dot-rsi9"></span> 9d SMA</span>
     </div>
   </div>
+
+  <dialog id="criteria-modal" class="criteria-modal" aria-labelledby="criteria-modal-title">
+    <form id="criteria-form" class="criteria-form" method="dialog">
+      <header class="criteria-modal-header">
+        <h2 id="criteria-modal-title">Screener alert rule</h2>
+        <button type="button" class="criteria-modal-close" data-act="close" aria-label="Close">×</button>
+      </header>
+      <p id="criteria-modal-subtitle" class="muted criteria-modal-subtitle"></p>
+
+      <div id="criteria-modal-meta" class="criteria-modal-meta">
+        <div class="criteria-modal-field">
+          <label for="cm_rule_name">Rule name</label>
+          <input id="cm_rule_name" type="text" placeholder="e.g. Biotech momentum" autocomplete="off" />
+        </div>
+        <div class="criteria-modal-field">
+          <label for="cm_rule_scope_type">Scope</label>
+          <select id="cm_rule_scope_type">
+            <option value="watchlist">Watchlist</option>
+            <option value="industry">Industry</option>
+            <option value="sector">Sector</option>
+          </select>
+        </div>
+        <div class="criteria-modal-field">
+          <label for="cm_rule_scope_value">Sector / Industry</label>
+          <select id="cm_rule_scope_value" disabled>
+            <option value="">—</option>
+          </select>
+        </div>
+      </div>
+      <p id="criteria-modal-context" class="muted criteria-modal-context"></p>
+
+      <div class="criteria-modal-body">
+        <h3 class="criteria-modal-section-h">Filter criteria</h3>
+        <div class="criteria-grid">
+
+          <div class="filter-group" data-group="cm_price">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_price" checked /> Price range</label>
+            <div class="filter"><label>min ($)</label><input id="cm_price_min" type="number" step="0.5" min="0" value="1" /></div>
+            <div class="filter"><label>max ($)</label><input id="cm_price_max" type="number" step="1" min="0" value="1000" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_high">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_high" checked /> Price streak</label>
+            <div class="filter"><label>Streak length (days)</label><input id="cm_high_lookback" type="number" min="2" max="60" value="2" /></div>
+            <div class="filter">
+              <label>Mode</label>
+              <select id="cm_streak_mode">
+                <option value="high">Higher highs (high &gt; prior high)</option>
+                <option value="close">Higher closes (close &gt; prior close)</option>
+                <option value="green">Green bodies (close &gt; open)</option>
+                <option value="close_green">Higher closes &amp; green bodies (both)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="filter-group" data-group="cm_rsi">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_rsi" checked /> RSI(14) band</label>
+            <div class="filter"><label>min</label><input id="cm_rsi_min" type="number" step="0.1" min="0" max="100" value="45" /></div>
+            <div class="filter"><label>max</label><input id="cm_rsi_max" type="number" step="0.1" min="0" max="100" value="65" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_rsi_dev">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_rsi_dev" checked /> RSI(14) dev vs 9d SMA</label>
+            <div class="filter"><label>min (%)</label><input id="cm_rsi_dev_min_pct" type="number" step="0.5" value="0" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_rsi_dev_max_pct" type="number" step="0.5" value="10" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_price_dev">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_price_dev" checked /> Price dev vs EMA(21)</label>
+            <div class="filter"><label>min (%)</label><input id="cm_price_dev_min_pct" type="number" step="0.5" value="-1" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_price_dev_max_pct" type="number" step="0.5" value="4" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_ema_dev">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_ema_dev" checked /> EMA(21) dev vs EMA(50)</label>
+            <div class="filter"><label>min (%)</label><input id="cm_ema_dev_min_pct" type="number" step="0.5" value="-3" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_ema_dev_max_pct" type="number" step="0.5" value="3" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_macd">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_macd" checked /> MACD histogram bullish</label>
+            <div class="filter"><label>min hist value</label><input id="cm_macd_hist_min" type="number" step="0.01" value="0" /></div>
+            <div class="filter inline-toggle"><label class="inline-checkbox"><input type="checkbox" id="cm_macd_require_rising" checked /> require rising</label></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_rvol">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_rvol" checked /> Relative volume</label>
+            <div class="filter"><label>lookback (days)</label><input id="cm_rvol_lookback" type="number" min="2" max="60" value="10" /></div>
+            <div class="filter"><label>min (×)</label><input id="cm_rvol_min" type="number" step="0.05" min="0" value="1.2" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_avg_volume">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_avg_volume" checked /> Avg volume floor</label>
+            <div class="filter"><label>min (shares)</label><input id="cm_avg_volume_min" type="number" step="1000" min="0" value="50000" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_turnover">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_turnover" /> Volume / market cap</label>
+            <div class="filter"><label>min (%)</label><input id="cm_turnover_min_pct" type="number" step="0.1" min="0" value="0.5" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_turnover_max_pct" type="number" step="0.5" min="0" value="100" /></div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="criteria-modal-footer">
+        <span id="criteria-modal-msg" class="muted"></span>
+        <button type="button" class="criteria-modal-cancel" data-act="close">Cancel</button>
+        <button type="submit" id="criteria-modal-submit" class="primary">Create rule</button>
+      </footer>
+    </form>
+  </dialog>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

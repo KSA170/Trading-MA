@@ -31,6 +31,19 @@ const els = {
   ruleScopeValue: $('#rule-scope-value'),
   ruleCreateBtn: $('#rule-create-btn'),
   rulesMsg: $('#rules-msg'),
+  // Screener-rule criteria modal — opens on "Create rule" (screener type)
+  // and on "Update criteria" for an existing screener rule.
+  cmModal: $('#criteria-modal'),
+  cmForm: $('#criteria-form'),
+  cmTitle: $('#criteria-modal-title'),
+  cmSubtitle: $('#criteria-modal-subtitle'),
+  cmMeta: $('#criteria-modal-meta'),
+  cmContext: $('#criteria-modal-context'),
+  cmName: $('#cm_rule_name'),
+  cmScopeType: $('#cm_rule_scope_type'),
+  cmScopeValue: $('#cm_rule_scope_value'),
+  cmSubmit: $('#criteria-modal-submit'),
+  cmMsg: $('#criteria-modal-msg'),
   diagnoseTicker: $('#diagnose-ticker'),
   diagnoseBtn: $('#diagnose-btn'),
   diagnoseClearBtn: $('#diagnose-clear-btn'),
@@ -108,6 +121,42 @@ const toggles = {
   apply_macd: $('#apply_macd'),
   macd_require_rising: $('#macd_require_rising'),
   apply_turnover: $('#apply_turnover'),
+};
+
+// Parallel inputs/toggles for the screener-rule criteria modal — same keys
+// so the same serialiser can build a query string from either set.
+const modalInputs = {
+  high_lookback: $('#cm_high_lookback'),
+  streak_mode: $('#cm_streak_mode'),
+  rsi_min: $('#cm_rsi_min'),
+  rsi_max: $('#cm_rsi_max'),
+  rsi_dev_min_pct: $('#cm_rsi_dev_min_pct'),
+  rsi_dev_max_pct: $('#cm_rsi_dev_max_pct'),
+  rvol_lookback: $('#cm_rvol_lookback'),
+  rvol_min: $('#cm_rvol_min'),
+  avg_volume_min: $('#cm_avg_volume_min'),
+  price_min: $('#cm_price_min'),
+  price_max: $('#cm_price_max'),
+  price_dev_min_pct: $('#cm_price_dev_min_pct'),
+  price_dev_max_pct: $('#cm_price_dev_max_pct'),
+  ema_dev_min_pct: $('#cm_ema_dev_min_pct'),
+  ema_dev_max_pct: $('#cm_ema_dev_max_pct'),
+  macd_hist_min: $('#cm_macd_hist_min'),
+  turnover_min_pct: $('#cm_turnover_min_pct'),
+  turnover_max_pct: $('#cm_turnover_max_pct'),
+};
+const modalToggles = {
+  apply_high: $('#cm_apply_high'),
+  apply_rsi: $('#cm_apply_rsi'),
+  apply_rsi_dev: $('#cm_apply_rsi_dev'),
+  apply_rvol: $('#cm_apply_rvol'),
+  apply_avg_volume: $('#cm_apply_avg_volume'),
+  apply_price: $('#cm_apply_price'),
+  apply_price_dev: $('#cm_apply_price_dev'),
+  apply_ema_dev: $('#cm_apply_ema_dev'),
+  apply_macd: $('#cm_apply_macd'),
+  macd_require_rising: $('#cm_macd_require_rising'),
+  apply_turnover: $('#cm_apply_turnover'),
 };
 
 const listAllCb = $('#list_all');
@@ -1390,9 +1439,13 @@ if (els.alertsAddBtn) els.alertsAddBtn.addEventListener('click', () => addSelect
 // criteria; the alert engine (alerts.py) walks every enabled rule each run.
 
 let _alertScopes = { sectors: [], industries: [] };
+// Cache the most recently rendered rule list so the Update-criteria
+// modal can look up r.params by rule id without an extra round trip.
+let _alertRules = [];
 
 function renderRules(data) {
   const rules = (data && data.rules) || [];
+  _alertRules = rules;
   // Classification coverage note — sector/industry rules need the
   // ticker_sector map, which the weekly "Classify universe" workflow builds.
   if (els.rulesClassifyNote) {
@@ -1604,18 +1657,27 @@ function currentSetupParams() {
 }
 
 async function createRule() {
+  const ruleType = (els.ruleType && els.ruleType.value) || 'screener';
+  // Screener rules: hand off to the criteria modal — the user picks
+  // name + scope + every filter in one popup.
+  if (ruleType === 'screener') {
+    openCriteriaModal({
+      mode: 'create',
+      seedName: (els.ruleName && els.ruleName.value || '').trim(),
+      seedScopeType: (els.ruleScopeType && els.ruleScopeType.value) || 'watchlist',
+      seedScopeValue: (els.ruleScopeValue && els.ruleScopeValue.value) || '',
+    });
+    return;
+  }
+  // Setup rules: keep the original inline flow — only 4 params and the
+  // Setups toolbar above already drives them.
   if (!els.ruleName || !els.ruleScopeType || !els.ruleScopeValue) return;
   const name = (els.ruleName.value || '').trim();
-  const ruleType = (els.ruleType && els.ruleType.value) || 'screener';
   const scopeType = els.ruleScopeType.value;
   const scopeValue = (scopeType === 'watchlist' || scopeType === 'all') ? '' : els.ruleScopeValue.value;
   if (!name) {
     setRulesMsg('Enter a rule name first.', 'error');
     els.ruleName.focus();
-    return;
-  }
-  if (scopeType === 'all' && ruleType !== 'setup') {
-    setRulesMsg('"All snapshot tickers" scope is only valid for Setup rules.', 'error');
     return;
   }
   if (scopeType !== 'watchlist' && scopeType !== 'all' && !scopeValue) {
@@ -1624,16 +1686,11 @@ async function createRule() {
   }
   setRulesMsg('Creating rule…');
   try {
-    // Setup rules: criteria come from the Setups toolbar (JSON body).
-    // Screener rules: criteria come from the current screener filters (query string).
-    const body = { name, scope_type: scopeType, scope_value: scopeValue, rule_type: ruleType };
-    let url = '/api/alerts/rules';
-    if (ruleType === 'setup') {
-      body.setup_params = currentSetupParams();
-    } else {
-      url += '?' + buildQuery();
-    }
-    const res = await fetch(url, {
+    const body = {
+      name, scope_type: scopeType, scope_value: scopeValue, rule_type: 'setup',
+      setup_params: currentSetupParams(),
+    };
+    const res = await fetch('/api/alerts/rules', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1665,17 +1722,30 @@ async function ruleAction(id, act) {
     const enabling = row && row.classList.contains('rule-off');
     url = '/api/alerts/rules/toggle'; body = { id, enabled: !!enabling };
   } else if (act === 'update') {
-    // For setup rules send the current Setups toolbar values; for
-    // screener rules use the screener filter query string.
     const row = els.rulesList && els.rulesList.querySelector(`.rule-row[data-id="${id}"]`);
     const isSetup = row && row.classList.contains('rule-setup');
-    if (isSetup) {
-      url = '/api/alerts/rules/update-criteria';
-      body = { id, setup_params: currentSetupParams() };
-    } else {
-      url = '/api/alerts/rules/update-criteria?' + buildQuery();
-      body = { id };
+    if (!isSetup) {
+      // Screener rule: open the criteria modal pre-filled with this
+      // rule's stored params. Submit happens from inside the modal.
+      const rule = _alertRules.find((r) => r.id === id) || {};
+      const scopeText = rule.scope_type === 'watchlist'
+        ? 'Watchlist'
+        : (rule.scope_type
+            ? rule.scope_type[0].toUpperCase() + rule.scope_type.slice(1)
+              + (rule.scope_value ? ': ' + rule.scope_value : '')
+            : '');
+      openCriteriaModal({
+        mode: 'update',
+        ruleId: id,
+        ruleName: rule.name || `#${id}`,
+        scopeText,
+        prefill: rule.params || {},
+      });
+      return;
     }
+    // Setup rule: inline-toolbar flow (unchanged).
+    url = '/api/alerts/rules/update-criteria';
+    body = { id, setup_params: currentSetupParams() };
   } else {
     return;
   }
@@ -1699,6 +1769,250 @@ async function ruleAction(id, act) {
     setRulesMsg('Rule update failed: ' + (err && err.message ? err.message : 'network error'), 'error');
   }
 }
+
+// --- criteria modal (screener rule create / update) ----------------------
+// Same shape on both create and update — only the meta block (name +
+// scope) differs. Backed by the parallel modalInputs / modalToggles
+// maps so the same query-string serialiser fits the existing screener
+// rule endpoints (POST /api/alerts/rules?<query> and POST
+// /api/alerts/rules/update-criteria?<query>).
+
+let _criteriaModalState = { mode: 'create', ruleId: null };
+
+function openCriteriaModal({ mode, ruleId, ruleName, scopeText,
+                              seedName, seedScopeType, seedScopeValue, prefill }) {
+  if (!els.cmModal) return;
+  _criteriaModalState = { mode, ruleId: ruleId || null };
+
+  // Pre-fill criteria: for CREATE, snapshot the main filter form values
+  // so the popup opens close to what the user just had set; for UPDATE,
+  // use the rule's stored params (prefill).
+  applyParamsToModal(prefill || readMainFormAsParams());
+
+  if (mode === 'create') {
+    if (els.cmTitle) els.cmTitle.textContent = 'Create screener alert rule';
+    if (els.cmSubtitle) {
+      els.cmSubtitle.textContent = 'Pick a scope and adjust filter criteria. The realtime engine checks these every ~15 min in market hours.';
+    }
+    if (els.cmMeta) els.cmMeta.hidden = false;
+    if (els.cmContext) { els.cmContext.textContent = ''; els.cmContext.hidden = true; }
+    if (els.cmName) {
+      els.cmName.value = seedName || '';
+      els.cmName.disabled = false;
+    }
+    if (els.cmScopeType) {
+      els.cmScopeType.value = (seedScopeType && seedScopeType !== 'all') ? seedScopeType : 'watchlist';
+      els.cmScopeType.disabled = false;
+    }
+    populateModalScopeValues();
+    if (els.cmScopeValue && seedScopeValue) {
+      // Only honor seed value if it's actually in the list.
+      const opt = Array.from(els.cmScopeValue.options).find((o) => o.value === seedScopeValue);
+      if (opt) els.cmScopeValue.value = seedScopeValue;
+    }
+    if (els.cmSubmit) els.cmSubmit.textContent = 'Create rule';
+  } else {
+    if (els.cmTitle) els.cmTitle.textContent = `Update criteria — ${ruleName || '(rule)'}`;
+    if (els.cmSubtitle) {
+      els.cmSubtitle.textContent = "Adjust the filter criteria for this rule. Name and scope can't be edited here — delete and recreate to change them.";
+    }
+    if (els.cmMeta) els.cmMeta.hidden = true;
+    if (els.cmContext) {
+      els.cmContext.textContent = scopeText ? `Scope: ${scopeText}` : '';
+      els.cmContext.hidden = !scopeText;
+    }
+    if (els.cmSubmit) els.cmSubmit.textContent = 'Save criteria';
+  }
+
+  setModalMsg('');
+  syncModalDisabled();
+  try { els.cmModal.showModal(); }
+  catch (_) { /* dialog already open or unsupported */ }
+}
+
+function closeCriteriaModal() {
+  if (els.cmModal && els.cmModal.open) els.cmModal.close();
+}
+
+function setModalMsg(text, kind) {
+  if (!els.cmMsg) return;
+  els.cmMsg.textContent = text || '';
+  els.cmMsg.style.color = kind === 'error' ? 'var(--red)'
+    : kind === 'ok' ? 'var(--green)' : 'var(--muted)';
+}
+
+// Push a params dict (same shape as rule.params) into the modal form.
+function applyParamsToModal(p) {
+  p = p || {};
+  for (const [k, el] of Object.entries(modalInputs)) {
+    if (!el) continue;
+    if (p[k] !== undefined && p[k] !== null) el.value = String(p[k]);
+  }
+  for (const [k, el] of Object.entries(modalToggles)) {
+    if (!el) continue;
+    if (p[k] !== undefined && p[k] !== null) {
+      const v = p[k];
+      el.checked = !(v === false || v === 0 || v === '0' || v === 'false');
+    }
+  }
+}
+
+// Snapshot the main screener form's values into a params dict — used as
+// the default seed for the Create flow so users don't lose what they
+// were just tuning.
+function readMainFormAsParams() {
+  const out = {};
+  for (const [k, el] of Object.entries(inputs)) if (el) out[k] = el.value;
+  for (const [k, el] of Object.entries(toggles)) if (el) out[k] = !!el.checked;
+  return out;
+}
+
+// Build a query string from the modal's filter form — matches what
+// /api/screen and the alert-rule endpoints expect.
+function buildModalQuery() {
+  const params = new URLSearchParams();
+  for (const [k, el] of Object.entries(modalInputs)) if (el) params.set(k, el.value);
+  for (const [k, el] of Object.entries(modalToggles)) if (el) params.set(k, el.checked ? '1' : '0');
+  return params.toString();
+}
+
+function populateModalScopeValues() {
+  if (!els.cmScopeType || !els.cmScopeValue) return;
+  const type = els.cmScopeType.value;
+  if (type === 'watchlist') {
+    els.cmScopeValue.innerHTML = '<option value="">(the watchlist)</option>';
+    els.cmScopeValue.disabled = true;
+    return;
+  }
+  const list = type === 'sector' ? _alertScopes.sectors : _alertScopes.industries;
+  els.cmScopeValue.disabled = false;
+  if (!list || !list.length) {
+    els.cmScopeValue.innerHTML = '<option value="">— run Classify universe first —</option>';
+    return;
+  }
+  els.cmScopeValue.innerHTML = list
+    .map((s) => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} (${s.count})</option>`)
+    .join('');
+}
+
+// Visually grey out a filter group whose apply-toggle is off — mirrors
+// the syncDisabledStates() behaviour on the main form.
+function syncModalDisabled() {
+  const map = {
+    apply_high: 'cm_high',
+    apply_rsi: 'cm_rsi',
+    apply_rsi_dev: 'cm_rsi_dev',
+    apply_rvol: 'cm_rvol',
+    apply_avg_volume: 'cm_avg_volume',
+    apply_price: 'cm_price',
+    apply_price_dev: 'cm_price_dev',
+    apply_ema_dev: 'cm_ema_dev',
+    apply_macd: 'cm_macd',
+    apply_turnover: 'cm_turnover',
+  };
+  for (const [toggleKey, groupKey] of Object.entries(map)) {
+    const t = modalToggles[toggleKey];
+    const g = els.cmModal && els.cmModal.querySelector(`[data-group="${groupKey}"]`);
+    if (t && g) g.classList.toggle('disabled', !t.checked);
+  }
+}
+
+async function submitCriteriaModal() {
+  if (_criteriaModalState.mode === 'create') {
+    const name = (els.cmName && els.cmName.value || '').trim();
+    const scopeType = (els.cmScopeType && els.cmScopeType.value) || 'watchlist';
+    const scopeValue = scopeType === 'watchlist'
+      ? '' : (els.cmScopeValue && els.cmScopeValue.value) || '';
+    if (!name) {
+      setModalMsg('Enter a rule name.', 'error');
+      if (els.cmName) els.cmName.focus();
+      return;
+    }
+    if (scopeType !== 'watchlist' && !scopeValue) {
+      setModalMsg('Pick a sector / industry — run "Classify universe" if the list is empty.', 'error');
+      return;
+    }
+    setModalMsg('Creating rule…');
+    if (els.cmSubmit) els.cmSubmit.disabled = true;
+    try {
+      const res = await fetch('/api/alerts/rules?' + buildModalQuery(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name, scope_type: scopeType, scope_value: scopeValue, rule_type: 'screener',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setModalMsg('Create rule failed: ' + (data.error || ('HTTP ' + res.status)), 'error');
+        return;
+      }
+      if (els.ruleName) els.ruleName.value = '';
+      renderRules({ enabled: true, rules: data.rules, classification: data.classification });
+      loadRules();
+      setRulesMsg(`Alert rule "${name}" created.`, 'ok');
+      closeCriteriaModal();
+    } catch (err) {
+      setModalMsg('Create rule failed: ' + (err && err.message ? err.message : 'network error'), 'error');
+    } finally {
+      if (els.cmSubmit) els.cmSubmit.disabled = false;
+    }
+    return;
+  }
+
+  // UPDATE
+  const ruleId = _criteriaModalState.ruleId;
+  if (!ruleId) {
+    setModalMsg('Internal error: rule id missing.', 'error');
+    return;
+  }
+  setModalMsg('Saving criteria…');
+  if (els.cmSubmit) els.cmSubmit.disabled = true;
+  try {
+    const res = await fetch('/api/alerts/rules/update-criteria?' + buildModalQuery(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: ruleId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setModalMsg('Update failed: ' + (data.error || ('HTTP ' + res.status)), 'error');
+      return;
+    }
+    renderRules({ enabled: true, rules: data.rules });
+    loadRules();
+    setRulesMsg('Rule criteria updated.', 'ok');
+    closeCriteriaModal();
+  } catch (err) {
+    setModalMsg('Update failed: ' + (err && err.message ? err.message : 'network error'), 'error');
+  } finally {
+    if (els.cmSubmit) els.cmSubmit.disabled = false;
+  }
+}
+
+// Modal wiring — submit, close (×, Cancel), scope-type change, group disable.
+if (els.cmForm) {
+  els.cmForm.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    submitCriteriaModal();
+  });
+}
+if (els.cmModal) {
+  els.cmModal.addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) {
+      ev.preventDefault();
+      closeCriteriaModal();
+    }
+  });
+  // ESC -> dialog.close() — re-route through our msg-clearing close to
+  // keep state consistent if the user re-opens it.
+  els.cmModal.addEventListener('close', () => setModalMsg(''));
+}
+if (els.cmScopeType) {
+  els.cmScopeType.addEventListener('change', populateModalScopeValues);
+}
+Object.values(modalToggles).forEach((t) => t && t.addEventListener('change', syncModalDisabled));
+
 
 if (els.ruleScopeType) {
   els.ruleScopeType.addEventListener('change', populateScopeValues);
@@ -1938,8 +2252,16 @@ function syncRuleTypeUI() {
   if (els.ruleCreateBtn) {
     els.ruleCreateBtn.textContent = isSetup
       ? 'Create rule (uses Setups filters)'
-      : 'Create rule (uses screener filters)';
+      : 'Create rule…';
+    els.ruleCreateBtn.title = isSetup
+      ? 'Create a setup-score rule using the Setups toolbar values above'
+      : 'Open the filter dialog to pick scope and criteria for this screener rule';
   }
+  // Inline name / scope inputs are only used for setup-rule creation —
+  // screener rules collect them in the modal. Hide them when not needed.
+  if (els.ruleName) els.ruleName.style.display = isSetup ? '' : 'none';
+  if (els.ruleScopeType) els.ruleScopeType.style.display = isSetup ? '' : 'none';
+  if (els.ruleScopeValue) els.ruleScopeValue.style.display = isSetup ? '' : 'none';
 }
 if (els.ruleType) els.ruleType.addEventListener('change', syncRuleTypeUI);
 syncRuleTypeUI();
