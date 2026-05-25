@@ -999,3 +999,39 @@ table.sortable th.th-drag-over {
 }
 .criteria-modal-footer button:hover:not(:disabled) { filter: brightness(1.1); }
 .criteria-modal-footer button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* Setup criteria section inside the modal — much smaller than the
+   screener grid (only 4 number inputs). */
+.criteria-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+.criteria-setup-grid .filter {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.criteria-setup-grid .filter label {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.criteria-setup-grid .filter input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  width: 100%;
+}
+.criteria-modal-help {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
