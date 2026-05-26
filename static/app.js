@@ -2250,6 +2250,25 @@ function picksMiniBar(label, value) {
   `;
 }
 
+// Per-ticker intraday-trigger badges. Populated from /api/picks/intraday-alerts
+// when the panel renders and updated alongside loadPicks polls.
+let _picksIntradayByTicker = {};
+
+const _PICK_TRIGGER_LABELS = {
+  vwap_reclaim: { glyph: '⚡', name: 'VWAP reclaim' },
+};
+
+function renderPickTriggerBadges(ticker) {
+  const fired = _picksIntradayByTicker[ticker];
+  if (!fired || !fired.length) return '';
+  return fired.map((evt) => {
+    const meta = _PICK_TRIGGER_LABELS[evt.trigger_type] || { glyph: '⚡', name: evt.trigger_type };
+    const ts = evt.fired_at ? formatTriggerTime(evt.fired_at) : '';
+    const tip = `${meta.name} at ${ts}` + (evt.details ? ' — ' + evt.details : '');
+    return `<span class="pick-trigger" title="${escapeHtml(tip)}">${meta.glyph} ${escapeHtml(meta.name)}</span>`;
+  }).join('');
+}
+
 function renderPicks(data) {
   const picks = (data && data.picks) || [];
   const cfg = (data && data.config) || null;
@@ -2274,6 +2293,7 @@ function renderPicks(data) {
     const atr = p.atr_ratio != null ? `ATR20/60 ${p.atr_ratio.toFixed(2)}` : '';
     const dvol = p.dvol_ratio != null ? `dvol 10/60 ${p.dvol_ratio.toFixed(2)}` : '';
     const metaParts = [ret, dist, atr, dvol].filter(Boolean);
+    const badges = renderPickTriggerBadges(p.ticker);
     return `
       <div class="pick-row" data-ticker="${escapeHtml(p.ticker)}">
         <span class="pick-rank">${p.rank}</span>
@@ -2288,19 +2308,48 @@ function renderPicks(data) {
           ${picksMiniBar('DP', p.dp_score)}
         </span>
         <span class="pick-meta muted">${escapeHtml(metaParts.join(' · '))}</span>
+        ${badges ? `<span class="pick-triggers">${badges}</span>` : ''}
       </div>
     `;
   });
   els.picksList.innerHTML = rows.join('');
 }
 
+async function loadIntradayAlerts() {
+  try {
+    const res = await fetch('/api/picks/intraday-alerts', { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    const byTicker = {};
+    for (const evt of (data.alerts || [])) {
+      if (!byTicker[evt.ticker]) byTicker[evt.ticker] = [];
+      byTicker[evt.ticker].push(evt);
+    }
+    _picksIntradayByTicker = byTicker;
+  } catch (_) { /* silent */ }
+}
+
 async function loadPicks() {
   if (!els.picksList) return;
   try {
+    // Pull intraday triggers first so the renderer can badge each
+    // row in a single pass.
+    await loadIntradayAlerts();
     const res = await fetch('/api/picks', { cache: 'no-store' });
     if (!res.ok) return;
     renderPicks(await res.json());
   } catch (_) { /* silent */ }
+}
+
+// Auto-refresh picks every 60s. The intraday cron fires at 5-min
+// cadence so anything faster is wasted work; anything slower means
+// triggers don't appear in the UI for too long.
+let _picksPollTimer = null;
+function startPicksPolling() {
+  if (_picksPollTimer) return;
+  _picksPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') loadPicks();
+  }, 60_000);
 }
 
 async function runPicks() {
@@ -2360,6 +2409,7 @@ if (els.picksList) {
 }
 wireCollapse(els.picksToggle, els.picksBody, 'collapse_picks');
 loadPicks();
+startPicksPolling();
 
 
 // --- setups scanner ------------------------------------------------------

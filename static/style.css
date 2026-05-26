@@ -1170,3 +1170,26 @@ table.sortable th.th-drag-over {
   border-radius: 4px;
   font-size: 13px;
 }
+
+/* Intraday-trigger badges shown inline on each pick row */
+.pick-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+  border: 1px solid rgba(63, 185, 80, 0.35);
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.pick-trigger + .pick-trigger { margin-left: 4px; }
+.pick-row .pick-triggers {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+}

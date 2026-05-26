@@ -1,0 +1,66 @@
+name: Intraday picks monitor
+
+# Stage 2 of the watchlist workflow. Watches today's top-25 picks
+# (nightly_picks table) via Alpaca 5-min bars and fires Telegram on
+# VWAP reclaim events. Idempotent — the picker_intraday_alerts table's
+# PK on (date, ticker, trigger_type) means re-running on the same day
+# never re-sends an alert.
+#
+# Triggered via external cron (cron-job.org → workflow_dispatch) at
+# 5-minute cadence during US market hours, matching the realtime
+# alerts workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force-run: monitor even if market closed (testing only)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: picker-intraday
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Market-hours gate
+        id: gate
+        env:
+          FORCE_RUN: ${{ inputs.force_run }}
+        run: |
+          DOW=$(TZ=America/New_York date +%u)
+          HHMM=$((10#$(TZ=America/New_York date +%H%M)))
+          PROCEED=false
+          if [ "$DOW" -le 5 ] && [ "$HHMM" -ge 930 ] && [ "$HHMM" -le 1600 ]; then
+            PROCEED=true
+          fi
+          if [ "$FORCE_RUN" = "true" ]; then
+            PROCEED=true
+          fi
+          echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
+          echo "ET now: $(TZ=America/New_York date '+%a %Y-%m-%d %H:%M')  ->  proceed=$PROCEED"
+      - name: Checkout
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/checkout@v5
+      - name: Setup Python
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        if: steps.gate.outputs.proceed == 'true'
+        run: pip install -r requirements.txt
+      - name: Run intraday monitor
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PICKER_INTRADAY_FORCE_RUN: ${{ inputs.force_run }}
+        run: python picker_intraday.py

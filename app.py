@@ -842,6 +842,15 @@ def api_picks_run():
     })
 
 
+@app.route("/api/picks/intraday-alerts", methods=["GET"])
+def api_picks_intraday_alerts():
+    """Intraday trigger alerts for the requested date (default: today's
+    most recent date in picker_intraday_alerts). Used by the UI to
+    badge each pick row with whatever's fired today."""
+    date = (request.args.get("date") or "").strip() or None
+    return jsonify({"alerts": picker.intraday_alerts_for_date(date)})
+
+
 @app.route("/api/picks/config", methods=["POST"])
 def api_picks_config():
     """Save picker config without recomputing."""

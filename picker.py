@@ -57,7 +57,10 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 }
 DEFAULT_PRICE_MIN: float = 5.0
 DEFAULT_PRICE_MAX: float = 1000.0
-DEFAULT_LIMIT: int = 10
+# Stage 1 saves the top 25; Stage 2 (intraday monitor) watches all of
+# them. The UI displays all 25 too. If 25 feels noisy, slice client-side.
+DEFAULT_LIMIT: int = 25
+INTRADAY_TRIGGER_TYPES: tuple[str, ...] = ("vwap_reclaim",)
 
 
 # --- schema ----------------------------------------------------------------
@@ -92,6 +95,22 @@ CREATE TABLE IF NOT EXISTS picker_config (
     price_max   REAL,
     updated_at  TIMESTAMPTZ DEFAULT now()
 );
+
+-- Stage 2: intraday triggers that fire on the nightly top-25 watchlist.
+-- One row per (date, ticker, trigger_type) — dedupes so the cron can
+-- run every 5 min idempotently and only emit a Telegram alert once.
+CREATE TABLE IF NOT EXISTS picker_intraday_alerts (
+    pick_date    DATE NOT NULL,
+    ticker       TEXT NOT NULL,
+    trigger_type TEXT NOT NULL,
+    fired_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    price        REAL,
+    vwap         REAL,
+    details      TEXT,
+    PRIMARY KEY (pick_date, ticker, trigger_type)
+);
+CREATE INDEX IF NOT EXISTS picker_intraday_alerts_date_idx
+    ON picker_intraday_alerts (pick_date DESC, fired_at DESC);
 """
 
 
@@ -349,11 +368,24 @@ def rank_universe(
         r["composite"] = float(composites[i])
 
     raw_rows.sort(key=lambda r: -r["composite"])
+    top = raw_rows[:limit]
+    # Stamp rank + pick_date + persistence-name aliases so the live
+    # response from /api/picks/run has the same shape as a load_picks()
+    # response. The UI reads atr_ratio / dvol_ratio / dist_pivot — the
+    # internal scoring uses vc_ratio / va_ratio / dp_pct — so we keep
+    # both for compatibility.
+    for idx, r in enumerate(top, start=1):
+        r["rank"] = idx
+        r["pick_date"] = as_of
+        r["atr_ratio"]  = r.get("vc_ratio")
+        r["dvol_ratio"] = r.get("va_ratio")
+        r["dist_pivot"] = r.get("dp_pct")
     log.info(
         "picker.rank_universe: %d eligible, top composite %.1f, "
-        "elapsed %.1fs", len(raw_rows), raw_rows[0]["composite"], time.time() - t0,
+        "elapsed %.1fs", len(raw_rows), top[0]["composite"] if top else 0.0,
+        time.time() - t0,
     )
-    return raw_rows[:limit], as_of
+    return top, as_of
 
 
 # --- persistence -----------------------------------------------------------
@@ -491,4 +523,90 @@ def save_config(weights: dict, price_min: float, price_max: float) -> bool:
         return True
     except Exception as exc:
         log.warning("picker.save_config failed: %s", exc)
+        return False
+
+
+# --- intraday triggers (Stage 2) ------------------------------------------
+
+def intraday_alerts_for_date(as_of: str | None = None) -> list[dict]:
+    """Return all intraday trigger alerts that have fired on `as_of`
+    (default: today's date in UTC). Newest first within each ticker."""
+    if not snapshots.enabled():
+        return []
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            if as_of:
+                cur.execute(
+                    "SELECT pick_date, ticker, trigger_type, fired_at, "
+                    "price, vwap, details FROM picker_intraday_alerts "
+                    "WHERE pick_date = %s ORDER BY fired_at DESC",
+                    (as_of,),
+                )
+            else:
+                cur.execute(
+                    "SELECT pick_date, ticker, trigger_type, fired_at, "
+                    "price, vwap, details FROM picker_intraday_alerts "
+                    "WHERE pick_date = ("
+                    "  SELECT MAX(pick_date) FROM picker_intraday_alerts"
+                    ") ORDER BY fired_at DESC"
+                )
+            rows = cur.fetchall()
+        return [
+            {
+                "pick_date":   r[0].isoformat() if r[0] else None,
+                "ticker":      r[1],
+                "trigger_type": r[2],
+                "fired_at":    r[3].isoformat() if r[3] else None,
+                "price":       float(r[4]) if r[4] is not None else None,
+                "vwap":        float(r[5]) if r[5] is not None else None,
+                "details":     r[6],
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        log.warning("picker.intraday_alerts_for_date failed: %s", exc)
+        return []
+
+
+def already_fired(pick_date: str, ticker: str, trigger_type: str) -> bool:
+    """Has this (date, ticker, trigger) already fired? Used by the
+    intraday cron to dedupe across 5-min-cadence reruns."""
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM picker_intraday_alerts WHERE pick_date = %s "
+                "AND ticker = %s AND trigger_type = %s",
+                (pick_date, ticker, trigger_type),
+            )
+            return cur.fetchone() is not None
+    except Exception as exc:
+        log.warning("picker.already_fired failed: %s", exc)
+        return False
+
+
+def record_intraday(
+    pick_date: str, ticker: str, trigger_type: str,
+    price: float | None, vwap: float | None, details: str,
+) -> bool:
+    """Idempotent insert. Returns True if this is a fresh trigger
+    (caller should send Telegram). False if it was already recorded —
+    dedupes across multiple cron runs."""
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO picker_intraday_alerts "
+                "(pick_date, ticker, trigger_type, price, vwap, details) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (pick_date, ticker, trigger_type) DO NOTHING",
+                (pick_date, ticker, trigger_type, price, vwap, details),
+            )
+            # rowcount == 1 means a fresh insert; 0 means the conflict
+            # path fired (already exists).
+            return (cur.rowcount or 0) > 0
+    except Exception as exc:
+        log.warning("picker.record_intraday failed: %s", exc)
         return False
