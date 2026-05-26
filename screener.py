@@ -392,6 +392,11 @@ _warm_state: dict = {
     "cancelled": False,
     "started_at": None,
     "finished_at": None,
+    # A small bounded sample of tickers that failed in the most recent
+    # warm-cache run — surfaced via /api/admin/warm-status so the user
+    # can see *which* names are problematic (delisted, missing on
+    # Yahoo, malformed suffix, etc.) instead of just a raw error count.
+    "failed_samples": [],
 }
 _warm_lock = threading.Lock()
 # Separate ref so cancel can clear the UI-facing "running" flag without
@@ -439,6 +444,7 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
         _warm_state.update(
             running=True, done=0, total=0, errors=0, cancelled=False,
             started_at=time.time(), finished_at=None,
+            failed_samples=[],
         )
 
     def _run() -> None:
@@ -446,6 +452,8 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
             tk = tickers if tickers is not None else all_tickers()
             with _warm_lock:
                 _warm_state["total"] = len(tk)
+
+            _FAIL_SAMPLE_CAP = 20
 
             def _one(t: str) -> None:
                 # Cancellation check — newly-started workers see the flag
@@ -457,14 +465,29 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
                     with _warm_lock:
                         _warm_state["done"] += 1
                     return
+                # Truth-on-disk success check: _cached_history returns
+                # None silently when Yahoo gives no data (delisted ticker,
+                # unrecognized symbol, transient empty response), so the
+                # try/except alone catches almost nothing. Verify the
+                # pickle was actually written and is fresh.
+                ok = False
                 try:
-                    _cached_history(t)
+                    df = _cached_history(t)
+                    if df is not None:
+                        try:
+                            mtime = _price_file(t).stat().st_mtime
+                            ok = (time.time() - mtime) < _PRICE_FILE_TTL_SEC
+                        except FileNotFoundError:
+                            ok = False
                 except Exception:
-                    with _warm_lock:
+                    ok = False
+                with _warm_lock:
+                    _warm_state["done"] += 1
+                    if not ok:
                         _warm_state["errors"] += 1
-                finally:
-                    with _warm_lock:
-                        _warm_state["done"] += 1
+                        samples = _warm_state["failed_samples"]
+                        if len(samples) < _FAIL_SAMPLE_CAP:
+                            samples.append(t)
 
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 for _ in pool.map(_one, tk):
@@ -475,6 +498,19 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
             with _warm_lock:
                 _warm_state["running"] = False
                 _warm_state["finished_at"] = time.time()
+                # Concise summary line for server logs — the warm endpoint's
+                # poll-based UI doesn't show server logs, so this is the
+                # only record of the failure breakdown the operator can grep.
+                dur = (_warm_state["finished_at"] - _warm_state["started_at"]) \
+                    if _warm_state["started_at"] else 0
+                succeeded = _warm_state["done"] - _warm_state["errors"]
+                sample = ", ".join(_warm_state["failed_samples"][:10])
+                log.info(
+                    "warm-cache complete: %d/%d succeeded (%d failed) in %.0fs%s",
+                    succeeded, _warm_state["total"], _warm_state["errors"],
+                    dur,
+                    f" — sample failed: {sample}" if sample else "",
+                )
             # Always snapshot what made it onto disk, even if the warm
             # was cancelled — partial data is still useful and the user
             # may have cancelled by accident (e.g. auto-warm racing with

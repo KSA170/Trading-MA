@@ -1086,9 +1086,21 @@ async function pollWarmStatus() {
         const dur = s.finished_at && s.started_at
           ? Math.round(s.finished_at - s.started_at) + 's'
           : '';
-        const errs = s.errors ? `, ${s.errors} errors` : '';
+        // "done" counts attempts; subtract errors to get the count of
+        // tickers actually written to disk (matches the cache-status
+        // "warm" number the user sees next to this).
+        const ok = Math.max(0, (s.done || 0) - (s.errors || 0));
+        const errs = s.errors
+          ? ` · ${s.errors.toLocaleString()} failed (no Yahoo data)`
+          : '';
         const verb = s.cancelled ? 'cancelled' : 'warmed';
-        setStatus(`cache ${verb}: ${s.done}/${s.total}${errs}${dur ? ` in ${dur}` : ''}`);
+        const sample = (s.failed_samples && s.failed_samples.length)
+          ? ` — sample: ${s.failed_samples.slice(0, 5).join(', ')}${s.failed_samples.length > 5 ? '…' : ''}`
+          : '';
+        setStatus(
+          `cache ${verb}: ${ok.toLocaleString()}/${s.total.toLocaleString()} cached`
+          + `${errs}${dur ? ` in ${dur}` : ''}${sample}`
+        );
       }
     }
   } catch (err) {
