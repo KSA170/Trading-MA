@@ -1487,12 +1487,16 @@ function renderRules(data) {
     const critHtml = crit.length
       ? crit.map((c) => `<span class="rule-crit">${escapeHtml(c)}</span>`).join('')
       : '<span class="rule-crit-none">no filters enabled — every ticker in scope would alert</span>';
+    // Header chip — most recent successful trigger (rule fired & sent
+    // alerts). Reads from the alert_sent table via rules_with_last_trigger().
     const lastTxt = r.last_triggered_at
-      ? `Last: ${formatTriggerTime(r.last_triggered_at)} · ${r.last_match_count} ${r.last_match_count === 1 ? 'ticker' : 'tickers'}`
+      ? `Last alert: ${formatTriggerTime(r.last_triggered_at)} · ${r.last_match_count} ${r.last_match_count === 1 ? 'ticker' : 'tickers'}`
       : 'Never triggered yet';
     const lastClass = r.last_triggered_at ? 'rule-last' : 'rule-last rule-last-none';
-    // Scan stats from the most recent alerts.py run — explains "scanned
-    // but never matched" cases (you can see scope size + match count).
+    // Scan stats from the most recent alerts.py run for this rule —
+    // distinct from "Last alert" because alerts.py runs every ~15 min
+    // during market hours but only ALERTS when there's a match. The
+    // date is shown first so it's easy to compare against the header.
     const scanParts = [];
     if (r.last_run_at) {
       scanParts.push(`scope ${(r.scan_scope || 0).toLocaleString()}`);
@@ -1502,7 +1506,7 @@ function renderRules(data) {
       if (r.scan_errors)   scanParts.push(`errors ${r.scan_errors.toLocaleString()}`);
     }
     const scanLine = r.last_run_at
-      ? `Last scan: ${scanParts.join(' · ')} · ${formatTriggerTime(r.last_run_at)}`
+      ? `Last scan: ${formatTriggerTime(r.last_run_at)} · ${scanParts.join(' · ')}`
       : 'Not scanned yet (the alert engine hasn’t run since this rule was created).';
     const row = document.createElement('div');
     row.className = 'rule-row'
@@ -1556,7 +1560,7 @@ async function ruleShowHistory(id) {
   // Always re-fetch on open so the latest triggers are visible.
   panel.innerHTML = '<div class="muted">Loading…</div>';
   try {
-    const res = await fetch(`/api/alerts/rules/history?id=${id}&limit=15`);
+    const res = await fetch(`/api/alerts/rules/history?id=${id}&limit=15`, { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const events = data.history || [];
@@ -1570,8 +1574,32 @@ async function ruleShowHistory(id) {
         <span class="rule-event-count">${e.match_count} ${e.match_count === 1 ? 'ticker' : 'tickers'}</span>
       </div>
     `).join('');
+    // Sync the row header to the freshest event in case the cached
+    // /api/alerts/rules response (which seeded "Last alert") is behind.
+    syncLastAlertFromHistory(row, events[0]);
   } catch (err) {
     panel.innerHTML = `<div style="color:var(--red)">Failed to load: ${escapeHtml(err.message || 'error')}</div>`;
+  }
+}
+
+// Update the row's "Last alert" chip in-place if the freshest history
+// event is newer than what the chip currently shows. Avoids waiting
+// for the next poll to see today's triggers reflected in the header.
+function syncLastAlertFromHistory(row, latestEvent) {
+  if (!row || !latestEvent || !latestEvent.triggered_at) return;
+  const chip = row.querySelector('.rule-last');
+  if (!chip) return;
+  const cached = _alertRules.find((r) => String(r.id) === row.dataset.id);
+  const prevIso = cached && cached.last_triggered_at;
+  if (prevIso && new Date(prevIso).getTime() >= new Date(latestEvent.triggered_at).getTime()) {
+    return;  // header already up to date
+  }
+  const n = latestEvent.match_count;
+  chip.textContent = `Last alert: ${formatTriggerTime(latestEvent.triggered_at)} · ${n} ${n === 1 ? 'ticker' : 'tickers'}`;
+  chip.classList.remove('rule-last-none');
+  if (cached) {
+    cached.last_triggered_at = latestEvent.triggered_at;
+    cached.last_match_count = n;
   }
 }
 
@@ -1610,11 +1638,29 @@ function summarizeRuleParams(p, ruleType) {
 async function loadRules() {
   if (!els.rulesList) return;
   try {
-    const res = await fetch('/api/alerts/rules');
+    // cache: 'no-store' guarantees a fresh response — without it some
+    // browsers will serve a stale cached body and the row "Last alert"
+    // field drifts behind the actual trigger history.
+    const res = await fetch('/api/alerts/rules', { cache: 'no-store' });
     if (!res.ok) return;
     renderRules(await res.json());
   } catch (_) { /* silent */ }
 }
+
+// Auto-refresh the rule list every 60s so the "Last alert" and "Last
+// scan" fields don't go stale between the alert engine runs (which
+// happen every ~15 min in market hours). Pauses when the tab is
+// hidden, and runs immediately when it becomes visible again.
+let _rulesPollTimer = null;
+function startRulesPolling() {
+  if (_rulesPollTimer) return;
+  _rulesPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') loadRules();
+  }, 60_000);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') loadRules();
+});
 
 async function loadAlertScopes() {
   try {
@@ -2067,6 +2113,7 @@ wireCollapse(els.rulesToggle, els.rulesBody, 'collapse_rules');
 populateScopeValues();
 loadAlertScopes();
 loadRules();
+startRulesPolling();
 
 
 // --- setups scanner ------------------------------------------------------
