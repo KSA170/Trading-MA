@@ -2406,6 +2406,11 @@ if (els.picksList) {
       showHoverChart(row.dataset.ticker, row);
     }
   });
+  // Same mouseover/mouseout pattern the scanner table uses — the
+  // shared onTickerEnter/Leave handlers key off any [data-ticker]
+  // ancestor, and .pick-row carries that attribute.
+  els.picksList.addEventListener('mouseover', onTickerEnter);
+  els.picksList.addEventListener('mouseout', onTickerLeave);
 }
 wireCollapse(els.picksToggle, els.picksBody, 'collapse_picks');
 loadPicks();

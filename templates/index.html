@@ -248,27 +248,27 @@
           <h4 class="picks-tune-h">Composite weights (sum auto-normalised)</h4>
           <p class="muted picks-tune-help">Higher = the signal matters more in the final composite. Set any to 0 to ignore it.</p>
           <div class="picks-weight-grid">
-            <label class="picks-weight">
+            <label class="picks-weight" title="VC — Volatility Contraction&#10;&#10;Formula: 20-day ATR ÷ 60-day ATR&#10;&#10;What it measures: how much the daily price range has compressed recently versus its 3-month baseline.&#10;&#10;Low ratio (well below 1) = range is tightening — a &quot;coiled spring&quot; that often precedes a sharp move. High score = strong contraction.&#10;Ratio near or above 1 = no compression. Low score.&#10;&#10;Why precursor: breakouts launch out of quiet, narrow consolidations, not noisy ones.">
               <span class="picks-weight-name">VC <span class="muted">Volatility contraction</span></span>
               <input id="picks-w-vc" type="range" min="0" max="100" step="5" value="25" />
               <span id="picks-w-vc-out" class="picks-weight-out">25</span>
             </label>
-            <label class="picks-weight">
+            <label class="picks-weight" title="RS — Relative Strength&#10;&#10;Formula: 20-day percent return, then percentile-ranked across the eligible universe.&#10;&#10;What it measures: how this ticker's last month of performance stacks up against every other stock that passed the price filter.&#10;&#10;Score = the percentile rank itself. A ticker at the 95th percentile (top 5% of the universe over 20 trading days) scores 95. The lowest performer scores 0.&#10;&#10;Why precursor: institutional money rotates into leaders. Strong RS means the stock is already on big-money screens before the next move.">
               <span class="picks-weight-name">RS <span class="muted">Relative strength</span></span>
               <input id="picks-w-rs" type="range" min="0" max="100" step="5" value="25" />
               <span id="picks-w-rs-out" class="picks-weight-out">25</span>
             </label>
-            <label class="picks-weight">
+            <label class="picks-weight" title="VA — Volume Accumulation&#10;&#10;Formula: 10-day average dollar volume ÷ 60-day average dollar volume.&#10;&#10;What it measures: whether dollars-traded over the last two weeks are running above the three-month baseline. Dollar volume (price × shares) is harder for a single trader to fake than raw share count.&#10;&#10;Ratio > 1 = participation is accelerating (high score).&#10;Ratio ≈ 1 or below = normal-or-quiet flow (low score).&#10;&#10;Why precursor: a stealth accumulation phase shows up as elevated dollar volume on otherwise quiet price action — institutional buyers leaving a footprint before the move.">
               <span class="picks-weight-name">VA <span class="muted">Volume accumulation</span></span>
               <input id="picks-w-va" type="range" min="0" max="100" step="5" value="20" />
               <span id="picks-w-va-out" class="picks-weight-out">20</span>
             </label>
-            <label class="picks-weight">
+            <label class="picks-weight" title="MT — Multi-Timeframe Trend Alignment&#10;&#10;Formula (binary check, 100 / 50 / 0):&#10;  Daily check:  close > EMA21 > EMA50&#10;  Weekly check: close > 10-week SMA&#10;&#10;Both pass → 100&#10;One passes → 50&#10;Neither   → 0&#10;&#10;What it measures: that short, intermediate, and weekly trends all agree. Daily EMAs in the right stack means short-term momentum is positive; the weekly SMA confirms the bigger picture isn't fighting it.&#10;&#10;Why precursor: best entries happen when every timeframe is aligned — no hidden overhead resistance from a broken weekly trend.">
               <span class="picks-weight-name">MT <span class="muted">Multi-timeframe trend</span></span>
               <input id="picks-w-mt" type="range" min="0" max="100" step="5" value="15" />
               <span id="picks-w-mt-out" class="picks-weight-out">15</span>
             </label>
-            <label class="picks-weight">
+            <label class="picks-weight" title="DP — Distance to 20-day Pivot High&#10;&#10;Formula: percent distance from current close to the highest high of the prior 20 trading days, then scored on a bell curve centred at 1.5% below the pivot.&#10;&#10;What it measures: whether the stock is sitting in the &quot;ripe but not yet broken&quot; zone.&#10;&#10;Score peaks at 100 when the stock is ~1.5% below its 20-day high (close enough to break out tomorrow, not yet extended).&#10;Score falls off if the stock is already above the pivot (chase risk) or far below it (still has work to do).&#10;&#10;Why precursor: catches setups before the breakout, not after — best risk/reward and tightest stop placement.">
               <span class="picks-weight-name">DP <span class="muted">Distance to 20-day pivot</span></span>
               <input id="picks-w-dp" type="range" min="0" max="100" step="5" value="15" />
               <span id="picks-w-dp-out" class="picks-weight-out">15</span>
