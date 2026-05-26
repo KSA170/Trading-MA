@@ -13,6 +13,7 @@
     <div class="status">
       <span id="status-text">idle</span>
       <span id="cache-status" class="cache-status" title="Disk-cache state for the selected universe. Cold runs hit Yahoo for every ticker and can take minutes."></span>
+      <span id="pruned-status" class="cache-status pruned-status" title="" hidden></span>
       <span id="snapshot-status" class="cache-status" title="Postgres snapshot status. Dates shown here are the ones screens can serve directly from the DB."></span>
       <button id="warm-btn" type="button" title="Pre-fetch every ticker's recent history to disk so the next screen reads from a local cache instead of Yahoo. Best run after market close.">Warm cache</button>
       <button id="run-btn" class="primary">Run screen</button>

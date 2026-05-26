@@ -4,6 +4,7 @@ const els = {
   runBtn: $('#run-btn'),
   warmBtn: $('#warm-btn'),
   cacheStatus: $('#cache-status'),
+  prunedStatus: $('#pruned-status'),
   snapshotStatus: $('#snapshot-status'),
   status: $('#status-text'),
   matchCount: $('#match-count'),
@@ -226,7 +227,71 @@ async function refreshCacheStatus() {
 
 function scheduleCacheStatus(delayMs = 350) {
   if (_cacheStatusTimer) clearTimeout(_cacheStatusTimer);
-  _cacheStatusTimer = setTimeout(refreshCacheStatus, delayMs);
+  _cacheStatusTimer = setTimeout(() => {
+    refreshCacheStatus();
+    refreshPrunedStatus();
+  }, delayMs);
+}
+
+// --- pruned-ticker indicator ---------------------------------------------
+// The warm-cache prune logic drops tickers from the universe after they
+// fail PRUNE_THRESHOLD consecutive days. Surface the count + a click
+// path to restore so it's not a black-box change.
+
+async function refreshPrunedStatus() {
+  if (!els.prunedStatus) return;
+  try {
+    const res = await fetch('/api/admin/pruned-tickers', { cache: 'no-store' });
+    if (!res.ok) return;
+    const s = await res.json();
+    const pruned = s.pruned || [];
+    const near = s.near_prune || [];
+    if (!pruned.length && !near.length) {
+      els.prunedStatus.hidden = true;
+      els.prunedStatus.textContent = '';
+      return;
+    }
+    els.prunedStatus.hidden = false;
+    const parts = [];
+    if (pruned.length) parts.push(`${pruned.length} pruned`);
+    if (near.length)   parts.push(`${near.length} near`);
+    els.prunedStatus.textContent = parts.join(' · ');
+    els.prunedStatus.classList.toggle('warn', pruned.length > 0);
+    const sample = pruned.slice(0, 10).join(', ');
+    const more = pruned.length > 10 ? `, +${pruned.length - 10} more` : '';
+    const nearTxt = near.length
+      ? `\n\n${near.length} ticker(s) ${'↑'} ${s.threshold} fail-days — one more failed day and they'll be pruned: ` + near.slice(0, 5).map((n) => `${n.ticker}(${n.fail_count})`).join(', ')
+      : '';
+    els.prunedStatus.title = pruned.length
+      ? `Auto-pruned by warm-cache after ${s.threshold} consecutive failed days. Click to restore all.\n\nPruned: ${sample}${more}${nearTxt}`
+      : `${near.length} ticker(s) approaching the prune threshold (${s.threshold} fail-days).${nearTxt}`;
+  } catch (_) { /* silent */ }
+}
+
+async function restorePrunedAll() {
+  if (!confirm('Restore all auto-pruned tickers and reset failure counters?')) return;
+  try {
+    const res = await fetch('/api/admin/pruned-tickers/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true }),
+    });
+    if (!res.ok) {
+      setStatus('restore failed: HTTP ' + res.status);
+      return;
+    }
+    const data = await res.json();
+    setStatus(`restored ${data.restored} ticker(s) to the universe`);
+    refreshPrunedStatus();
+    scheduleCacheStatus(100);
+  } catch (err) {
+    setStatus('restore failed: ' + (err && err.message ? err.message : 'network error'));
+  }
+}
+
+if (els.prunedStatus) {
+  els.prunedStatus.style.cursor = 'pointer';
+  els.prunedStatus.addEventListener('click', restorePrunedAll);
 }
 
 async function refreshSnapshotStatus() {

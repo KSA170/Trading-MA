@@ -316,6 +316,35 @@ def api_warm_status():
     })
 
 
+@app.route("/api/admin/pruned-tickers")
+def api_pruned_tickers():
+    """List tickers the warm-cache prune logic has dropped from the
+    universe — plus tickers approaching the threshold so the user can
+    see what's about to be dropped."""
+    return jsonify(screener.prune_status())
+
+
+@app.route("/api/admin/pruned-tickers/restore", methods=["POST"])
+def api_pruned_tickers_restore():
+    """Restore one or more pruned tickers. Body: {"tickers": [...]} for
+    a targeted restore, or {"all": true} to reset every counter and
+    unprune everything."""
+    payload = request.get_json(silent=True) or {}
+    tickers = payload.get("tickers")
+    if payload.get("all"):
+        tickers = None
+    elif tickers is not None and not isinstance(tickers, list):
+        return jsonify({"error": "tickers must be a list"}), 400
+    elif tickers is None:
+        return jsonify({"error": "specify {tickers: [...]} or {all: true}"}), 400
+    n = screener.restore_pruned(tickers)
+    # Force tickers.universe() to re-read the JSON so the next /api/screen
+    # call sees the restored ticker(s) without a server restart.
+    from tickers import invalidate_pruned_cache
+    invalidate_pruned_cache()
+    return jsonify({"restored": n, "status": screener.prune_status()})
+
+
 @app.route("/api/admin/snapshot", methods=["POST"])
 def api_take_snapshot():
     """Manually trigger a Postgres snapshot of the current pickle cache.

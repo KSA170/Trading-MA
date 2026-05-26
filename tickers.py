@@ -975,14 +975,23 @@ def fetch_tsx_listings() -> list[str]:
     return _TSX_FETCH_CACHE
 
 
+def invalidate_pruned_cache() -> None:
+    """Drop the in-memory pruned-ticker set so the next universe() call
+    re-reads the JSON. Called by the admin restore endpoint so a
+    restored ticker is back in the universe without a server restart."""
+    global _PRUNED_CACHE
+    _PRUNED_CACHE = None
+
+
 def refresh_universe() -> dict[str, int]:
     """Invalidate the in-memory + disk caches and rebuild from a fresh fetch.
     Returns the new size of each list (after refresh)."""
-    global _US_EXCHANGE_CACHE, _LISTS, _MEMBERSHIP, _TSX_FETCH_CACHE
+    global _US_EXCHANGE_CACHE, _LISTS, _MEMBERSHIP, _TSX_FETCH_CACHE, _PRUNED_CACHE
     _US_EXCHANGE_CACHE = None
     _LISTS = None
     _MEMBERSHIP = None
     _TSX_FETCH_CACHE = None
+    _PRUNED_CACHE = None
     _TICKER_NAMES.clear()
     try:
         for name in ("nasdaqlisted.txt", "otherlisted.txt", _SEC_CACHE_NAME, _TSX_CACHE_NAME):
@@ -1052,6 +1061,7 @@ LIST_LABELS: dict[str, str] = {
 
 _LISTS: dict[str, list[str]] | None = None
 _MEMBERSHIP: dict[str, set[str]] | None = None
+_PRUNED_CACHE: set[str] | None = None
 
 
 def _build_lists() -> dict[str, list[str]]:
@@ -1138,19 +1148,43 @@ def list_labels(keys: list[str]) -> list[str]:
     return [LIST_LABELS[k] for k in keys if k in LIST_LABELS]
 
 
+def _pruned_tickers() -> set[str]:
+    """Tickers currently pruned from the universe — read from the JSON
+    file the warm-cache prune logic (screener.py) maintains. Cached for
+    the lifetime of the process; refresh_universe() clears it."""
+    global _PRUNED_CACHE
+    if _PRUNED_CACHE is not None:
+        return _PRUNED_CACHE
+    try:
+        import json
+        path = _CACHE_DIR / "ticker_failures.json"
+        if not path.exists():
+            _PRUNED_CACHE = set()
+            return _PRUNED_CACHE
+        data = json.loads(path.read_text(encoding="utf-8"))
+        _PRUNED_CACHE = set(data.get("pruned") or [])
+    except Exception:
+        _PRUNED_CACHE = set()
+    return _PRUNED_CACHE
+
+
 def universe(selected: list[str] | None = None) -> list[str]:
-    """Tickers belonging to any of `selected` lists (de-duplicated, ordered).
-    Pass `None` or an empty list to get the union of every known list."""
+    """Tickers belonging to any of `selected` lists (de-duplicated, ordered),
+    minus any tickers pruned out of the universe by the warm-cache
+    failed-ticker tracker. Pass `None` or an empty list to get the union
+    of every known list."""
     lists = get_lists()
     if not selected:
         selected = list(lists.keys())
+    pruned = _pruned_tickers()
     seen: set[str] = set()
     out: list[str] = []
     for key in selected:
         for sym in lists.get(key, []):
-            if sym not in seen:
-                seen.add(sym)
-                out.append(sym)
+            if sym in seen or sym in pruned:
+                continue
+            seen.add(sym)
+            out.append(sym)
     return out
 
 

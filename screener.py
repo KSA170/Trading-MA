@@ -252,6 +252,181 @@ def cache_status(tickers: list[str]) -> dict:
     }
 
 
+# --- failed-ticker prune ---------------------------------------------------
+# A ticker that consistently has no Yahoo data (delisted, unrecognised
+# suffix, etc.) wastes warm-cache time on every run and produces nothing
+# downstream. Track per-ticker failure streaks across runs; after
+# PRUNE_THRESHOLD consecutive days of failing, drop the ticker from the
+# universe. tickers.py reads the same JSON file at universe-build time.
+#
+# Safety layers:
+#   * Bucketed by exchange — a high-failure run for one exchange (e.g. a
+#     bad Yahoo day for US tickers during a holiday) doesn't bump
+#     counters for other exchanges.
+#   * Day-bucketed — a ticker failing N times in one run still counts as
+#     one failure-day. Counter only ticks once per calendar day.
+#   * Suspicious-rate guard — if >SUSPICIOUS_FAIL_RATE of a bucket
+#     fails in one run, that bucket's counters are not touched (Yahoo
+#     outage / rate-limit, not per-ticker rot).
+#
+# Restore via /api/admin/pruned-tickers/restore.
+
+_PRUNE_STATE_PATH = _CACHE_DIR / "ticker_failures.json"
+PRUNE_THRESHOLD = 3  # consecutive failure days before pruning
+SUSPICIOUS_FAIL_RATE = 0.85
+_prune_lock = threading.Lock()
+
+
+def _exchange_bucket(ticker: str) -> str:
+    """Coarse bucket for the suspicious-rate guard. yfinance hiccups
+    tend to be exchange-wide, not universal."""
+    if ticker.endswith(".TO"):
+        return "tsx"
+    if ticker.endswith(".V"):
+        return "tsxv"
+    return "us"
+
+
+def _load_prune_state() -> dict:
+    try:
+        if not _PRUNE_STATE_PATH.exists():
+            return {"failures": {}, "pruned": []}
+        import json as _json
+        data = _json.loads(_PRUNE_STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"failures": {}, "pruned": []}
+        data.setdefault("failures", {})
+        data.setdefault("pruned", [])
+        return data
+    except Exception as exc:
+        log.warning("prune state read failed: %s", exc)
+        return {"failures": {}, "pruned": []}
+
+
+def _save_prune_state(state: dict) -> None:
+    try:
+        import json as _json
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _PRUNE_STATE_PATH.write_text(
+            _json.dumps(state, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception as exc:
+        log.warning("prune state write failed: %s", exc)
+
+
+def pruned_tickers() -> set[str]:
+    """Set of tickers currently pruned out of the universe."""
+    with _prune_lock:
+        return set(_load_prune_state().get("pruned") or [])
+
+
+def prune_status() -> dict:
+    """Snapshot of the prune state — total pruned + a sample of failing
+    tickers nearing the threshold. Used by the admin UI."""
+    with _prune_lock:
+        state = _load_prune_state()
+        failures = state.get("failures") or {}
+        # Tickers within one strike of pruning — useful warning.
+        watch = sorted(
+            (
+                (t, e.get("count", 0), e.get("last_fail_date"))
+                for t, e in failures.items()
+                if (e.get("count", 0) or 0) >= max(1, PRUNE_THRESHOLD - 1)
+                and t not in (state.get("pruned") or [])
+            ),
+            key=lambda r: -(r[1] or 0),
+        )[:25]
+        return {
+            "threshold": PRUNE_THRESHOLD,
+            "pruned": list(state.get("pruned") or []),
+            "near_prune": [
+                {"ticker": t, "fail_count": c, "last_fail_date": d}
+                for t, c, d in watch
+            ],
+        }
+
+
+def restore_pruned(tickers: list[str] | None) -> int:
+    """Restore one or more tickers to the universe. `tickers=None`
+    restores everything and resets all failure counters."""
+    with _prune_lock:
+        state = _load_prune_state()
+        if tickers is None:
+            n = len(state.get("pruned") or [])
+            state["pruned"] = []
+            state["failures"] = {}
+        else:
+            wanted = {t.strip().upper() for t in tickers if t}
+            before = len(state.get("pruned") or [])
+            state["pruned"] = [t for t in (state.get("pruned") or []) if t.upper() not in wanted]
+            n = before - len(state["pruned"])
+            for t in list(state.get("failures", {}).keys()):
+                if t.upper() in wanted:
+                    state["failures"].pop(t, None)
+        _save_prune_state(state)
+        return n
+
+
+def record_warm_results(succeeded: set[str], failed: set[str]) -> list[str]:
+    """Update per-ticker failure counters from the latest warm-cache run.
+    Returns the list of tickers freshly pruned by this run."""
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Group by exchange so the suspicious-rate guard fires per-exchange.
+    buckets: dict[str, tuple[list[str], list[str]]] = {}
+    for t in succeeded:
+        buckets.setdefault(_exchange_bucket(t), ([], []))[0].append(t)
+    for t in failed:
+        buckets.setdefault(_exchange_bucket(t), ([], []))[1].append(t)
+
+    newly_pruned: list[str] = []
+    with _prune_lock:
+        state = _load_prune_state()
+        failures = state.setdefault("failures", {})
+        pruned = state.setdefault("pruned", [])
+        pruned_set = set(pruned)
+
+        for exch, (succ, fail) in buckets.items():
+            total = len(succ) + len(fail)
+            if total == 0:
+                continue
+            rate = len(fail) / total
+            if rate > SUSPICIOUS_FAIL_RATE:
+                log.warning(
+                    "prune: skipping %s counter updates this run — %d/%d "
+                    "(%d%%) failed; treating as a Yahoo-side anomaly",
+                    exch, len(fail), total, int(rate * 100),
+                )
+                continue
+            # Successes clear the streak.
+            for t in succ:
+                failures.pop(t, None)
+            # Failures bump the streak — at most once per calendar day.
+            for t in fail:
+                entry = failures.get(t) or {"count": 0, "last_fail_date": None}
+                if entry.get("last_fail_date") == today:
+                    continue
+                entry["count"] = (entry.get("count") or 0) + 1
+                entry["last_fail_date"] = today
+                failures[t] = entry
+                if entry["count"] >= PRUNE_THRESHOLD and t not in pruned_set:
+                    pruned.append(t)
+                    pruned_set.add(t)
+                    newly_pruned.append(t)
+
+        _save_prune_state(state)
+
+    if newly_pruned:
+        sample = ", ".join(newly_pruned[:10])
+        log.info(
+            "prune: dropping %d ticker(s) from universe after %d consecutive "
+            "failed warm-cache days: %s%s",
+            len(newly_pruned), PRUNE_THRESHOLD, sample,
+            "…" if len(newly_pruned) > 10 else "",
+        )
+    return newly_pruned
+
+
 def _remember(ticker: str, ts: float, df: pd.DataFrame) -> None:
     """Put a ticker's frame into the in-memory LRU and evict overflow."""
     with _PRICE_CACHE_LOCK:
@@ -454,6 +629,12 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
                 _warm_state["total"] = len(tk)
 
             _FAIL_SAMPLE_CAP = 20
+            # Local sets — collected without the warm lock since they're
+            # only touched inside the pool threads, then handed to the
+            # prune logic atomically after the pool drains.
+            succeeded: set[str] = set()
+            failed: set[str] = set()
+            _result_lock = threading.Lock()
 
             def _one(t: str) -> None:
                 # Cancellation check — newly-started workers see the flag
@@ -481,6 +662,8 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
                             ok = False
                 except Exception:
                     ok = False
+                with _result_lock:
+                    (succeeded if ok else failed).add(t)
                 with _warm_lock:
                     _warm_state["done"] += 1
                     if not ok:
@@ -492,6 +675,18 @@ def warm_cache(tickers: list[str] | None = None, max_workers: int = 12) -> bool:
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 for _ in pool.map(_one, tk):
                     pass
+
+            # Update the per-ticker failure streak counters and prune
+            # any ticker that has now failed PRUNE_THRESHOLD calendar
+            # days in a row. Skipped (no-op) if the run was cancelled —
+            # partial data shouldn't be used to penalise tickers.
+            with _warm_lock:
+                was_cancelled = _warm_state["cancelled"]
+            if not was_cancelled:
+                try:
+                    record_warm_results(succeeded, failed)
+                except Exception as exc:
+                    log.warning("prune: record_warm_results failed: %s", exc)
         except Exception as exc:
             log.warning("warm-cache job failed: %s", exc)
         finally:
