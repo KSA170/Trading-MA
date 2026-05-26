@@ -62,6 +62,25 @@ const els = {
   setupsToggle: $('#setups-toggle'),
   setupsBody: $('#setups-body'),
   setupsList: $('#setups-list'),
+  picksToggle: $('#picks-toggle'),
+  picksBody: $('#picks-body'),
+  picksList: $('#picks-list'),
+  picksAsOf: $('#picks-as-of'),
+  picksTuneBtn: $('#picks-tune-btn'),
+  picksRunBtn: $('#picks-run-btn'),
+  picksTune: $('#picks-tune'),
+  picksWvc: $('#picks-w-vc'),
+  picksWrs: $('#picks-w-rs'),
+  picksWva: $('#picks-w-va'),
+  picksWmt: $('#picks-w-mt'),
+  picksWdp: $('#picks-w-dp'),
+  picksWvcOut: $('#picks-w-vc-out'),
+  picksWrsOut: $('#picks-w-rs-out'),
+  picksWvaOut: $('#picks-w-va-out'),
+  picksWmtOut: $('#picks-w-mt-out'),
+  picksWdpOut: $('#picks-w-dp-out'),
+  picksPriceMin: $('#picks-price-min'),
+  picksPriceMax: $('#picks-price-max'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
@@ -2191,6 +2210,156 @@ populateScopeValues();
 loadAlertScopes();
 loadRules();
 startRulesPolling();
+
+
+// --- nightly watchlist picker --------------------------------------------
+// Reads /api/picks for the latest persisted ranking, lets the user adjust
+// weights + price range, and re-ranks live via /api/picks/run. Saved
+// settings are picked up by the nightly cron at close+1hr.
+
+const _PICKS_WEIGHT_KEYS = ['vc', 'rs', 'va', 'mt', 'dp'];
+
+function picksWeightFromUI() {
+  const out = {};
+  for (const k of _PICKS_WEIGHT_KEYS) {
+    const el = els['picksW' + k];
+    out[k] = el ? Number(el.value) : 0;
+  }
+  return out;
+}
+
+function picksApplyWeightsToUI(weights) {
+  weights = weights || {};
+  for (const k of _PICKS_WEIGHT_KEYS) {
+    const el = els['picksW' + k];
+    const out = els['picksW' + k + 'Out'];
+    if (el && weights[k] !== undefined) el.value = String(weights[k]);
+    if (out && el) out.textContent = el.value;
+  }
+}
+
+function picksMiniBar(label, value) {
+  // Compact 0-100 bar used inline next to each picked ticker.
+  const v = Math.max(0, Math.min(100, Math.round(value || 0)));
+  return `
+    <span class="pick-bar" title="${escapeHtml(label)}: ${v}">
+      <span class="pick-bar-label">${escapeHtml(label)}</span>
+      <span class="pick-bar-track"><span class="pick-bar-fill" style="width:${v}%"></span></span>
+      <span class="pick-bar-val">${v}</span>
+    </span>
+  `;
+}
+
+function renderPicks(data) {
+  const picks = (data && data.picks) || [];
+  const cfg = (data && data.config) || null;
+  if (cfg) {
+    picksApplyWeightsToUI(cfg.weights);
+    if (els.picksPriceMin && cfg.price_min != null) els.picksPriceMin.value = String(cfg.price_min);
+    if (els.picksPriceMax && cfg.price_max != null) els.picksPriceMax.value = String(cfg.price_max);
+  }
+  if (!els.picksList) return;
+  if (!picks.length) {
+    if (els.picksAsOf) els.picksAsOf.textContent = '';
+    els.picksList.innerHTML = '<p class="muted history-empty">No picks yet — the nightly job hasn\'t run, or click "Re-rank now" to compute them on demand.</p>';
+    return;
+  }
+  if (els.picksAsOf) {
+    els.picksAsOf.textContent = `as of ${picks[0].pick_date || '?'}`;
+  }
+  const rows = picks.map((p) => {
+    const close = p.close != null ? `$${Number(p.close).toFixed(2)}` : '';
+    const ret = p.ret_20d != null ? `${(p.ret_20d * 100).toFixed(1)}%` : '';
+    const dist = p.dist_pivot != null ? `${p.dist_pivot.toFixed(1)}% from pivot` : '';
+    const atr = p.atr_ratio != null ? `ATR20/60 ${p.atr_ratio.toFixed(2)}` : '';
+    const dvol = p.dvol_ratio != null ? `dvol 10/60 ${p.dvol_ratio.toFixed(2)}` : '';
+    const metaParts = [ret, dist, atr, dvol].filter(Boolean);
+    return `
+      <div class="pick-row" data-ticker="${escapeHtml(p.ticker)}">
+        <span class="pick-rank">${p.rank}</span>
+        <span class="pick-ticker">${escapeHtml(p.ticker)}</span>
+        <span class="pick-close">${escapeHtml(close)}</span>
+        <span class="pick-composite" title="Composite — weighted sum of the 5 sub-scores">${Math.round(p.composite)}</span>
+        <span class="pick-bars">
+          ${picksMiniBar('VC', p.vc_score)}
+          ${picksMiniBar('RS', p.rs_score)}
+          ${picksMiniBar('VA', p.va_score)}
+          ${picksMiniBar('MT', p.mt_score)}
+          ${picksMiniBar('DP', p.dp_score)}
+        </span>
+        <span class="pick-meta muted">${escapeHtml(metaParts.join(' · '))}</span>
+      </div>
+    `;
+  });
+  els.picksList.innerHTML = rows.join('');
+}
+
+async function loadPicks() {
+  if (!els.picksList) return;
+  try {
+    const res = await fetch('/api/picks', { cache: 'no-store' });
+    if (!res.ok) return;
+    renderPicks(await res.json());
+  } catch (_) { /* silent */ }
+}
+
+async function runPicks() {
+  if (!els.picksRunBtn) return;
+  els.picksRunBtn.disabled = true;
+  const prevTxt = els.picksRunBtn.textContent;
+  els.picksRunBtn.textContent = 'Ranking…';
+  setStatus('Re-ranking watchlist — this may take 5-30s…');
+  try {
+    const body = {
+      weights:   picksWeightFromUI(),
+      price_min: Number(els.picksPriceMin && els.picksPriceMin.value) || 0,
+      price_max: Number(els.picksPriceMax && els.picksPriceMax.value) || 1000,
+      save: true,
+    };
+    const res = await fetch('/api/picks/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus('Re-rank failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    renderPicks(data);
+    setStatus(`Re-ranked ${data.picks ? data.picks.length : 0} picks for ${data.as_of || '?'}`);
+  } catch (err) {
+    setStatus('Re-rank failed: ' + (err && err.message ? err.message : 'network error'));
+  } finally {
+    els.picksRunBtn.disabled = false;
+    els.picksRunBtn.textContent = prevTxt;
+  }
+}
+
+// Update the slider readouts as the user drags.
+for (const k of _PICKS_WEIGHT_KEYS) {
+  const el = els['picksW' + k];
+  const out = els['picksW' + k + 'Out'];
+  if (el && out) el.addEventListener('input', () => { out.textContent = el.value; });
+}
+if (els.picksTuneBtn && els.picksTune) {
+  els.picksTuneBtn.addEventListener('click', () => {
+    els.picksTune.classList.toggle('hidden');
+    els.picksTuneBtn.textContent = els.picksTune.classList.contains('hidden') ? 'Tune…' : 'Hide tuning';
+  });
+}
+if (els.picksRunBtn) els.picksRunBtn.addEventListener('click', runPicks);
+// Click a pick row → open the hover chart for that ticker.
+if (els.picksList) {
+  els.picksList.addEventListener('click', (ev) => {
+    const row = ev.target.closest('.pick-row');
+    if (row && row.dataset.ticker) {
+      showHoverChart(row.dataset.ticker, row);
+    }
+  });
+}
+wireCollapse(els.picksToggle, els.picksBody, 'collapse_picks');
+loadPicks();
 
 
 // --- setups scanner ------------------------------------------------------

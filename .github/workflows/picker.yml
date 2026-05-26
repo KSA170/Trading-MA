@@ -1,0 +1,36 @@
+name: Nightly watchlist picker
+
+# Ranks every snapshot ticker by the 5-signal composite (VC / RS / VA /
+# MT / DP) and writes the top 10 to the nightly_picks table + sends a
+# Telegram digest. Reads from the daily_snapshot table, so the snapshot
+# writer (post-warm-cache) must have run for today before this fires.
+#
+# Cron: 22:00 UTC weekdays = market close + 2hr in EDT, close + 3hr in
+# EST. Picks the right scheduling window for either DST state.
+on:
+  schedule:
+    - cron: '0 22 * * 1-5'
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly-picker
+  cancel-in-progress: false
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run nightly picker
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python picker_cron.py

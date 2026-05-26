@@ -229,6 +229,67 @@
       </div>
     </section>
 
+    <section class="match-history picks-panel">
+      <button id="picks-toggle" type="button" class="section-toggle" aria-controls="picks-body" aria-expanded="true">
+        <span class="chevron">▾</span> Watchlist — tonight's picks <span class="muted">(top 10, ranked by composite signal — runs nightly at close+1hr)</span>
+      </button>
+      <div id="picks-body" class="history-body">
+        <div class="picks-header">
+          <span id="picks-as-of" class="muted"></span>
+          <span class="rule-spacer"></span>
+          <button id="picks-tune-btn" type="button" title="Show / hide the weight + price-range tuning panel">Tune…</button>
+          <button id="picks-run-btn" type="button" title="Re-rank the universe right now with the current settings (synchronous, ~5-30s)">Re-rank now</button>
+        </div>
+        <div id="picks-list">
+          <p class="muted history-empty">No picks yet — the nightly job hasn't run, or click "Re-rank now" to compute them on demand.</p>
+        </div>
+
+        <div id="picks-tune" class="picks-tune hidden">
+          <h4 class="picks-tune-h">Composite weights (sum auto-normalised)</h4>
+          <p class="muted picks-tune-help">Higher = the signal matters more in the final composite. Set any to 0 to ignore it.</p>
+          <div class="picks-weight-grid">
+            <label class="picks-weight">
+              <span class="picks-weight-name">VC <span class="muted">Volatility contraction</span></span>
+              <input id="picks-w-vc" type="range" min="0" max="100" step="5" value="25" />
+              <span id="picks-w-vc-out" class="picks-weight-out">25</span>
+            </label>
+            <label class="picks-weight">
+              <span class="picks-weight-name">RS <span class="muted">Relative strength</span></span>
+              <input id="picks-w-rs" type="range" min="0" max="100" step="5" value="25" />
+              <span id="picks-w-rs-out" class="picks-weight-out">25</span>
+            </label>
+            <label class="picks-weight">
+              <span class="picks-weight-name">VA <span class="muted">Volume accumulation</span></span>
+              <input id="picks-w-va" type="range" min="0" max="100" step="5" value="20" />
+              <span id="picks-w-va-out" class="picks-weight-out">20</span>
+            </label>
+            <label class="picks-weight">
+              <span class="picks-weight-name">MT <span class="muted">Multi-timeframe trend</span></span>
+              <input id="picks-w-mt" type="range" min="0" max="100" step="5" value="15" />
+              <span id="picks-w-mt-out" class="picks-weight-out">15</span>
+            </label>
+            <label class="picks-weight">
+              <span class="picks-weight-name">DP <span class="muted">Distance to 20-day pivot</span></span>
+              <input id="picks-w-dp" type="range" min="0" max="100" step="5" value="15" />
+              <span id="picks-w-dp-out" class="picks-weight-out">15</span>
+            </label>
+          </div>
+          <h4 class="picks-tune-h">Price range</h4>
+          <div class="picks-price-grid">
+            <label class="picks-price">
+              <span>Min ($)</span>
+              <input id="picks-price-min" type="number" min="0" step="0.5" value="5" />
+            </label>
+            <label class="picks-price">
+              <span>Max ($)</span>
+              <input id="picks-price-max" type="number" min="0" step="5" value="1000" />
+            </label>
+          </div>
+          <p class="muted picks-tune-help">Saved settings are reused by the nightly cron at close+1hr.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="match-history setups-panel">
       <button id="setups-toggle" type="button" class="section-toggle" aria-controls="setups-body" aria-expanded="true">
         <span class="chevron">▾</span> Setups <span class="muted">(base-breakout / momentum-ignition candidates from the latest snapshot)</span>

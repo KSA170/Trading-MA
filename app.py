@@ -23,6 +23,7 @@ import screener
 import snapshots
 import alerts
 import pattern_scan
+import picker
 from tickers import LIST_LABELS, refresh_universe, last_fetch_errors
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -793,11 +794,75 @@ def api_alerts_scopes():
     return jsonify(alerts.list_scopes())
 
 
+# --- nightly picker -------------------------------------------------------
+# Stage 1 of the watchlist workflow: rank every snapshot ticker by the
+# 5-signal composite (VC / RS / VA / MT / DP) and surface the top 10.
+# /api/picks returns the most recent persisted ranking; /api/picks/run
+# re-ranks live using the supplied (or saved) config; /api/picks/config
+# persists weights + price range for the nightly cron to pick up.
+
+@app.route("/api/picks", methods=["GET"])
+def api_picks():
+    return jsonify({
+        "picks":  picker.load_picks(),
+        "config": picker.get_config(),
+    })
+
+
+@app.route("/api/picks/run", methods=["POST"])
+def api_picks_run():
+    """Re-rank the universe now. Synchronous — expect 5-30s depending
+    on universe size. Body: {weights?, price_min?, price_max?, save?}.
+    `save=true` (default) overwrites the latest persisted picks and
+    saves the config so the next nightly cron uses these settings."""
+    payload = request.get_json(silent=True) or {}
+    cfg = picker.get_config()
+    weights = payload.get("weights")
+    if not isinstance(weights, dict):
+        weights = cfg["weights"]
+    try:
+        price_min = float(payload.get("price_min", cfg["price_min"]))
+        price_max = float(payload.get("price_max", cfg["price_max"]))
+    except (TypeError, ValueError):
+        return jsonify({"error": "price_min / price_max must be numeric"}), 400
+    save = bool(payload.get("save", True))
+
+    picks, as_of = picker.rank_universe(
+        weights=weights, price_min=price_min, price_max=price_max,
+        limit=picker.DEFAULT_LIMIT,
+    )
+    if save:
+        picker.save_config(weights, price_min, price_max)
+        if picks and as_of:
+            picker.save_picks(picks, as_of)
+    return jsonify({
+        "picks": picks,
+        "as_of": as_of,
+        "config": picker.get_config(),
+    })
+
+
+@app.route("/api/picks/config", methods=["POST"])
+def api_picks_config():
+    """Save picker config without recomputing."""
+    payload = request.get_json(silent=True) or {}
+    cfg = picker.get_config()
+    weights = payload.get("weights") if isinstance(payload.get("weights"), dict) else cfg["weights"]
+    try:
+        price_min = float(payload.get("price_min", cfg["price_min"]))
+        price_max = float(payload.get("price_max", cfg["price_max"]))
+    except (TypeError, ValueError):
+        return jsonify({"error": "price_min / price_max must be numeric"}), 400
+    ok = picker.save_config(weights, price_min, price_max)
+    return jsonify({"saved": ok, "config": picker.get_config()})
+
+
 # Provision the Postgres snapshot + alert tables (no-ops when DATABASE_URL
 # is unset), then kick off the daily auto-warm scheduler. The auto-warm
 # thread will write a snapshot row per ticker when each warm completes.
 snapshots.init()
 alerts.init_tables()
+picker.init_tables()
 screener.start_auto_warm()
 
 

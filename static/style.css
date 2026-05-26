@@ -1035,3 +1035,138 @@ table.sortable th.th-drag-over {
   margin: 0 0 8px;
   font-size: 12px;
 }
+
+/* --- Watchlist (nightly picker) panel --- */
+.picks-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 8px;
+  font-size: 12px;
+}
+.picks-header .rule-spacer { flex: 1; }
+#picks-as-of { font-size: 12px; }
+.pick-row {
+  display: grid;
+  grid-template-columns: 24px 80px 64px 48px 1fr minmax(180px, 1.2fr);
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  margin-bottom: 4px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.pick-row:hover { border-color: var(--accent); }
+.pick-rank { color: var(--muted); font-size: 12px; text-align: right; }
+.pick-ticker { font-weight: 600; }
+.pick-close { color: var(--muted); font-size: 12px; }
+.pick-composite {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 14px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(88, 166, 255, 0.12);
+  text-align: center;
+}
+.pick-bars { display: flex; gap: 6px; flex-wrap: wrap; }
+.pick-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--muted);
+  min-width: 0;
+}
+.pick-bar-label { font-weight: 600; color: var(--text); width: 18px; }
+.pick-bar-track {
+  width: 50px;
+  height: 6px;
+  background: var(--panel);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.pick-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.pick-bar-val {
+  width: 18px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.pick-meta { font-size: 11px; }
+
+.picks-tune {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+.picks-tune.hidden { display: none; }
+.picks-tune-h {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 6px 0 6px;
+}
+.picks-tune-help { font-size: 11px; margin: 0 0 8px; }
+.picks-weight-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.picks-weight {
+  display: grid;
+  grid-template-columns: 1fr 110px 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.picks-weight-name { font-weight: 600; }
+.picks-weight-out {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+  text-align: right;
+}
+.picks-weight input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.picks-price-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.picks-price {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.picks-price span { color: var(--muted); }
+.picks-price input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}
