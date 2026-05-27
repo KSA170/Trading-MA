@@ -126,6 +126,27 @@ def init_tables() -> None:
 
 # --- raw signal extraction -------------------------------------------------
 
+def _is_warrant_unit_or_right(ticker: str) -> bool:
+    """Per Nasdaq's 5-character ticker convention, the 5th letter
+    encodes the security type. We exclude these from the watchlist:
+
+      *W = warrant      (e.g. MOBBW, NUAIW)
+      *U = unit         (SPAC pre-split)
+      *R = rights
+
+    These instruments derive their price from the underlying, have
+    sparse trading history (often only a few months), and the 20-day
+    return signal goes haywire when they climb off a near-zero base.
+
+    The check is intentionally narrow — only triggers on 5-char,
+    pure-letter, uppercase symbols (e.g. NYSE share-class symbols like
+    'BRK-B' or TSX symbols like 'RY.TO' contain non-letters and pass
+    through)."""
+    if not ticker or len(ticker) != 5 or not ticker.isalpha():
+        return False
+    return ticker[-1] in ("W", "U", "R")
+
+
 def _bars_from_snapshot_row(row: dict) -> list[dict] | None:
     """Pull the OHLCV bars list out of a snapshot row's recent_bars
     JSONB. Returns None if the row has too few or malformed bars."""
@@ -141,8 +162,13 @@ def _bars_from_snapshot_row(row: dict) -> list[dict] | None:
     if not isinstance(rb, dict):
         return None
     bars = rb.get("bars")
-    if not isinstance(bars, list) or len(bars) < 21:
-        # Need at least 21 bars for the 20-day return shift.
+    # Hard floor: 60 bars. The VC and VA signals both denominate with
+    # a 60-day average. Anything shorter triggers the "use fewer bars"
+    # fallback that lets newly-listed warrants and SPACs through with
+    # scoring artifacts (atr60 ≈ atr20 → neutral VC; 10d dvol >> all-
+    # time dvol → score-100 VA on a price spike that's actually their
+    # entire history).
+    if not isinstance(bars, list) or len(bars) < 60:
         return None
     return bars
 
@@ -177,18 +203,20 @@ def _compute_raw_metrics(row: dict) -> dict | None:
         np.abs(highs - prev_c),
         np.abs(lows - prev_c),
     ])
-    # Need at least 60 bars for the denominator; use what's available
-    # but require ≥ 30 for a meaningful contraction read.
-    if n < 30:
-        return None
-    atr20 = float(np.nanmean(tr[-20:])) if n >= 20 else float(np.nanmean(tr))
-    atr60 = float(np.nanmean(tr[-60:])) if n >= 60 else float(np.nanmean(tr))
+    # Bar-count floor is enforced upstream in _bars_from_snapshot_row
+    # (n >= 60). Both VC and VA need a full 60-bar denominator.
+    atr20 = float(np.nanmean(tr[-20:]))
+    atr60 = float(np.nanmean(tr[-60:]))
     if atr60 <= 0 or not np.isfinite(atr20) or not np.isfinite(atr60):
         return None
     vc_ratio = atr20 / atr60   # < 1 = contracting
 
     # --- RS: Relative Strength (20d return) ---------------------------
-    if n < 21 or closes[-21] <= 0:
+    # Reject tickers climbing off a near-zero base — that's the
+    # warrant / penny-spike artifact (closes[-21] = $0.05, closes[-1] =
+    # $2 → ret_20d = 39 = 3900%, which clamps RS to 100). Require the
+    # 21-day-ago close to be at least $1 to even count.
+    if closes[-21] < 1.0:
         return None
     ret_20d = float(closes[-1] / closes[-21] - 1.0)
 
@@ -196,9 +224,12 @@ def _compute_raw_metrics(row: dict) -> dict | None:
     dvol = closes * vols
     if not np.isfinite(dvol).any():
         return None
-    dvol10 = float(np.nanmean(dvol[-10:])) if n >= 10 else float(np.nanmean(dvol))
-    dvol60 = float(np.nanmean(dvol[-60:])) if n >= 60 else float(np.nanmean(dvol))
-    if dvol60 <= 0 or not np.isfinite(dvol10) or not np.isfinite(dvol60):
+    dvol10 = float(np.nanmean(dvol[-10:]))
+    dvol60 = float(np.nanmean(dvol[-60:]))
+    # Absolute liquidity floor: at least $1M average daily dollar
+    # volume over the last 60 sessions. Kills illiquid warrants and
+    # micro-caps that the relative ratio alone lets slip through.
+    if dvol60 < 1_000_000 or not np.isfinite(dvol10) or not np.isfinite(dvol60):
         return None
     va_ratio = dvol10 / dvol60   # > 1 = accumulating
 
@@ -323,7 +354,11 @@ def rank_universe(
 
     t0 = time.time()
     raw_rows: list[dict] = []
+    skipped_warrants = 0
     for ticker, row in snapshots.iter_for_date(as_of):
+        if _is_warrant_unit_or_right(ticker):
+            skipped_warrants += 1
+            continue
         close = row.get("close")
         if close is None or not (price_min <= float(close) <= price_max):
             continue
@@ -332,6 +367,9 @@ def rank_universe(
             continue
         m["ticker"] = ticker
         raw_rows.append(m)
+    if skipped_warrants:
+        log.info("picker: filtered out %d warrant/unit/right ticker(s)",
+                 skipped_warrants)
 
     if not raw_rows:
         log.warning("picker.rank_universe: 0 eligible tickers for %s "
