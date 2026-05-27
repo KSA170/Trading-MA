@@ -81,6 +81,18 @@ const els = {
   picksWdpOut: $('#picks-w-dp-out'),
   picksPriceMin: $('#picks-price-min'),
   picksPriceMax: $('#picks-price-max'),
+  momentumToggle: $('#momentum-toggle'),
+  momentumBody: $('#momentum-body'),
+  momentumList: $('#momentum-list'),
+  momentumAsOf: $('#momentum-as-of'),
+  momentumCount: $('#momentum-count'),
+  momentumPctChange: $('#momentum-pct-change'),
+  momentumRvol: $('#momentum-rvol'),
+  momentumRvolLookback: $('#momentum-rvol-lookback'),
+  momentumHighLookback: $('#momentum-high-lookback'),
+  momentumVolMcap: $('#momentum-vol-mcap'),
+  momentumSaveBtn: $('#momentum-save-btn'),
+  momentumSaveMsg: $('#momentum-save-msg'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
@@ -2415,6 +2427,152 @@ if (els.picksList) {
 wireCollapse(els.picksToggle, els.picksBody, 'collapse_picks');
 loadPicks();
 startPicksPolling();
+
+
+// --- real-time momentum scanner ------------------------------------------
+// Reads /api/momentum/alerts for today's hits and renders them; persists
+// threshold changes via /api/momentum/config. The cron worker
+// (scanner_momentum.py) reads the same config and fires Telegram +
+// inserts a row here, which the panel picks up on the next poll.
+
+function momentumApplyConfigToUI(cfg) {
+  if (!cfg) return;
+  if (els.momentumPctChange && cfg.pct_change_min != null)
+    els.momentumPctChange.value = String(cfg.pct_change_min);
+  if (els.momentumRvol && cfg.rvol_min != null)
+    els.momentumRvol.value = String(cfg.rvol_min);
+  if (els.momentumRvolLookback && cfg.rvol_lookback != null)
+    els.momentumRvolLookback.value = String(cfg.rvol_lookback);
+  if (els.momentumHighLookback && cfg.high_lookback != null)
+    els.momentumHighLookback.value = String(cfg.high_lookback);
+  if (els.momentumVolMcap && cfg.vol_mcap_min != null)
+    els.momentumVolMcap.value = String(cfg.vol_mcap_min);
+}
+
+function momentumConfigFromUI() {
+  return {
+    pct_change_min: Number(els.momentumPctChange && els.momentumPctChange.value) || 0,
+    rvol_min:       Number(els.momentumRvol && els.momentumRvol.value) || 0,
+    rvol_lookback:  Number(els.momentumRvolLookback && els.momentumRvolLookback.value) || 0,
+    high_lookback:  Number(els.momentumHighLookback && els.momentumHighLookback.value) || 0,
+    vol_mcap_min:   Number(els.momentumVolMcap && els.momentumVolMcap.value) || 0,
+  };
+}
+
+function renderMomentumAlerts(alerts) {
+  if (!els.momentumList) return;
+  alerts = alerts || [];
+  if (els.momentumAsOf) {
+    els.momentumAsOf.textContent = alerts.length
+      ? `as of ${alerts[0].alert_date || '?'}`
+      : '';
+  }
+  if (els.momentumCount) {
+    els.momentumCount.textContent = alerts.length
+      ? `${alerts.length} alert${alerts.length === 1 ? '' : 's'} today`
+      : '';
+  }
+  if (!alerts.length) {
+    els.momentumList.innerHTML = '<p class="muted history-empty">No alerts yet today. The scanner runs every ~5 min during US market hours.</p>';
+    return;
+  }
+  const rows = alerts.map((a) => {
+    const t   = a.ticker || '';
+    const px  = a.price != null ? `$${Number(a.price).toFixed(2)}` : '';
+    const pct = a.pct_change != null ? `+${Number(a.pct_change).toFixed(1)}%` : '';
+    const rv  = a.rvol != null ? `${Number(a.rvol).toFixed(1)}×` : '';
+    const vf  = a.vol_mcap_pct != null ? `${Number(a.vol_mcap_pct).toFixed(2)}%` : '';
+    const nh  = a.new_high != null ? `> $${Number(a.new_high).toFixed(2)}` : '';
+    const fired = a.fired_at ? formatTriggerTime(a.fired_at) : '';
+    return `
+      <div class="momentum-row" data-ticker="${escapeHtml(t)}">
+        <span class="momentum-time">${escapeHtml(fired)}</span>
+        <span class="momentum-ticker">${escapeHtml(t)}</span>
+        <span class="momentum-price">${escapeHtml(px)}</span>
+        <span class="momentum-metric momentum-pct" title="% change vs prior trading day's close">${escapeHtml(pct)}</span>
+        <span class="momentum-metric" title="Relative volume — today's volume / prior N-day avg">${escapeHtml(rv)} RVOL</span>
+        <span class="momentum-metric" title="Today's intraday high broke the prior N-day high">new high ${escapeHtml(nh)}</span>
+        <span class="momentum-metric" title="Today's volume / shares outstanding">${escapeHtml(vf)} float</span>
+      </div>
+    `;
+  });
+  els.momentumList.innerHTML = rows.join('');
+}
+
+async function loadMomentumConfig() {
+  try {
+    const res = await fetch('/api/momentum/config', { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    momentumApplyConfigToUI(data.config);
+  } catch (_) { /* silent */ }
+}
+
+async function loadMomentumAlerts() {
+  if (!els.momentumList) return;
+  try {
+    const res = await fetch('/api/momentum/alerts', { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderMomentumAlerts(data.alerts || []);
+  } catch (_) { /* silent */ }
+}
+
+async function saveMomentumConfig() {
+  if (!els.momentumSaveBtn) return;
+  const prevTxt = els.momentumSaveBtn.textContent;
+  els.momentumSaveBtn.disabled = true;
+  els.momentumSaveBtn.textContent = 'Saving…';
+  if (els.momentumSaveMsg) els.momentumSaveMsg.textContent = '';
+  try {
+    const res = await fetch('/api/momentum/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(momentumConfigFromUI()),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (els.momentumSaveMsg) els.momentumSaveMsg.textContent = 'Save failed: ' + (data.error || ('HTTP ' + res.status));
+      return;
+    }
+    momentumApplyConfigToUI(data.config);
+    if (els.momentumSaveMsg) {
+      els.momentumSaveMsg.textContent = 'Saved.';
+      setTimeout(() => { if (els.momentumSaveMsg) els.momentumSaveMsg.textContent = ''; }, 2500);
+    }
+  } catch (err) {
+    if (els.momentumSaveMsg) els.momentumSaveMsg.textContent = 'Save failed: ' + (err && err.message ? err.message : 'network error');
+  } finally {
+    els.momentumSaveBtn.disabled = false;
+    els.momentumSaveBtn.textContent = prevTxt;
+  }
+}
+
+// Auto-refresh alerts every 60s — cron fires at 5-min cadence so
+// anything faster is wasted work.
+let _momentumPollTimer = null;
+function startMomentumPolling() {
+  if (_momentumPollTimer) return;
+  _momentumPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') loadMomentumAlerts();
+  }, 60_000);
+}
+
+if (els.momentumSaveBtn) els.momentumSaveBtn.addEventListener('click', saveMomentumConfig);
+if (els.momentumList) {
+  els.momentumList.addEventListener('click', (ev) => {
+    const row = ev.target.closest('.momentum-row');
+    if (row && row.dataset.ticker) {
+      showHoverChart(row.dataset.ticker, row);
+    }
+  });
+  els.momentumList.addEventListener('mouseover', onTickerEnter);
+  els.momentumList.addEventListener('mouseout', onTickerLeave);
+}
+wireCollapse(els.momentumToggle, els.momentumBody, 'collapse_momentum');
+loadMomentumConfig();
+loadMomentumAlerts();
+startMomentumPolling();
 
 
 // --- setups scanner ------------------------------------------------------

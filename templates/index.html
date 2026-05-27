@@ -290,6 +290,51 @@
       </div>
     </section>
 
+    <section class="match-history momentum-panel">
+      <button id="momentum-toggle" type="button" class="section-toggle" aria-controls="momentum-body" aria-expanded="true">
+        <span class="chevron">▾</span> Real-time momentum scanner <span class="muted">(scans the full universe every ~5 min in market hours · fires when all four filters pass · Telegram + this panel)</span>
+      </button>
+      <div id="momentum-body" class="history-body">
+        <div class="momentum-config">
+          <label class="momentum-field" title="Today's % change vs prior trading day's close. Filter passes when today's gain is at or above this threshold.">
+            <span>Min % change today</span>
+            <input id="momentum-pct-change" type="number" min="0" step="0.5" value="5" />
+            <span class="momentum-unit">%</span>
+          </label>
+          <label class="momentum-field" title="Today's cumulative volume divided by the average daily volume of the prior N trading days. A reading of 5× means today's volume so far is 5 times the typical daily volume.">
+            <span>Min relative volume</span>
+            <input id="momentum-rvol" type="number" min="0" step="0.5" value="5" />
+            <span class="momentum-unit">×</span>
+          </label>
+          <label class="momentum-field" title="Number of prior trading days used as the denominator for the relative-volume check.">
+            <span>RVOL lookback</span>
+            <input id="momentum-rvol-lookback" type="number" min="1" max="60" step="1" value="20" />
+            <span class="momentum-unit">d</span>
+          </label>
+          <label class="momentum-field" title="Filter passes when today's intraday high prints strictly above the highest high of the prior N trading days.">
+            <span>New-high lookback</span>
+            <input id="momentum-high-lookback" type="number" min="1" max="60" step="1" value="20" />
+            <span class="momentum-unit">d</span>
+          </label>
+          <label class="momentum-field" title="Today's volume divided by the company's shares outstanding (a proxy for % of float traded today). 0.5% is loose enough to keep large caps in; raise to 2-5% to focus on small/mid caps with extreme participation.">
+            <span>Min vol/float</span>
+            <input id="momentum-vol-mcap" type="number" min="0" step="0.1" value="0.5" />
+            <span class="momentum-unit">%</span>
+          </label>
+          <button id="momentum-save-btn" type="button" title="Persist these thresholds. The next cron run (every ~5 min) will pick them up automatically.">Save</button>
+          <span id="momentum-save-msg" class="muted"></span>
+        </div>
+        <div class="momentum-header">
+          <span id="momentum-as-of" class="muted"></span>
+          <span class="rule-spacer"></span>
+          <span id="momentum-count" class="muted"></span>
+        </div>
+        <div id="momentum-list">
+          <p class="muted history-empty">No alerts yet today. The scanner runs every ~5 min during US market hours.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="match-history setups-panel">
       <button id="setups-toggle" type="button" class="section-toggle" aria-controls="setups-body" aria-expanded="true">
         <span class="chevron">▾</span> Setups <span class="muted">(base-breakout / momentum-ignition candidates from the latest snapshot)</span>

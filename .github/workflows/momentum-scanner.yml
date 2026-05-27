@@ -1,0 +1,69 @@
+name: Real-time momentum scanner
+
+# Scans the full snapshot universe (~5,000 US tickers) every ~5 min
+# during US market hours and fires a Telegram alert the first time each
+# ticker passes all four configurable filters in scanner_momentum.py:
+#
+#   price change % today  |  relative volume  |  new N-day high  |
+#   today vol / shares outstanding
+#
+# Idempotent via momentum_scanner_alerts PK on (alert_date, ticker):
+# rerunning the cron multiple times the same day re-sends zero alerts.
+#
+# Triggered via external cron (cron-job.org → workflow_dispatch) at
+# 5-minute cadence, same pattern as alerts.yml and picker-intraday.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force-run: scan even if market closed (testing only)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: momentum-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Market-hours gate
+        id: gate
+        env:
+          FORCE_RUN: ${{ inputs.force_run }}
+        run: |
+          DOW=$(TZ=America/New_York date +%u)
+          HHMM=$((10#$(TZ=America/New_York date +%H%M)))
+          PROCEED=false
+          if [ "$DOW" -le 5 ] && [ "$HHMM" -ge 930 ] && [ "$HHMM" -le 1600 ]; then
+            PROCEED=true
+          fi
+          if [ "$FORCE_RUN" = "true" ]; then
+            PROCEED=true
+          fi
+          echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
+          echo "ET now: $(TZ=America/New_York date '+%a %Y-%m-%d %H:%M')  ->  proceed=$PROCEED"
+      - name: Checkout
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/checkout@v5
+      - name: Setup Python
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        if: steps.gate.outputs.proceed == 'true'
+        run: pip install -r requirements.txt
+      - name: Run momentum scanner
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MOMENTUM_SCANNER_FORCE_RUN: ${{ inputs.force_run }}
+        run: python scanner_momentum.py

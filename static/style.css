@@ -1193,3 +1193,76 @@ table.sortable th.th-drag-over {
   padding-top: 4px;
   border-top: 1px dashed var(--border);
 }
+
+/* Real-time momentum scanner panel ------------------------------------- */
+.momentum-config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+  padding: 6px 0 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.momentum-field {
+  display: grid;
+  grid-template-columns: 1fr 70px auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  min-width: 220px;
+}
+.momentum-field span:first-child { color: var(--muted); }
+.momentum-field input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.momentum-unit { color: var(--muted); font-size: 11px; }
+#momentum-save-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+}
+#momentum-save-msg { font-size: 11px; }
+
+.momentum-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 6px;
+  font-size: 12px;
+}
+.momentum-header .rule-spacer { flex: 1; }
+
+.momentum-row {
+  display: grid;
+  grid-template-columns: 56px 80px 64px 64px 1fr 1fr 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  margin-bottom: 4px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+.momentum-row:hover { border-color: var(--accent); }
+.momentum-time { color: var(--muted); font-size: 11px; }
+.momentum-ticker { font-weight: 600; }
+.momentum-price { color: var(--muted); }
+.momentum-pct {
+  font-weight: 700;
+  color: var(--green);
+}
+.momentum-metric { color: var(--muted); }
