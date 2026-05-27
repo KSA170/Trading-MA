@@ -24,6 +24,7 @@ import snapshots
 import alerts
 import pattern_scan
 import picker
+import scanner_momentum
 from tickers import LIST_LABELS, refresh_universe, last_fetch_errors
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -866,12 +867,51 @@ def api_picks_config():
     return jsonify({"saved": ok, "config": picker.get_config()})
 
 
+# --- real-time momentum scanner -------------------------------------------
+# Independent of the nightly watchlist. Walks the full snapshot universe
+# every 5 min during market hours via .github/workflows/momentum-scanner.yml
+# and fires Telegram whenever a ticker passes all 4 filters (pct change,
+# RVOL, new N-day high, vol/mcap). UI panel lets the user tune thresholds;
+# /api/momentum/alerts feeds today's hit list back to the panel.
+
+@app.route("/api/momentum/config", methods=["GET"])
+def api_momentum_config():
+    return jsonify({"config": scanner_momentum.get_config()})
+
+
+@app.route("/api/momentum/config", methods=["POST"])
+def api_momentum_save_config():
+    payload = request.get_json(silent=True) or {}
+    cfg = scanner_momentum.get_config()
+    try:
+        pct_change_min = float(payload.get("pct_change_min", cfg["pct_change_min"]))
+        rvol_min       = float(payload.get("rvol_min",       cfg["rvol_min"]))
+        rvol_lookback  = int(payload.get("rvol_lookback",    cfg["rvol_lookback"]))
+        high_lookback  = int(payload.get("high_lookback",    cfg["high_lookback"]))
+        vol_mcap_min   = float(payload.get("vol_mcap_min",   cfg["vol_mcap_min"]))
+    except (TypeError, ValueError):
+        return jsonify({"error": "all fields must be numeric"}), 400
+    if rvol_lookback < 1 or high_lookback < 1:
+        return jsonify({"error": "lookback windows must be >= 1 day"}), 400
+    ok = scanner_momentum.save_config(
+        pct_change_min, rvol_min, rvol_lookback, high_lookback, vol_mcap_min,
+    )
+    return jsonify({"saved": ok, "config": scanner_momentum.get_config()})
+
+
+@app.route("/api/momentum/alerts", methods=["GET"])
+def api_momentum_alerts():
+    date = (request.args.get("date") or "").strip() or None
+    return jsonify({"alerts": scanner_momentum.alerts_for_date(date)})
+
+
 # Provision the Postgres snapshot + alert tables (no-ops when DATABASE_URL
 # is unset), then kick off the daily auto-warm scheduler. The auto-warm
 # thread will write a snapshot row per ticker when each warm completes.
 snapshots.init()
 alerts.init_tables()
 picker.init_tables()
+scanner_momentum.init_tables()
 screener.start_auto_warm()
 
 
