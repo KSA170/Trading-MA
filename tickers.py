@@ -7,9 +7,19 @@ Universe of US and Canadian stock tickers, grouped by *exchange*:
     - NASDAQ — Nasdaq Stock Market
     - AMEX   — NYSE American
 
-  Canada (curated — TMX does not publish a free symbol directory):
+  Canada:
     - TSX    — Toronto Stock Exchange  (yfinance suffix `.TO`)
+              Full listed directory fetched from TMX's per-letter JSON
+              endpoint, cached to disk for 24h. Falls back to a curated
+              ~160-name list when the fetch fails.
     - TSXV   — TSX Venture Exchange    (yfinance suffix `.V`)
+              Curated subset of active names — the full TSXV is ~1,700
+              names, mostly micro-cap shells with no daily volume.
+
+Both directories are filtered to common-share / trust-unit equivalents:
+ETFs, mutual funds, closed-end funds, preferred shares, warrants, rights,
+debentures, and subscription receipts are dropped. REITs (which often
+carry "Trust" in their legal name) are preserved via an allow-override.
 
 A ticker may appear in several lists. Membership is exposed via
 :func:`lists_for` so the screener can filter by exchange. Curated index
@@ -558,6 +568,7 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
     out: dict[str, list[str]] = {"nyse": [], "nasdaq": []}
     seen: set[str] = set()
     exch_values: dict[str, int] = {}
+    fund_drops = 0
     need_len = max(ti, ei, ni) + 1
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) < need_len:
@@ -578,20 +589,31 @@ def _fetch_sec_exchanges() -> dict[str, list[str]] | None:
             bucket = "nyse"
         else:
             continue  # OTC, CBOE, blank, etc.
+        # Drop ETFs / mutual funds / closed-end funds / debt notes by
+        # name match. SEC has no instrument-type field, so name is the
+        # only signal we have — REITs are kept via the allow-override
+        # in _is_fund_or_derivative_name.
+        name = str(row[ni] or "").strip() if ni >= 0 else ""
+        if name and _is_fund_or_derivative_name(name):
+            fund_drops += 1
+            continue
         seen.add(ticker)
         out[bucket].append(ticker)
         # Capture the company name for free — saves a heavy yfinance
         # get_info() call per match in the screener.
-        if ni >= 0:
-            name = str(row[ni] or "").strip()
-            if name:
-                _TICKER_NAMES[ticker] = name
+        if name:
+            _TICKER_NAMES[ticker] = name
     # Log the distinct exchange labels SEC uses so a future mismatch is
     # diagnosable from Render's logs.
     log.info(
         "SEC exchange field values: %s",
         ", ".join(f"{k or '(blank)'}={v}" for k, v in sorted(exch_values.items())),
     )
+    if fund_drops:
+        log.info(
+            "SEC parser dropped %d rows by name (ETF / fund / notes filter)",
+            fund_drops,
+        )
     return out
 
 
@@ -606,6 +628,108 @@ def _is_clean_symbol(symbol: str) -> bool:
     if symbol.endswith(".W") or symbol.endswith(".U") or symbol.endswith(".R"):
         return False
     return True
+
+
+# --- non-equity filters ----------------------------------------------------
+# The SEC and TMX directories include ETFs, mutual funds, closed-end funds,
+# preferred shares, warrants, rights, debentures, and subscription receipts
+# — none of which are useful for a price/volume momentum screener. The
+# filters below identify them by company-name keywords and (for TSX)
+# by symbol-class suffix.
+#
+# Policy mirrors the original curated lists: keep common shares + Class A/B
+# subordinate-voting variants + trust units (REITs, infrastructure LPs).
+# Drop everything else.
+
+import re as _re
+
+# Word-boundary patterns for company-name based filtering. Matches against
+# both SEC company names and TMX issuer names. Conservative — only patterns
+# that have a near-zero false-positive rate against real operating companies.
+_FUND_NAME_RE = _re.compile(
+    r"\b("
+    r"etf|etfs|"
+    r"fund|funds|"
+    r"warrant|warrants|"
+    r"rights|"
+    r"debenture|debentures|"
+    r"closed[- ]end|"
+    r"index\s+units?|"
+    r"subscription\s+receipts?|"
+    r"installment\s+receipts?|"
+    r"capital\s+notes?|"
+    r"senior\s+notes?|"
+    r"unsecured\s+notes?"
+    r")\b",
+    _re.IGNORECASE,
+)
+# Override: keep REITs and similar operating real-estate entities even
+# though their names contain "Trust" or "Real Estate Investment Trust".
+_REIT_NAME_RE = _re.compile(
+    r"\b("
+    r"reit|"
+    r"real\s+estate\s+investment\s+trust|"
+    r"realty\s+income|"
+    r"realty\s+(corp|corporation|inc|incorporated)"
+    r")\b",
+    _re.IGNORECASE,
+)
+
+
+def _is_fund_or_derivative_name(name: str) -> bool:
+    """Heuristic: True for ETFs / mutual funds / closed-end funds /
+    debt instruments / warrants / rights. False for operating companies,
+    REITs (allow-override), and trust units. Used to exclude non-equity
+    listings that the SEC + TMX directories include but that the
+    screener has no business looking at."""
+    if not name:
+        return False
+    if _REIT_NAME_RE.search(name):
+        return False
+    return bool(_FUND_NAME_RE.search(name))
+
+
+# TSX-specific symbol suffixes for share classes the screener does not
+# want: preferreds (-PR-), debentures (-DB-), warrants (-WT-), installment
+# receipts (-IR-). These are checked after the dot→hyphen normalisation,
+# so the literal infix `-PR-` matches `RY-PR-A`, `BNS-PR-Z`, etc.
+_TSX_DERIVATIVE_INFIXES = ("-PR-", "-DB-", "-WT-", "-IR-")
+
+
+def _is_derivative_tsx_symbol(base: str) -> bool:
+    """True if a normalized TSX base symbol (no .TO suffix yet) is a
+    preferred / debenture / warrant / installment receipt class."""
+    return any(infix in base for infix in _TSX_DERIVATIVE_INFIXES)
+
+
+# TMX instrumentType values (when the field is populated in the response)
+# that should be dropped. Substring match, case-insensitive.
+_TSX_DROP_INSTRUMENT_TYPES = (
+    "preferred",
+    "preference",
+    "warrant",
+    "rights",
+    "debenture",
+    "subscription receipt",
+    "installment receipt",
+    "etf",
+    "exchange traded fund",
+    "exchange-traded fund",
+    "index unit",
+    "closed-end",
+    "closed end",
+    "mutual fund",
+    "investment fund",
+)
+
+
+def _is_drop_instrument_type(instrument_type: str) -> bool:
+    """True if a TMX `instrumentType` field marks the row as non-common
+    equity. Empty / unknown types return False (defer to other filters)."""
+    if not instrument_type:
+        return False
+    needle = instrument_type.lower()
+    return any(p in needle for p in _TSX_DROP_INSTRUMENT_TYPES)
 
 
 def _parse_nasdaqlisted(text: str) -> list[str]:
@@ -669,16 +793,208 @@ def company_name(ticker: str) -> str:
     return _TICKER_NAMES.get((ticker or "").strip().upper(), ticker)
 
 
+# --- TMX directory (full TSX listings) -------------------------------------
+# TMX exposes a per-letter JSON directory at
+# tsx.com/json/company-directory/search/tsx/<letter> — the same endpoint
+# the public "listed company directory" page uses. The full TSX has ~1,500
+# issuers vs. the 162-name curated _TSX_BASE fallback.
+#
+# Defensive design: if the endpoint is unreachable or returns fewer than
+# _TSX_MIN_OK rows (TMX schema change, Akamai bot-check, partial outage),
+# we fall back to the curated _TSX_BASE constant so the screener never
+# regresses below the previously-shipped universe.
+
+_TSX_DIRECTORY_URL_TMPL = "https://www.tsx.com/json/company-directory/search/tsx/{letter}"
+_TSX_CACHE_NAME = "tsx_directory.json"
+_TSX_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) "
+        "Gecko/20100101 Firefox/120.0"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.tsx.com/listings/current-market-statistics",
+    "X-Requested-With": "XMLHttpRequest",
+}
+# Anything materially smaller than the curated fallback (162) means the
+# fetch was broken — treat as failure and keep the static list.
+_TSX_MIN_OK = 400
+
+_TSX_FETCH_CACHE: list[str] | None = None
+
+
+def _fetch_tsx_listings() -> list[str] | None:
+    """Fetch the full TSX listed-issuer directory from TMX. Returns a list
+    of yfinance-formatted symbols (e.g. ``["RY.TO", "BIP-UN.TO", ...]``) or
+    None on any failure. Persists the merged result to disk so subsequent
+    runs skip the 27 letter-by-letter HTTPS calls."""
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+    except Exception:
+        pass
+
+    import json
+
+    cache_path = _CACHE_DIR / _TSX_CACHE_NAME
+    fresh = cache_path.exists() and (time.time() - cache_path.stat().st_mtime) < _CACHE_TTL_SEC
+    if fresh:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            issuers = cached.get("issuers") or []
+            if isinstance(issuers, list) and len(issuers) >= _TSX_MIN_OK:
+                for entry in issuers:
+                    if isinstance(entry, (list, tuple)) and len(entry) >= 2 and entry[1]:
+                        _TICKER_NAMES[entry[0]] = entry[1]
+                return [entry[0] for entry in issuers
+                        if isinstance(entry, (list, tuple)) and entry]
+        except Exception:
+            pass  # fall through to a fresh fetch
+
+    import requests
+
+    issuers: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    # TMX's directory is keyed by leading character. "0" returns everything
+    # starting with a digit or symbol — needed for names like 5N Plus.
+    letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["0"]
+    errors: list[str] = []
+    raw_total = 0
+    drops = {"symbol_class": 0, "instrument_type": 0, "name": 0}
+    for letter in letters:
+        url = _TSX_DIRECTORY_URL_TMPL.format(letter=letter)
+        try:
+            r = requests.get(url, timeout=20, headers=_TSX_HEADERS)
+            r.raise_for_status()
+            body = r.json()
+        except Exception as exc:
+            errors.append(f"{letter}: {exc}")
+            continue
+        rows = body.get("results") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw = (row.get("symbol") or row.get("dottedSymbol") or "").strip().upper()
+            if not raw:
+                continue
+            raw_total += 1
+            # TMX uses dots for share-class suffixes (BIP.UN, RY.PR.A);
+            # yfinance Canadian listings want hyphens (BIP-UN.TO, RY-PR-A.TO).
+            base = raw.replace(".", "-")
+            if not _is_clean_symbol(base):
+                continue
+            # Filter 1: drop preferreds (-PR-), debentures (-DB-),
+            # warrants (-WT-), installment receipts (-IR-). Trust units
+            # (-UN suffix, e.g. BIP-UN, REI-UN) and Class A/B common
+            # (-A, -B suffix) are kept — they represent operating
+            # equity ownership.
+            if _is_derivative_tsx_symbol(base):
+                drops["symbol_class"] += 1
+                continue
+            # Filter 2: TMX `instrumentType` (when populated) — catches
+            # ETFs, mutual funds, closed-end funds that have plain
+            # symbols indistinguishable from common stock.
+            inst_type = str(
+                row.get("instrumentType")
+                or row.get("securityType")
+                or ""
+            ).strip()
+            if not inst_type:
+                # Some responses nest the type inside `instruments[0]`.
+                instruments = row.get("instruments")
+                if isinstance(instruments, list) and instruments:
+                    first = instruments[0] if isinstance(instruments[0], dict) else {}
+                    inst_type = str(first.get("instrumentType") or "").strip()
+            if _is_drop_instrument_type(inst_type):
+                drops["instrument_type"] += 1
+                continue
+            yf_sym = f"{base}.TO"
+            if yf_sym in seen:
+                continue
+            name = str(row.get("name") or row.get("companyName") or "").strip()
+            # Filter 3: name-based — last-line defence for ETFs/funds
+            # when neither symbol class nor instrumentType caught them
+            # (TMX has been known to omit instrumentType on a subset
+            # of rows).
+            if _is_fund_or_derivative_name(name):
+                drops["name"] += 1
+                continue
+            seen.add(yf_sym)
+            issuers.append((yf_sym, name))
+            if name:
+                _TICKER_NAMES[yf_sym] = name
+
+    if len(issuers) < _TSX_MIN_OK:
+        _LAST_FETCH_ERROR[_TSX_CACHE_NAME] = (
+            f"only {len(issuers)} issuers (< {_TSX_MIN_OK}); "
+            f"errors: {'; '.join(errors[:3]) or '(none)'}"
+        )
+        log.warning(
+            "TMX TSX fetch yielded only %d issuers — falling back to curated list",
+            len(issuers),
+        )
+        return None
+
+    try:
+        cache_path.write_text(
+            json.dumps({"issuers": issuers}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        log.warning("failed to cache TSX directory: %s", exc)
+    _LAST_FETCH_ERROR.pop(_TSX_CACHE_NAME, None)
+    log.info(
+        "loaded TSX directory from TMX — %d issuers kept "
+        "(from %d raw; dropped %d preferreds/warrants/debentures, "
+        "%d ETFs/funds by instrument type, %d ETFs/funds by name)",
+        len(issuers), raw_total,
+        drops["symbol_class"], drops["instrument_type"], drops["name"],
+    )
+    return [sym for sym, _ in issuers]
+
+
+def fetch_tsx_listings() -> list[str]:
+    """Cached wrapper over :func:`_fetch_tsx_listings`. On failure, returns
+    the curated :data:`TSX` constant so the universe never regresses."""
+    global _TSX_FETCH_CACHE
+    if _TSX_FETCH_CACHE is not None:
+        return _TSX_FETCH_CACHE
+    fetched = _fetch_tsx_listings()
+    if fetched is None:
+        _TSX_FETCH_CACHE = TSX
+        return _TSX_FETCH_CACHE
+    # Union with the curated list — if TMX ever drops a name we've already
+    # validated as liquid, we keep screening it.
+    have = set(fetched)
+    merged = list(fetched)
+    for sym in TSX:
+        if sym not in have:
+            merged.append(sym)
+    _TSX_FETCH_CACHE = merged
+    return _TSX_FETCH_CACHE
+
+
+def invalidate_pruned_cache() -> None:
+    """Drop the in-memory pruned-ticker set so the next universe() call
+    re-reads the JSON. Called by the admin restore endpoint so a
+    restored ticker is back in the universe without a server restart."""
+    global _PRUNED_CACHE
+    _PRUNED_CACHE = None
+
+
 def refresh_universe() -> dict[str, int]:
     """Invalidate the in-memory + disk caches and rebuild from a fresh fetch.
     Returns the new size of each list (after refresh)."""
-    global _US_EXCHANGE_CACHE, _LISTS, _MEMBERSHIP
+    global _US_EXCHANGE_CACHE, _LISTS, _MEMBERSHIP, _TSX_FETCH_CACHE, _PRUNED_CACHE
     _US_EXCHANGE_CACHE = None
     _LISTS = None
     _MEMBERSHIP = None
+    _TSX_FETCH_CACHE = None
+    _PRUNED_CACHE = None
     _TICKER_NAMES.clear()
     try:
-        for name in ("nasdaqlisted.txt", "otherlisted.txt", _SEC_CACHE_NAME):
+        for name in ("nasdaqlisted.txt", "otherlisted.txt", _SEC_CACHE_NAME, _TSX_CACHE_NAME):
             p = _CACHE_DIR / name
             if p.exists():
                 try:
@@ -745,6 +1061,7 @@ LIST_LABELS: dict[str, str] = {
 
 _LISTS: dict[str, list[str]] | None = None
 _MEMBERSHIP: dict[str, set[str]] | None = None
+_PRUNED_CACHE: set[str] | None = None
 
 
 def _build_lists() -> dict[str, list[str]]:
@@ -752,7 +1069,7 @@ def _build_lists() -> dict[str, list[str]]:
     return {
         "nyse": us.get("nyse", []),
         "nasdaq": us.get("nasdaq", []),
-        "tsx": TSX,
+        "tsx": fetch_tsx_listings(),
         "tsxv": TSXV,
     }
 
@@ -831,19 +1148,43 @@ def list_labels(keys: list[str]) -> list[str]:
     return [LIST_LABELS[k] for k in keys if k in LIST_LABELS]
 
 
+def _pruned_tickers() -> set[str]:
+    """Tickers currently pruned from the universe — read from the JSON
+    file the warm-cache prune logic (screener.py) maintains. Cached for
+    the lifetime of the process; refresh_universe() clears it."""
+    global _PRUNED_CACHE
+    if _PRUNED_CACHE is not None:
+        return _PRUNED_CACHE
+    try:
+        import json
+        path = _CACHE_DIR / "ticker_failures.json"
+        if not path.exists():
+            _PRUNED_CACHE = set()
+            return _PRUNED_CACHE
+        data = json.loads(path.read_text(encoding="utf-8"))
+        _PRUNED_CACHE = set(data.get("pruned") or [])
+    except Exception:
+        _PRUNED_CACHE = set()
+    return _PRUNED_CACHE
+
+
 def universe(selected: list[str] | None = None) -> list[str]:
-    """Tickers belonging to any of `selected` lists (de-duplicated, ordered).
-    Pass `None` or an empty list to get the union of every known list."""
+    """Tickers belonging to any of `selected` lists (de-duplicated, ordered),
+    minus any tickers pruned out of the universe by the warm-cache
+    failed-ticker tracker. Pass `None` or an empty list to get the union
+    of every known list."""
     lists = get_lists()
     if not selected:
         selected = list(lists.keys())
+    pruned = _pruned_tickers()
     seen: set[str] = set()
     out: list[str] = []
     for key in selected:
         for sym in lists.get(key, []):
-            if sym not in seen:
-                seen.add(sym)
-                out.append(sym)
+            if sym in seen or sym in pruned:
+                continue
+            seen.add(sym)
+            out.append(sym)
     return out
 
 

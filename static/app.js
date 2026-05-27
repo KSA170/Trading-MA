@@ -4,6 +4,7 @@ const els = {
   runBtn: $('#run-btn'),
   warmBtn: $('#warm-btn'),
   cacheStatus: $('#cache-status'),
+  prunedStatus: $('#pruned-status'),
   snapshotStatus: $('#snapshot-status'),
   status: $('#status-text'),
   matchCount: $('#match-count'),
@@ -31,6 +32,21 @@ const els = {
   ruleScopeValue: $('#rule-scope-value'),
   ruleCreateBtn: $('#rule-create-btn'),
   rulesMsg: $('#rules-msg'),
+  // Screener-rule criteria modal — opens on "Create rule" (screener type)
+  // and on "Update criteria" for an existing screener rule.
+  cmModal: $('#criteria-modal'),
+  cmForm: $('#criteria-form'),
+  cmTitle: $('#criteria-modal-title'),
+  cmSubtitle: $('#criteria-modal-subtitle'),
+  cmMeta: $('#criteria-modal-meta'),
+  cmContext: $('#criteria-modal-context'),
+  cmName: $('#cm_rule_name'),
+  cmScopeType: $('#cm_rule_scope_type'),
+  cmScopeValue: $('#cm_rule_scope_value'),
+  cmSubmit: $('#criteria-modal-submit'),
+  cmMsg: $('#criteria-modal-msg'),
+  cmSectionScreener: $('#cm-criteria-screener'),
+  cmSectionSetup: $('#cm-criteria-setup'),
   diagnoseTicker: $('#diagnose-ticker'),
   diagnoseBtn: $('#diagnose-btn'),
   diagnoseClearBtn: $('#diagnose-clear-btn'),
@@ -46,6 +62,25 @@ const els = {
   setupsToggle: $('#setups-toggle'),
   setupsBody: $('#setups-body'),
   setupsList: $('#setups-list'),
+  picksToggle: $('#picks-toggle'),
+  picksBody: $('#picks-body'),
+  picksList: $('#picks-list'),
+  picksAsOf: $('#picks-as-of'),
+  picksTuneBtn: $('#picks-tune-btn'),
+  picksRunBtn: $('#picks-run-btn'),
+  picksTune: $('#picks-tune'),
+  picksWvc: $('#picks-w-vc'),
+  picksWrs: $('#picks-w-rs'),
+  picksWva: $('#picks-w-va'),
+  picksWmt: $('#picks-w-mt'),
+  picksWdp: $('#picks-w-dp'),
+  picksWvcOut: $('#picks-w-vc-out'),
+  picksWrsOut: $('#picks-w-rs-out'),
+  picksWvaOut: $('#picks-w-va-out'),
+  picksWmtOut: $('#picks-w-mt-out'),
+  picksWdpOut: $('#picks-w-dp-out'),
+  picksPriceMin: $('#picks-price-min'),
+  picksPriceMax: $('#picks-price-max'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
@@ -110,6 +145,51 @@ const toggles = {
   apply_turnover: $('#apply_turnover'),
 };
 
+// Parallel inputs/toggles for the screener-rule criteria modal — same keys
+// so the same serialiser can build a query string from either set.
+const modalInputs = {
+  high_lookback: $('#cm_high_lookback'),
+  streak_mode: $('#cm_streak_mode'),
+  rsi_min: $('#cm_rsi_min'),
+  rsi_max: $('#cm_rsi_max'),
+  rsi_dev_min_pct: $('#cm_rsi_dev_min_pct'),
+  rsi_dev_max_pct: $('#cm_rsi_dev_max_pct'),
+  rvol_lookback: $('#cm_rvol_lookback'),
+  rvol_min: $('#cm_rvol_min'),
+  avg_volume_min: $('#cm_avg_volume_min'),
+  price_min: $('#cm_price_min'),
+  price_max: $('#cm_price_max'),
+  price_dev_min_pct: $('#cm_price_dev_min_pct'),
+  price_dev_max_pct: $('#cm_price_dev_max_pct'),
+  ema_dev_min_pct: $('#cm_ema_dev_min_pct'),
+  ema_dev_max_pct: $('#cm_ema_dev_max_pct'),
+  macd_hist_min: $('#cm_macd_hist_min'),
+  turnover_min_pct: $('#cm_turnover_min_pct'),
+  turnover_max_pct: $('#cm_turnover_max_pct'),
+};
+const modalToggles = {
+  apply_high: $('#cm_apply_high'),
+  apply_rsi: $('#cm_apply_rsi'),
+  apply_rsi_dev: $('#cm_apply_rsi_dev'),
+  apply_rvol: $('#cm_apply_rvol'),
+  apply_avg_volume: $('#cm_apply_avg_volume'),
+  apply_price: $('#cm_apply_price'),
+  apply_price_dev: $('#cm_apply_price_dev'),
+  apply_ema_dev: $('#cm_apply_ema_dev'),
+  apply_macd: $('#cm_apply_macd'),
+  macd_require_rising: $('#cm_macd_require_rising'),
+  apply_turnover: $('#cm_apply_turnover'),
+};
+
+// Setup-rule criteria fields inside the same modal (shown when rule
+// type = setup). Keyed to match what the backend's setup_params expects.
+const setupModalInputs = {
+  score_min: $('#cm_setup_score_min'),
+  min_price: $('#cm_setup_min_price'),
+  max_price: $('#cm_setup_max_price'),
+  min_dollar_vol: $('#cm_setup_min_dollar_vol'),
+};
+
 const listAllCb = $('#list_all');
 const listCheckboxes = Array.from(document.querySelectorAll('input[data-list-key]'));
 const asOfSelect = $('#as_of_offset');
@@ -166,7 +246,71 @@ async function refreshCacheStatus() {
 
 function scheduleCacheStatus(delayMs = 350) {
   if (_cacheStatusTimer) clearTimeout(_cacheStatusTimer);
-  _cacheStatusTimer = setTimeout(refreshCacheStatus, delayMs);
+  _cacheStatusTimer = setTimeout(() => {
+    refreshCacheStatus();
+    refreshPrunedStatus();
+  }, delayMs);
+}
+
+// --- pruned-ticker indicator ---------------------------------------------
+// The warm-cache prune logic drops tickers from the universe after they
+// fail PRUNE_THRESHOLD consecutive days. Surface the count + a click
+// path to restore so it's not a black-box change.
+
+async function refreshPrunedStatus() {
+  if (!els.prunedStatus) return;
+  try {
+    const res = await fetch('/api/admin/pruned-tickers', { cache: 'no-store' });
+    if (!res.ok) return;
+    const s = await res.json();
+    const pruned = s.pruned || [];
+    const near = s.near_prune || [];
+    if (!pruned.length && !near.length) {
+      els.prunedStatus.hidden = true;
+      els.prunedStatus.textContent = '';
+      return;
+    }
+    els.prunedStatus.hidden = false;
+    const parts = [];
+    if (pruned.length) parts.push(`${pruned.length} pruned`);
+    if (near.length)   parts.push(`${near.length} near`);
+    els.prunedStatus.textContent = parts.join(' · ');
+    els.prunedStatus.classList.toggle('warn', pruned.length > 0);
+    const sample = pruned.slice(0, 10).join(', ');
+    const more = pruned.length > 10 ? `, +${pruned.length - 10} more` : '';
+    const nearTxt = near.length
+      ? `\n\n${near.length} ticker(s) ${'↑'} ${s.threshold} fail-days — one more failed day and they'll be pruned: ` + near.slice(0, 5).map((n) => `${n.ticker}(${n.fail_count})`).join(', ')
+      : '';
+    els.prunedStatus.title = pruned.length
+      ? `Auto-pruned by warm-cache after ${s.threshold} consecutive failed days. Click to restore all.\n\nPruned: ${sample}${more}${nearTxt}`
+      : `${near.length} ticker(s) approaching the prune threshold (${s.threshold} fail-days).${nearTxt}`;
+  } catch (_) { /* silent */ }
+}
+
+async function restorePrunedAll() {
+  if (!confirm('Restore all auto-pruned tickers and reset failure counters?')) return;
+  try {
+    const res = await fetch('/api/admin/pruned-tickers/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true }),
+    });
+    if (!res.ok) {
+      setStatus('restore failed: HTTP ' + res.status);
+      return;
+    }
+    const data = await res.json();
+    setStatus(`restored ${data.restored} ticker(s) to the universe`);
+    refreshPrunedStatus();
+    scheduleCacheStatus(100);
+  } catch (err) {
+    setStatus('restore failed: ' + (err && err.message ? err.message : 'network error'));
+  }
+}
+
+if (els.prunedStatus) {
+  els.prunedStatus.style.cursor = 'pointer';
+  els.prunedStatus.addEventListener('click', restorePrunedAll);
 }
 
 async function refreshSnapshotStatus() {
@@ -1026,9 +1170,21 @@ async function pollWarmStatus() {
         const dur = s.finished_at && s.started_at
           ? Math.round(s.finished_at - s.started_at) + 's'
           : '';
-        const errs = s.errors ? `, ${s.errors} errors` : '';
+        // "done" counts attempts; subtract errors to get the count of
+        // tickers actually written to disk (matches the cache-status
+        // "warm" number the user sees next to this).
+        const ok = Math.max(0, (s.done || 0) - (s.errors || 0));
+        const errs = s.errors
+          ? ` · ${s.errors.toLocaleString()} failed (no Yahoo data)`
+          : '';
         const verb = s.cancelled ? 'cancelled' : 'warmed';
-        setStatus(`cache ${verb}: ${s.done}/${s.total}${errs}${dur ? ` in ${dur}` : ''}`);
+        const sample = (s.failed_samples && s.failed_samples.length)
+          ? ` — sample: ${s.failed_samples.slice(0, 5).join(', ')}${s.failed_samples.length > 5 ? '…' : ''}`
+          : '';
+        setStatus(
+          `cache ${verb}: ${ok.toLocaleString()}/${s.total.toLocaleString()} cached`
+          + `${errs}${dur ? ` in ${dur}` : ''}${sample}`
+        );
       }
     }
   } catch (err) {
@@ -1390,9 +1546,13 @@ if (els.alertsAddBtn) els.alertsAddBtn.addEventListener('click', () => addSelect
 // criteria; the alert engine (alerts.py) walks every enabled rule each run.
 
 let _alertScopes = { sectors: [], industries: [] };
+// Cache the most recently rendered rule list so the Update-criteria
+// modal can look up r.params by rule id without an extra round trip.
+let _alertRules = [];
 
 function renderRules(data) {
   const rules = (data && data.rules) || [];
+  _alertRules = rules;
   // Classification coverage note — sector/industry rules need the
   // ticker_sector map, which the weekly "Classify universe" workflow builds.
   if (els.rulesClassifyNote) {
@@ -1423,12 +1583,16 @@ function renderRules(data) {
     const critHtml = crit.length
       ? crit.map((c) => `<span class="rule-crit">${escapeHtml(c)}</span>`).join('')
       : '<span class="rule-crit-none">no filters enabled — every ticker in scope would alert</span>';
+    // Header chip — most recent successful trigger (rule fired & sent
+    // alerts). Reads from the alert_sent table via rules_with_last_trigger().
     const lastTxt = r.last_triggered_at
-      ? `Last: ${formatTriggerTime(r.last_triggered_at)} · ${r.last_match_count} ${r.last_match_count === 1 ? 'ticker' : 'tickers'}`
+      ? `Last alert: ${formatTriggerTime(r.last_triggered_at)} · ${r.last_match_count} ${r.last_match_count === 1 ? 'ticker' : 'tickers'}`
       : 'Never triggered yet';
     const lastClass = r.last_triggered_at ? 'rule-last' : 'rule-last rule-last-none';
-    // Scan stats from the most recent alerts.py run — explains "scanned
-    // but never matched" cases (you can see scope size + match count).
+    // Scan stats from the most recent alerts.py run for this rule —
+    // distinct from "Last alert" because alerts.py runs every ~15 min
+    // during market hours but only ALERTS when there's a match. The
+    // date is shown first so it's easy to compare against the header.
     const scanParts = [];
     if (r.last_run_at) {
       scanParts.push(`scope ${(r.scan_scope || 0).toLocaleString()}`);
@@ -1438,7 +1602,7 @@ function renderRules(data) {
       if (r.scan_errors)   scanParts.push(`errors ${r.scan_errors.toLocaleString()}`);
     }
     const scanLine = r.last_run_at
-      ? `Last scan: ${scanParts.join(' · ')} · ${formatTriggerTime(r.last_run_at)}`
+      ? `Last scan: ${formatTriggerTime(r.last_run_at)} · ${scanParts.join(' · ')}`
       : 'Not scanned yet (the alert engine hasn’t run since this rule was created).';
     const row = document.createElement('div');
     row.className = 'rule-row'
@@ -1492,7 +1656,7 @@ async function ruleShowHistory(id) {
   // Always re-fetch on open so the latest triggers are visible.
   panel.innerHTML = '<div class="muted">Loading…</div>';
   try {
-    const res = await fetch(`/api/alerts/rules/history?id=${id}&limit=15`);
+    const res = await fetch(`/api/alerts/rules/history?id=${id}&limit=15`, { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const events = data.history || [];
@@ -1506,8 +1670,32 @@ async function ruleShowHistory(id) {
         <span class="rule-event-count">${e.match_count} ${e.match_count === 1 ? 'ticker' : 'tickers'}</span>
       </div>
     `).join('');
+    // Sync the row header to the freshest event in case the cached
+    // /api/alerts/rules response (which seeded "Last alert") is behind.
+    syncLastAlertFromHistory(row, events[0]);
   } catch (err) {
     panel.innerHTML = `<div style="color:var(--red)">Failed to load: ${escapeHtml(err.message || 'error')}</div>`;
+  }
+}
+
+// Update the row's "Last alert" chip in-place if the freshest history
+// event is newer than what the chip currently shows. Avoids waiting
+// for the next poll to see today's triggers reflected in the header.
+function syncLastAlertFromHistory(row, latestEvent) {
+  if (!row || !latestEvent || !latestEvent.triggered_at) return;
+  const chip = row.querySelector('.rule-last');
+  if (!chip) return;
+  const cached = _alertRules.find((r) => String(r.id) === row.dataset.id);
+  const prevIso = cached && cached.last_triggered_at;
+  if (prevIso && new Date(prevIso).getTime() >= new Date(latestEvent.triggered_at).getTime()) {
+    return;  // header already up to date
+  }
+  const n = latestEvent.match_count;
+  chip.textContent = `Last alert: ${formatTriggerTime(latestEvent.triggered_at)} · ${n} ${n === 1 ? 'ticker' : 'tickers'}`;
+  chip.classList.remove('rule-last-none');
+  if (cached) {
+    cached.last_triggered_at = latestEvent.triggered_at;
+    cached.last_match_count = n;
   }
 }
 
@@ -1546,11 +1734,29 @@ function summarizeRuleParams(p, ruleType) {
 async function loadRules() {
   if (!els.rulesList) return;
   try {
-    const res = await fetch('/api/alerts/rules');
+    // cache: 'no-store' guarantees a fresh response — without it some
+    // browsers will serve a stale cached body and the row "Last alert"
+    // field drifts behind the actual trigger history.
+    const res = await fetch('/api/alerts/rules', { cache: 'no-store' });
     if (!res.ok) return;
     renderRules(await res.json());
   } catch (_) { /* silent */ }
 }
+
+// Auto-refresh the rule list every 60s so the "Last alert" and "Last
+// scan" fields don't go stale between the alert engine runs (which
+// happen every ~15 min in market hours). Pauses when the tab is
+// hidden, and runs immediately when it becomes visible again.
+let _rulesPollTimer = null;
+function startRulesPolling() {
+  if (_rulesPollTimer) return;
+  _rulesPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') loadRules();
+  }, 60_000);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') loadRules();
+});
 
 async function loadAlertScopes() {
   try {
@@ -1594,62 +1800,16 @@ function setRulesMsg(text, kind) {
     : kind === 'ok' ? 'var(--green)' : 'var(--muted)';
 }
 
-function currentSetupParams() {
-  return {
-    score_min: Number(els.setupsMinScore && els.setupsMinScore.value) || 70,
-    min_price: Number(els.setupsMinPrice && els.setupsMinPrice.value) || 0,
-    max_price: Number(els.setupsMaxPrice && els.setupsMaxPrice.value) || 1000,
-    min_dollar_vol: Number(els.setupsMinDollarVol && els.setupsMinDollarVol.value) || 0,
-  };
-}
-
 async function createRule() {
-  if (!els.ruleName || !els.ruleScopeType || !els.ruleScopeValue) return;
-  const name = (els.ruleName.value || '').trim();
+  // Both screener AND setup rules go through the same criteria modal.
+  // The modal handles validation + the POST itself, and picks the
+  // type-appropriate default scope when no seed is supplied.
   const ruleType = (els.ruleType && els.ruleType.value) || 'screener';
-  const scopeType = els.ruleScopeType.value;
-  const scopeValue = (scopeType === 'watchlist' || scopeType === 'all') ? '' : els.ruleScopeValue.value;
-  if (!name) {
-    setRulesMsg('Enter a rule name first.', 'error');
-    els.ruleName.focus();
-    return;
-  }
-  if (scopeType === 'all' && ruleType !== 'setup') {
-    setRulesMsg('"All snapshot tickers" scope is only valid for Setup rules.', 'error');
-    return;
-  }
-  if (scopeType !== 'watchlist' && scopeType !== 'all' && !scopeValue) {
-    setRulesMsg('Pick a sector / industry for this rule — run "Classify universe" if the list is empty.', 'error');
-    return;
-  }
-  setRulesMsg('Creating rule…');
-  try {
-    // Setup rules: criteria come from the Setups toolbar (JSON body).
-    // Screener rules: criteria come from the current screener filters (query string).
-    const body = { name, scope_type: scopeType, scope_value: scopeValue, rule_type: ruleType };
-    let url = '/api/alerts/rules';
-    if (ruleType === 'setup') {
-      body.setup_params = currentSetupParams();
-    } else {
-      url += '?' + buildQuery();
-    }
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setRulesMsg('Create rule failed: ' + (data.error || ('HTTP ' + res.status)), 'error');
-      return;
-    }
-    els.ruleName.value = '';
-    renderRules({ enabled: true, rules: data.rules, classification: data.classification });
-    loadRules();
-    setRulesMsg(`Alert rule "${name}" created.`, 'ok');
-  } catch (err) {
-    setRulesMsg('Create rule failed: ' + (err && err.message ? err.message : 'network error'), 'error');
-  }
+  openCriteriaModal({
+    mode: 'create',
+    ruleType,
+    seedName: (els.ruleName && els.ruleName.value || '').trim(),
+  });
 }
 
 async function ruleAction(id, act) {
@@ -1665,17 +1825,28 @@ async function ruleAction(id, act) {
     const enabling = row && row.classList.contains('rule-off');
     url = '/api/alerts/rules/toggle'; body = { id, enabled: !!enabling };
   } else if (act === 'update') {
-    // For setup rules send the current Setups toolbar values; for
-    // screener rules use the screener filter query string.
+    // Both screener and setup rules use the criteria modal for updates.
+    // The modal pre-fills from rule.params and POSTs on submit.
     const row = els.rulesList && els.rulesList.querySelector(`.rule-row[data-id="${id}"]`);
     const isSetup = row && row.classList.contains('rule-setup');
-    if (isSetup) {
-      url = '/api/alerts/rules/update-criteria';
-      body = { id, setup_params: currentSetupParams() };
-    } else {
-      url = '/api/alerts/rules/update-criteria?' + buildQuery();
-      body = { id };
-    }
+    const rule = _alertRules.find((r) => r.id === id) || {};
+    const scopeText = rule.scope_type === 'watchlist'
+      ? 'Watchlist'
+      : rule.scope_type === 'all'
+      ? 'All snapshot tickers'
+      : (rule.scope_type
+          ? rule.scope_type[0].toUpperCase() + rule.scope_type.slice(1)
+            + (rule.scope_value ? ': ' + rule.scope_value : '')
+          : '');
+    openCriteriaModal({
+      mode: 'update',
+      ruleType: isSetup ? 'setup' : 'screener',
+      ruleId: id,
+      ruleName: rule.name || `#${id}`,
+      scopeText,
+      prefill: rule.params || {},
+    });
+    return;
   } else {
     return;
   }
@@ -1700,6 +1871,329 @@ async function ruleAction(id, act) {
   }
 }
 
+// --- criteria modal (screener rule create / update) ----------------------
+// Same shape on both create and update — only the meta block (name +
+// scope) differs. Backed by the parallel modalInputs / modalToggles
+// maps so the same query-string serialiser fits the existing screener
+// rule endpoints (POST /api/alerts/rules?<query> and POST
+// /api/alerts/rules/update-criteria?<query>).
+
+let _criteriaModalState = { mode: 'create', ruleId: null, ruleType: 'screener' };
+
+function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
+                              seedName, seedScopeType, seedScopeValue, prefill }) {
+  if (!els.cmModal) return;
+  ruleType = ruleType || 'screener';
+  _criteriaModalState = { mode, ruleId: ruleId || null, ruleType };
+
+  // Show only the criteria section that matches the rule type. Both
+  // sections live in the DOM so we can toggle without rebuilding.
+  if (els.cmSectionScreener) els.cmSectionScreener.hidden = ruleType !== 'screener';
+  if (els.cmSectionSetup) els.cmSectionSetup.hidden = ruleType !== 'setup';
+
+  // Pre-fill criteria. CREATE seeds from the relevant live form (main
+  // filter form for screener, Setups toolbar for setup) so the popup
+  // opens close to what the user was just looking at. UPDATE uses the
+  // rule's stored params.
+  if (ruleType === 'setup') {
+    applySetupParamsToModal(prefill || readSetupToolbarAsParams());
+  } else {
+    applyParamsToModal(prefill || readMainFormAsParams());
+  }
+
+  // The "All snapshot tickers" scope option is only meaningful for
+  // setup rules (alert engine has no efficient way to scan it for the
+  // intraday screener path).
+  if (els.cmScopeType) {
+    const allOpt = els.cmScopeType.querySelector('option[value="all"]');
+    if (allOpt) allOpt.hidden = ruleType !== 'setup';
+  }
+
+  if (mode === 'create') {
+    const ruleLabel = ruleType === 'setup' ? 'setup' : 'screener';
+    if (els.cmTitle) els.cmTitle.textContent = `Create ${ruleLabel} alert rule`;
+    if (els.cmSubtitle) {
+      els.cmSubtitle.textContent = ruleType === 'setup'
+        ? 'Setup rules rank the latest EOD snapshot. Pick a scope and set min-score + price / dollar-volume thresholds.'
+        : 'Pick a scope and adjust filter criteria. The realtime engine checks these every ~15 min in market hours.';
+    }
+    if (els.cmMeta) els.cmMeta.hidden = false;
+    if (els.cmContext) { els.cmContext.textContent = ''; els.cmContext.hidden = true; }
+    if (els.cmName) {
+      els.cmName.value = seedName || '';
+      els.cmName.disabled = false;
+    }
+    if (els.cmScopeType) {
+      // Default scope per rule type: setup -> 'all', screener -> 'watchlist'.
+      const defaultScope = ruleType === 'setup' ? 'all' : 'watchlist';
+      const seed = seedScopeType && (ruleType === 'setup' || seedScopeType !== 'all')
+        ? seedScopeType : defaultScope;
+      els.cmScopeType.value = seed;
+      els.cmScopeType.disabled = false;
+    }
+    populateModalScopeValues();
+    if (els.cmScopeValue && seedScopeValue) {
+      const opt = Array.from(els.cmScopeValue.options).find((o) => o.value === seedScopeValue);
+      if (opt) els.cmScopeValue.value = seedScopeValue;
+    }
+    if (els.cmSubmit) els.cmSubmit.textContent = 'Create rule';
+  } else {
+    if (els.cmTitle) els.cmTitle.textContent = `Update criteria — ${ruleName || '(rule)'}`;
+    if (els.cmSubtitle) {
+      els.cmSubtitle.textContent = "Adjust the criteria for this rule. Name and scope can't be edited here — delete and recreate to change them.";
+    }
+    if (els.cmMeta) els.cmMeta.hidden = true;
+    if (els.cmContext) {
+      els.cmContext.textContent = scopeText ? `Scope: ${scopeText}` : '';
+      els.cmContext.hidden = !scopeText;
+    }
+    if (els.cmSubmit) els.cmSubmit.textContent = 'Save criteria';
+  }
+
+  setModalMsg('');
+  syncModalDisabled();
+  try { els.cmModal.showModal(); }
+  catch (_) { /* dialog already open or unsupported */ }
+}
+
+function closeCriteriaModal() {
+  if (els.cmModal && els.cmModal.open) els.cmModal.close();
+}
+
+function setModalMsg(text, kind) {
+  if (!els.cmMsg) return;
+  els.cmMsg.textContent = text || '';
+  els.cmMsg.style.color = kind === 'error' ? 'var(--red)'
+    : kind === 'ok' ? 'var(--green)' : 'var(--muted)';
+}
+
+// Push a params dict (same shape as rule.params) into the modal form.
+function applyParamsToModal(p) {
+  p = p || {};
+  for (const [k, el] of Object.entries(modalInputs)) {
+    if (!el) continue;
+    if (p[k] !== undefined && p[k] !== null) el.value = String(p[k]);
+  }
+  for (const [k, el] of Object.entries(modalToggles)) {
+    if (!el) continue;
+    if (p[k] !== undefined && p[k] !== null) {
+      const v = p[k];
+      el.checked = !(v === false || v === 0 || v === '0' || v === 'false');
+    }
+  }
+}
+
+// Snapshot the main screener form's values into a params dict — used as
+// the default seed for the Create flow so users don't lose what they
+// were just tuning.
+function readMainFormAsParams() {
+  const out = {};
+  for (const [k, el] of Object.entries(inputs)) if (el) out[k] = el.value;
+  for (const [k, el] of Object.entries(toggles)) if (el) out[k] = !!el.checked;
+  return out;
+}
+
+// Build a query string from the modal's filter form — matches what
+// /api/screen and the alert-rule endpoints expect.
+function buildModalQuery() {
+  const params = new URLSearchParams();
+  for (const [k, el] of Object.entries(modalInputs)) if (el) params.set(k, el.value);
+  for (const [k, el] of Object.entries(modalToggles)) if (el) params.set(k, el.checked ? '1' : '0');
+  return params.toString();
+}
+
+// --- setup-rule criteria helpers (same modal, different section) ---
+
+function applySetupParamsToModal(p) {
+  p = p || {};
+  for (const [k, el] of Object.entries(setupModalInputs)) {
+    if (!el) continue;
+    if (p[k] !== undefined && p[k] !== null) el.value = String(p[k]);
+  }
+}
+
+function readSetupToolbarAsParams() {
+  return {
+    score_min: Number(els.setupsMinScore && els.setupsMinScore.value) || 65,
+    min_price: Number(els.setupsMinPrice && els.setupsMinPrice.value) || 0,
+    max_price: Number(els.setupsMaxPrice && els.setupsMaxPrice.value) || 1000,
+    min_dollar_vol: Number(els.setupsMinDollarVol && els.setupsMinDollarVol.value) || 0,
+  };
+}
+
+function buildSetupParamsFromModal() {
+  const out = {};
+  for (const [k, el] of Object.entries(setupModalInputs)) {
+    if (el) out[k] = Number(el.value);
+  }
+  return out;
+}
+
+function populateModalScopeValues() {
+  if (!els.cmScopeType || !els.cmScopeValue) return;
+  const type = els.cmScopeType.value;
+  if (type === 'watchlist') {
+    els.cmScopeValue.innerHTML = '<option value="">(the watchlist)</option>';
+    els.cmScopeValue.disabled = true;
+    return;
+  }
+  if (type === 'all') {
+    els.cmScopeValue.innerHTML = '<option value="">(every snapshot ticker)</option>';
+    els.cmScopeValue.disabled = true;
+    return;
+  }
+  const list = type === 'sector' ? _alertScopes.sectors : _alertScopes.industries;
+  els.cmScopeValue.disabled = false;
+  if (!list || !list.length) {
+    els.cmScopeValue.innerHTML = '<option value="">— run Classify universe first —</option>';
+    return;
+  }
+  els.cmScopeValue.innerHTML = list
+    .map((s) => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} (${s.count})</option>`)
+    .join('');
+}
+
+// Visually grey out a filter group whose apply-toggle is off — mirrors
+// the syncDisabledStates() behaviour on the main form.
+function syncModalDisabled() {
+  const map = {
+    apply_high: 'cm_high',
+    apply_rsi: 'cm_rsi',
+    apply_rsi_dev: 'cm_rsi_dev',
+    apply_rvol: 'cm_rvol',
+    apply_avg_volume: 'cm_avg_volume',
+    apply_price: 'cm_price',
+    apply_price_dev: 'cm_price_dev',
+    apply_ema_dev: 'cm_ema_dev',
+    apply_macd: 'cm_macd',
+    apply_turnover: 'cm_turnover',
+  };
+  for (const [toggleKey, groupKey] of Object.entries(map)) {
+    const t = modalToggles[toggleKey];
+    const g = els.cmModal && els.cmModal.querySelector(`[data-group="${groupKey}"]`);
+    if (t && g) g.classList.toggle('disabled', !t.checked);
+  }
+}
+
+async function submitCriteriaModal() {
+  const ruleType = _criteriaModalState.ruleType || 'screener';
+  if (_criteriaModalState.mode === 'create') {
+    const name = (els.cmName && els.cmName.value || '').trim();
+    const scopeType = (els.cmScopeType && els.cmScopeType.value)
+      || (ruleType === 'setup' ? 'all' : 'watchlist');
+    const scopeValue = (scopeType === 'watchlist' || scopeType === 'all')
+      ? '' : (els.cmScopeValue && els.cmScopeValue.value) || '';
+    if (!name) {
+      setModalMsg('Enter a rule name.', 'error');
+      if (els.cmName) els.cmName.focus();
+      return;
+    }
+    if (scopeType === 'all' && ruleType !== 'setup') {
+      setModalMsg('"All snapshot tickers" is only valid for setup rules.', 'error');
+      return;
+    }
+    if (scopeType !== 'watchlist' && scopeType !== 'all' && !scopeValue) {
+      setModalMsg('Pick a sector / industry — run "Classify universe" if the list is empty.', 'error');
+      return;
+    }
+    setModalMsg('Creating rule…');
+    if (els.cmSubmit) els.cmSubmit.disabled = true;
+    try {
+      let url, body;
+      if (ruleType === 'setup') {
+        url = '/api/alerts/rules';
+        body = {
+          name, scope_type: scopeType, scope_value: scopeValue,
+          rule_type: 'setup',
+          setup_params: buildSetupParamsFromModal(),
+        };
+      } else {
+        url = '/api/alerts/rules?' + buildModalQuery();
+        body = { name, scope_type: scopeType, scope_value: scopeValue, rule_type: 'screener' };
+      }
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setModalMsg('Create rule failed: ' + (data.error || ('HTTP ' + res.status)), 'error');
+        return;
+      }
+      if (els.ruleName) els.ruleName.value = '';
+      renderRules({ enabled: true, rules: data.rules, classification: data.classification });
+      loadRules();
+      setRulesMsg(`Alert rule "${name}" created.`, 'ok');
+      closeCriteriaModal();
+    } catch (err) {
+      setModalMsg('Create rule failed: ' + (err && err.message ? err.message : 'network error'), 'error');
+    } finally {
+      if (els.cmSubmit) els.cmSubmit.disabled = false;
+    }
+    return;
+  }
+
+  // UPDATE
+  const ruleId = _criteriaModalState.ruleId;
+  if (!ruleId) {
+    setModalMsg('Internal error: rule id missing.', 'error');
+    return;
+  }
+  setModalMsg('Saving criteria…');
+  if (els.cmSubmit) els.cmSubmit.disabled = true;
+  try {
+    const url = ruleType === 'setup'
+      ? '/api/alerts/rules/update-criteria'
+      : '/api/alerts/rules/update-criteria?' + buildModalQuery();
+    const reqBody = ruleType === 'setup'
+      ? { id: ruleId, setup_params: buildSetupParamsFromModal() }
+      : { id: ruleId };
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqBody),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setModalMsg('Update failed: ' + (data.error || ('HTTP ' + res.status)), 'error');
+      return;
+    }
+    renderRules({ enabled: true, rules: data.rules });
+    loadRules();
+    setRulesMsg('Rule criteria updated.', 'ok');
+    closeCriteriaModal();
+  } catch (err) {
+    setModalMsg('Update failed: ' + (err && err.message ? err.message : 'network error'), 'error');
+  } finally {
+    if (els.cmSubmit) els.cmSubmit.disabled = false;
+  }
+}
+
+// Modal wiring — submit, close (×, Cancel), scope-type change, group disable.
+if (els.cmForm) {
+  els.cmForm.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    submitCriteriaModal();
+  });
+}
+if (els.cmModal) {
+  els.cmModal.addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) {
+      ev.preventDefault();
+      closeCriteriaModal();
+    }
+  });
+  // ESC -> dialog.close() — re-route through our msg-clearing close to
+  // keep state consistent if the user re-opens it.
+  els.cmModal.addEventListener('close', () => setModalMsg(''));
+}
+if (els.cmScopeType) {
+  els.cmScopeType.addEventListener('change', populateModalScopeValues);
+}
+Object.values(modalToggles).forEach((t) => t && t.addEventListener('change', syncModalDisabled));
+
+
 if (els.ruleScopeType) {
   els.ruleScopeType.addEventListener('change', populateScopeValues);
 }
@@ -1715,6 +2209,212 @@ wireCollapse(els.rulesToggle, els.rulesBody, 'collapse_rules');
 populateScopeValues();
 loadAlertScopes();
 loadRules();
+startRulesPolling();
+
+
+// --- nightly watchlist picker --------------------------------------------
+// Reads /api/picks for the latest persisted ranking, lets the user adjust
+// weights + price range, and re-ranks live via /api/picks/run. Saved
+// settings are picked up by the nightly cron at close+1hr.
+
+const _PICKS_WEIGHT_KEYS = ['vc', 'rs', 'va', 'mt', 'dp'];
+
+function picksWeightFromUI() {
+  const out = {};
+  for (const k of _PICKS_WEIGHT_KEYS) {
+    const el = els['picksW' + k];
+    out[k] = el ? Number(el.value) : 0;
+  }
+  return out;
+}
+
+function picksApplyWeightsToUI(weights) {
+  weights = weights || {};
+  for (const k of _PICKS_WEIGHT_KEYS) {
+    const el = els['picksW' + k];
+    const out = els['picksW' + k + 'Out'];
+    if (el && weights[k] !== undefined) el.value = String(weights[k]);
+    if (out && el) out.textContent = el.value;
+  }
+}
+
+function picksMiniBar(label, value) {
+  // Compact 0-100 bar used inline next to each picked ticker.
+  const v = Math.max(0, Math.min(100, Math.round(value || 0)));
+  return `
+    <span class="pick-bar" title="${escapeHtml(label)}: ${v}">
+      <span class="pick-bar-label">${escapeHtml(label)}</span>
+      <span class="pick-bar-track"><span class="pick-bar-fill" style="width:${v}%"></span></span>
+      <span class="pick-bar-val">${v}</span>
+    </span>
+  `;
+}
+
+// Per-ticker intraday-trigger badges. Populated from /api/picks/intraday-alerts
+// when the panel renders and updated alongside loadPicks polls.
+let _picksIntradayByTicker = {};
+
+const _PICK_TRIGGER_LABELS = {
+  vwap_reclaim: { glyph: '⚡', name: 'VWAP reclaim' },
+};
+
+function renderPickTriggerBadges(ticker) {
+  const fired = _picksIntradayByTicker[ticker];
+  if (!fired || !fired.length) return '';
+  return fired.map((evt) => {
+    const meta = _PICK_TRIGGER_LABELS[evt.trigger_type] || { glyph: '⚡', name: evt.trigger_type };
+    const ts = evt.fired_at ? formatTriggerTime(evt.fired_at) : '';
+    const tip = `${meta.name} at ${ts}` + (evt.details ? ' — ' + evt.details : '');
+    return `<span class="pick-trigger" title="${escapeHtml(tip)}">${meta.glyph} ${escapeHtml(meta.name)}</span>`;
+  }).join('');
+}
+
+function renderPicks(data) {
+  const picks = (data && data.picks) || [];
+  const cfg = (data && data.config) || null;
+  if (cfg) {
+    picksApplyWeightsToUI(cfg.weights);
+    if (els.picksPriceMin && cfg.price_min != null) els.picksPriceMin.value = String(cfg.price_min);
+    if (els.picksPriceMax && cfg.price_max != null) els.picksPriceMax.value = String(cfg.price_max);
+  }
+  if (!els.picksList) return;
+  if (!picks.length) {
+    if (els.picksAsOf) els.picksAsOf.textContent = '';
+    els.picksList.innerHTML = '<p class="muted history-empty">No picks yet — the nightly job hasn\'t run, or click "Re-rank now" to compute them on demand.</p>';
+    return;
+  }
+  if (els.picksAsOf) {
+    els.picksAsOf.textContent = `as of ${picks[0].pick_date || '?'}`;
+  }
+  const rows = picks.map((p) => {
+    const close = p.close != null ? `$${Number(p.close).toFixed(2)}` : '';
+    const ret = p.ret_20d != null ? `${(p.ret_20d * 100).toFixed(1)}%` : '';
+    const dist = p.dist_pivot != null ? `${p.dist_pivot.toFixed(1)}% from pivot` : '';
+    const atr = p.atr_ratio != null ? `ATR20/60 ${p.atr_ratio.toFixed(2)}` : '';
+    const dvol = p.dvol_ratio != null ? `dvol 10/60 ${p.dvol_ratio.toFixed(2)}` : '';
+    const metaParts = [ret, dist, atr, dvol].filter(Boolean);
+    const badges = renderPickTriggerBadges(p.ticker);
+    return `
+      <div class="pick-row" data-ticker="${escapeHtml(p.ticker)}">
+        <span class="pick-rank">${p.rank}</span>
+        <span class="pick-ticker">${escapeHtml(p.ticker)}</span>
+        <span class="pick-close">${escapeHtml(close)}</span>
+        <span class="pick-composite" title="Composite — weighted sum of the 5 sub-scores">${Math.round(p.composite)}</span>
+        <span class="pick-bars">
+          ${picksMiniBar('VC', p.vc_score)}
+          ${picksMiniBar('RS', p.rs_score)}
+          ${picksMiniBar('VA', p.va_score)}
+          ${picksMiniBar('MT', p.mt_score)}
+          ${picksMiniBar('DP', p.dp_score)}
+        </span>
+        <span class="pick-meta muted">${escapeHtml(metaParts.join(' · '))}</span>
+        ${badges ? `<span class="pick-triggers">${badges}</span>` : ''}
+      </div>
+    `;
+  });
+  els.picksList.innerHTML = rows.join('');
+}
+
+async function loadIntradayAlerts() {
+  try {
+    const res = await fetch('/api/picks/intraday-alerts', { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    const byTicker = {};
+    for (const evt of (data.alerts || [])) {
+      if (!byTicker[evt.ticker]) byTicker[evt.ticker] = [];
+      byTicker[evt.ticker].push(evt);
+    }
+    _picksIntradayByTicker = byTicker;
+  } catch (_) { /* silent */ }
+}
+
+async function loadPicks() {
+  if (!els.picksList) return;
+  try {
+    // Pull intraday triggers first so the renderer can badge each
+    // row in a single pass.
+    await loadIntradayAlerts();
+    const res = await fetch('/api/picks', { cache: 'no-store' });
+    if (!res.ok) return;
+    renderPicks(await res.json());
+  } catch (_) { /* silent */ }
+}
+
+// Auto-refresh picks every 60s. The intraday cron fires at 5-min
+// cadence so anything faster is wasted work; anything slower means
+// triggers don't appear in the UI for too long.
+let _picksPollTimer = null;
+function startPicksPolling() {
+  if (_picksPollTimer) return;
+  _picksPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') loadPicks();
+  }, 60_000);
+}
+
+async function runPicks() {
+  if (!els.picksRunBtn) return;
+  els.picksRunBtn.disabled = true;
+  const prevTxt = els.picksRunBtn.textContent;
+  els.picksRunBtn.textContent = 'Ranking…';
+  setStatus('Re-ranking watchlist — this may take 5-30s…');
+  try {
+    const body = {
+      weights:   picksWeightFromUI(),
+      price_min: Number(els.picksPriceMin && els.picksPriceMin.value) || 0,
+      price_max: Number(els.picksPriceMax && els.picksPriceMax.value) || 1000,
+      save: true,
+    };
+    const res = await fetch('/api/picks/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus('Re-rank failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    renderPicks(data);
+    setStatus(`Re-ranked ${data.picks ? data.picks.length : 0} picks for ${data.as_of || '?'}`);
+  } catch (err) {
+    setStatus('Re-rank failed: ' + (err && err.message ? err.message : 'network error'));
+  } finally {
+    els.picksRunBtn.disabled = false;
+    els.picksRunBtn.textContent = prevTxt;
+  }
+}
+
+// Update the slider readouts as the user drags.
+for (const k of _PICKS_WEIGHT_KEYS) {
+  const el = els['picksW' + k];
+  const out = els['picksW' + k + 'Out'];
+  if (el && out) el.addEventListener('input', () => { out.textContent = el.value; });
+}
+if (els.picksTuneBtn && els.picksTune) {
+  els.picksTuneBtn.addEventListener('click', () => {
+    els.picksTune.classList.toggle('hidden');
+    els.picksTuneBtn.textContent = els.picksTune.classList.contains('hidden') ? 'Tune…' : 'Hide tuning';
+  });
+}
+if (els.picksRunBtn) els.picksRunBtn.addEventListener('click', runPicks);
+// Click a pick row → open the hover chart for that ticker.
+if (els.picksList) {
+  els.picksList.addEventListener('click', (ev) => {
+    const row = ev.target.closest('.pick-row');
+    if (row && row.dataset.ticker) {
+      showHoverChart(row.dataset.ticker, row);
+    }
+  });
+  // Same mouseover/mouseout pattern the scanner table uses — the
+  // shared onTickerEnter/Leave handlers key off any [data-ticker]
+  // ancestor, and .pick-row carries that attribute.
+  els.picksList.addEventListener('mouseover', onTickerEnter);
+  els.picksList.addEventListener('mouseout', onTickerLeave);
+}
+wireCollapse(els.picksToggle, els.picksBody, 'collapse_picks');
+loadPicks();
+startPicksPolling();
 
 
 // --- setups scanner ------------------------------------------------------
@@ -1921,25 +2621,25 @@ if (els.setupsCreateAlertBtn) {
 // 'All' scope is setup-only — toggle its visibility, default the scope to
 // the most useful value for the chosen rule type ('all' for Setup, since
 // setups are EOD and the snapshot pre-filter keeps it cheap; 'watchlist'
-// for Screener, since scanning the universe over Alpaca would blow up
-// quota), and update the create button label.
+// Both rule types now route their Create flow through the criteria
+// modal, so the inline name + scope inputs are unused. The rule-type
+// selector remains as a quick toggle for which modal mode to open.
 function syncRuleTypeUI() {
   const isSetup = els.ruleType && els.ruleType.value === 'setup';
-  if (els.ruleScopeType) {
-    const allOpt = els.ruleScopeType.querySelector('option[value="all"]');
-    if (allOpt) allOpt.hidden = !isSetup;
-    if (isSetup) {
-      els.ruleScopeType.value = 'all';
-    } else if (els.ruleScopeType.value === 'all') {
-      els.ruleScopeType.value = 'watchlist';
-    }
-    populateScopeValues();
-  }
   if (els.ruleCreateBtn) {
     els.ruleCreateBtn.textContent = isSetup
-      ? 'Create rule (uses Setups filters)'
-      : 'Create rule (uses screener filters)';
+      ? 'Create setup rule…'
+      : 'Create screener rule…';
+    els.ruleCreateBtn.title = isSetup
+      ? 'Open the dialog to pick scope and setup score / price / volume thresholds'
+      : 'Open the dialog to pick scope and screener filter criteria';
   }
+  // Inline name + scope inputs are now redundant — the modal collects
+  // them for both rule types. Keep them in the DOM for back-compat with
+  // anything that reads their values, but hide them visually.
+  if (els.ruleName) els.ruleName.style.display = 'none';
+  if (els.ruleScopeType) els.ruleScopeType.style.display = 'none';
+  if (els.ruleScopeValue) els.ruleScopeValue.style.display = 'none';
 }
 if (els.ruleType) els.ruleType.addEventListener('change', syncRuleTypeUI);
 syncRuleTypeUI();

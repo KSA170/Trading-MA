@@ -266,14 +266,22 @@ def rules_with_last_trigger() -> dict:
         return {}
     try:
         with snapshots._conn() as c, c.cursor() as cur:
+            # Two-step: find each rule's latest minute, then count rows
+            # at that minute. Using MAX() explicitly (rather than
+            # DISTINCT ON + ORDER BY) avoids the subtle ordering
+            # gotchas the latter has when rows have identical timestamps
+            # or NULL sent_at values.
             cur.execute(
-                "WITH events AS ("
-                "  SELECT rule_id, date_trunc('minute', sent_at) AS t, "
-                "         COUNT(*)::int AS cnt "
-                "  FROM alert_sent GROUP BY rule_id, t"
-                ") "
-                "SELECT DISTINCT ON (rule_id) rule_id, t, cnt "
-                "FROM events ORDER BY rule_id, t DESC"
+                "SELECT m.rule_id, m.last_minute, "
+                "       (SELECT COUNT(*)::int FROM alert_sent a "
+                "        WHERE a.rule_id = m.rule_id "
+                "          AND date_trunc('minute', a.sent_at) = m.last_minute) "
+                "FROM ("
+                "  SELECT rule_id, MAX(date_trunc('minute', sent_at)) AS last_minute "
+                "  FROM alert_sent "
+                "  WHERE sent_at IS NOT NULL "
+                "  GROUP BY rule_id"
+                ") m"
             )
             rows = cur.fetchall()
         return {r[0]: (r[1], int(r[2])) for r in rows}

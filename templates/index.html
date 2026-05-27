@@ -13,6 +13,7 @@
     <div class="status">
       <span id="status-text">idle</span>
       <span id="cache-status" class="cache-status" title="Disk-cache state for the selected universe. Cold runs hit Yahoo for every ticker and can take minutes."></span>
+      <span id="pruned-status" class="cache-status pruned-status" title="" hidden></span>
       <span id="snapshot-status" class="cache-status" title="Postgres snapshot status. Dates shown here are the ones screens can serve directly from the DB."></span>
       <button id="warm-btn" type="button" title="Pre-fetch every ticker's recent history to disk so the next screen reads from a local cache instead of Yahoo. Best run after market close.">Warm cache</button>
       <button id="run-btn" class="primary">Run screen</button>
@@ -228,6 +229,67 @@
       </div>
     </section>
 
+    <section class="match-history picks-panel">
+      <button id="picks-toggle" type="button" class="section-toggle" aria-controls="picks-body" aria-expanded="true">
+        <span class="chevron">▾</span> Watchlist — tonight's picks <span class="muted">(top 25, ranked by composite signal — nightly at close+1hr · intraday VWAP-reclaim alerts on US names)</span>
+      </button>
+      <div id="picks-body" class="history-body">
+        <div class="picks-header">
+          <span id="picks-as-of" class="muted"></span>
+          <span class="rule-spacer"></span>
+          <button id="picks-tune-btn" type="button" title="Show / hide the weight + price-range tuning panel">Tune…</button>
+          <button id="picks-run-btn" type="button" title="Re-rank the universe right now with the current settings (synchronous, ~5-30s)">Re-rank now</button>
+        </div>
+        <div id="picks-list">
+          <p class="muted history-empty">No picks yet — the nightly job hasn't run, or click "Re-rank now" to compute them on demand.</p>
+        </div>
+
+        <div id="picks-tune" class="picks-tune hidden">
+          <h4 class="picks-tune-h">Composite weights (sum auto-normalised)</h4>
+          <p class="muted picks-tune-help">Higher = the signal matters more in the final composite. Set any to 0 to ignore it.</p>
+          <div class="picks-weight-grid">
+            <label class="picks-weight" title="VC — Volatility Contraction&#10;&#10;Formula: 20-day ATR ÷ 60-day ATR&#10;&#10;What it measures: how much the daily price range has compressed recently versus its 3-month baseline.&#10;&#10;Low ratio (well below 1) = range is tightening — a &quot;coiled spring&quot; that often precedes a sharp move. High score = strong contraction.&#10;Ratio near or above 1 = no compression. Low score.&#10;&#10;Why precursor: breakouts launch out of quiet, narrow consolidations, not noisy ones.">
+              <span class="picks-weight-name">VC <span class="muted">Volatility contraction</span></span>
+              <input id="picks-w-vc" type="range" min="0" max="100" step="5" value="25" />
+              <span id="picks-w-vc-out" class="picks-weight-out">25</span>
+            </label>
+            <label class="picks-weight" title="RS — Relative Strength&#10;&#10;Formula: 20-day percent return, then percentile-ranked across the eligible universe.&#10;&#10;What it measures: how this ticker's last month of performance stacks up against every other stock that passed the price filter.&#10;&#10;Score = the percentile rank itself. A ticker at the 95th percentile (top 5% of the universe over 20 trading days) scores 95. The lowest performer scores 0.&#10;&#10;Why precursor: institutional money rotates into leaders. Strong RS means the stock is already on big-money screens before the next move.">
+              <span class="picks-weight-name">RS <span class="muted">Relative strength</span></span>
+              <input id="picks-w-rs" type="range" min="0" max="100" step="5" value="25" />
+              <span id="picks-w-rs-out" class="picks-weight-out">25</span>
+            </label>
+            <label class="picks-weight" title="VA — Volume Accumulation&#10;&#10;Formula: 10-day average dollar volume ÷ 60-day average dollar volume.&#10;&#10;What it measures: whether dollars-traded over the last two weeks are running above the three-month baseline. Dollar volume (price × shares) is harder for a single trader to fake than raw share count.&#10;&#10;Ratio > 1 = participation is accelerating (high score).&#10;Ratio ≈ 1 or below = normal-or-quiet flow (low score).&#10;&#10;Why precursor: a stealth accumulation phase shows up as elevated dollar volume on otherwise quiet price action — institutional buyers leaving a footprint before the move.">
+              <span class="picks-weight-name">VA <span class="muted">Volume accumulation</span></span>
+              <input id="picks-w-va" type="range" min="0" max="100" step="5" value="20" />
+              <span id="picks-w-va-out" class="picks-weight-out">20</span>
+            </label>
+            <label class="picks-weight" title="MT — Multi-Timeframe Trend Alignment&#10;&#10;Formula (binary check, 100 / 50 / 0):&#10;  Daily check:  close > EMA21 > EMA50&#10;  Weekly check: close > 10-week SMA&#10;&#10;Both pass → 100&#10;One passes → 50&#10;Neither   → 0&#10;&#10;What it measures: that short, intermediate, and weekly trends all agree. Daily EMAs in the right stack means short-term momentum is positive; the weekly SMA confirms the bigger picture isn't fighting it.&#10;&#10;Why precursor: best entries happen when every timeframe is aligned — no hidden overhead resistance from a broken weekly trend.">
+              <span class="picks-weight-name">MT <span class="muted">Multi-timeframe trend</span></span>
+              <input id="picks-w-mt" type="range" min="0" max="100" step="5" value="15" />
+              <span id="picks-w-mt-out" class="picks-weight-out">15</span>
+            </label>
+            <label class="picks-weight" title="DP — Distance to 20-day Pivot High&#10;&#10;Formula: percent distance from current close to the highest high of the prior 20 trading days, then scored on a bell curve centred at 1.5% below the pivot.&#10;&#10;What it measures: whether the stock is sitting in the &quot;ripe but not yet broken&quot; zone.&#10;&#10;Score peaks at 100 when the stock is ~1.5% below its 20-day high (close enough to break out tomorrow, not yet extended).&#10;Score falls off if the stock is already above the pivot (chase risk) or far below it (still has work to do).&#10;&#10;Why precursor: catches setups before the breakout, not after — best risk/reward and tightest stop placement.">
+              <span class="picks-weight-name">DP <span class="muted">Distance to 20-day pivot</span></span>
+              <input id="picks-w-dp" type="range" min="0" max="100" step="5" value="15" />
+              <span id="picks-w-dp-out" class="picks-weight-out">15</span>
+            </label>
+          </div>
+          <h4 class="picks-tune-h">Price range</h4>
+          <div class="picks-price-grid">
+            <label class="picks-price">
+              <span>Min ($)</span>
+              <input id="picks-price-min" type="number" min="0" step="0.5" value="5" />
+            </label>
+            <label class="picks-price">
+              <span>Max ($)</span>
+              <input id="picks-price-max" type="number" min="0" step="5" value="1000" />
+            </label>
+          </div>
+          <p class="muted picks-tune-help">Saved settings are reused by the nightly cron at close+1hr.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="match-history setups-panel">
       <button id="setups-toggle" type="button" class="section-toggle" aria-controls="setups-body" aria-expanded="true">
         <span class="chevron">▾</span> Setups <span class="muted">(base-breakout / momentum-ignition candidates from the latest snapshot)</span>
@@ -275,11 +337,11 @@
       </button>
       <div id="rules-body" class="history-body">
         <div class="rules-create">
-          <input id="rule-name" type="text" placeholder="Rule name — e.g. Biotech momentum" autocomplete="off" />
-          <select id="rule-type" title="Screener rules use the main filter form; Setup rules use the Setups panel toolbar above.">
+          <select id="rule-type" title="Screener rules use the filter dialog; Setup rules use the Setups panel toolbar above.">
             <option value="screener">Screener filters</option>
             <option value="setup">Setup score</option>
           </select>
+          <input id="rule-name" type="text" placeholder="Rule name — e.g. Biotech momentum" autocomplete="off" />
           <select id="rule-scope-type" title="What set of stocks this rule scans">
             <option value="all" data-rule-type="setup" hidden>All snapshot tickers</option>
             <option value="watchlist">Watchlist</option>
@@ -313,6 +375,143 @@
       <span><span class="dot dot-rsi9"></span> 9d SMA</span>
     </div>
   </div>
+
+  <dialog id="criteria-modal" class="criteria-modal" aria-labelledby="criteria-modal-title">
+    <form id="criteria-form" class="criteria-form" method="dialog">
+      <header class="criteria-modal-header">
+        <h2 id="criteria-modal-title">Screener alert rule</h2>
+        <button type="button" class="criteria-modal-close" data-act="close" aria-label="Close">×</button>
+      </header>
+      <p id="criteria-modal-subtitle" class="muted criteria-modal-subtitle"></p>
+
+      <div id="criteria-modal-meta" class="criteria-modal-meta">
+        <div class="criteria-modal-field">
+          <label for="cm_rule_name">Rule name</label>
+          <input id="cm_rule_name" type="text" placeholder="e.g. Biotech momentum" autocomplete="off" />
+        </div>
+        <div class="criteria-modal-field">
+          <label for="cm_rule_scope_type">Scope</label>
+          <select id="cm_rule_scope_type">
+            <option value="all" hidden>All snapshot tickers</option>
+            <option value="watchlist">Watchlist</option>
+            <option value="industry">Industry</option>
+            <option value="sector">Sector</option>
+          </select>
+        </div>
+        <div class="criteria-modal-field">
+          <label for="cm_rule_scope_value">Sector / Industry</label>
+          <select id="cm_rule_scope_value" disabled>
+            <option value="">—</option>
+          </select>
+        </div>
+      </div>
+      <p id="criteria-modal-context" class="muted criteria-modal-context"></p>
+
+      <div class="criteria-modal-body">
+        <div id="cm-criteria-setup" data-criteria-section="setup" hidden>
+          <h3 class="criteria-modal-section-h">Setup criteria</h3>
+          <p class="muted criteria-modal-help">Setup rules rank the latest EOD snapshot by the base/ignition/earliness composite score. A row alerts when its score ≥ min and it passes the price + dollar-volume floors.</p>
+          <div class="criteria-setup-grid">
+            <div class="filter">
+              <label>Min score (0–100)</label>
+              <input id="cm_setup_score_min" type="number" min="0" max="100" step="5" value="65" />
+            </div>
+            <div class="filter">
+              <label>Min price ($)</label>
+              <input id="cm_setup_min_price" type="number" min="0" step="0.5" value="3" />
+            </div>
+            <div class="filter">
+              <label>Max price ($)</label>
+              <input id="cm_setup_max_price" type="number" min="0" step="5" value="1000" />
+            </div>
+            <div class="filter">
+              <label>Min $-volume / day</label>
+              <input id="cm_setup_min_dollar_vol" type="number" min="0" step="100000" value="1000000" />
+            </div>
+          </div>
+        </div>
+
+        <div id="cm-criteria-screener" data-criteria-section="screener">
+          <h3 class="criteria-modal-section-h">Filter criteria</h3>
+          <div class="criteria-grid">
+
+          <div class="filter-group" data-group="cm_price">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_price" checked /> Price range</label>
+            <div class="filter"><label>min ($)</label><input id="cm_price_min" type="number" step="0.5" min="0" value="1" /></div>
+            <div class="filter"><label>max ($)</label><input id="cm_price_max" type="number" step="1" min="0" value="1000" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_high">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_high" checked /> Price streak</label>
+            <div class="filter"><label>Streak length (days)</label><input id="cm_high_lookback" type="number" min="2" max="60" value="2" /></div>
+            <div class="filter">
+              <label>Mode</label>
+              <select id="cm_streak_mode">
+                <option value="high">Higher highs (high &gt; prior high)</option>
+                <option value="close">Higher closes (close &gt; prior close)</option>
+                <option value="green">Green bodies (close &gt; open)</option>
+                <option value="close_green">Higher closes &amp; green bodies (both)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="filter-group" data-group="cm_rsi">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_rsi" checked /> RSI(14) band</label>
+            <div class="filter"><label>min</label><input id="cm_rsi_min" type="number" step="0.1" min="0" max="100" value="45" /></div>
+            <div class="filter"><label>max</label><input id="cm_rsi_max" type="number" step="0.1" min="0" max="100" value="65" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_rsi_dev">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_rsi_dev" checked /> RSI(14) dev vs 9d SMA</label>
+            <div class="filter"><label>min (%)</label><input id="cm_rsi_dev_min_pct" type="number" step="0.5" value="0" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_rsi_dev_max_pct" type="number" step="0.5" value="10" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_price_dev">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_price_dev" checked /> Price dev vs EMA(21)</label>
+            <div class="filter"><label>min (%)</label><input id="cm_price_dev_min_pct" type="number" step="0.5" value="-1" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_price_dev_max_pct" type="number" step="0.5" value="4" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_ema_dev">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_ema_dev" checked /> EMA(21) dev vs EMA(50)</label>
+            <div class="filter"><label>min (%)</label><input id="cm_ema_dev_min_pct" type="number" step="0.5" value="-3" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_ema_dev_max_pct" type="number" step="0.5" value="3" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_macd">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_macd" checked /> MACD histogram bullish</label>
+            <div class="filter"><label>min hist value</label><input id="cm_macd_hist_min" type="number" step="0.01" value="0" /></div>
+            <div class="filter inline-toggle"><label class="inline-checkbox"><input type="checkbox" id="cm_macd_require_rising" checked /> require rising</label></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_rvol">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_rvol" checked /> Relative volume</label>
+            <div class="filter"><label>lookback (days)</label><input id="cm_rvol_lookback" type="number" min="2" max="60" value="10" /></div>
+            <div class="filter"><label>min (×)</label><input id="cm_rvol_min" type="number" step="0.05" min="0" value="1.2" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_avg_volume">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_avg_volume" checked /> Avg volume floor</label>
+            <div class="filter"><label>min (shares)</label><input id="cm_avg_volume_min" type="number" step="1000" min="0" value="50000" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_turnover">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_turnover" /> Volume / market cap</label>
+            <div class="filter"><label>min (%)</label><input id="cm_turnover_min_pct" type="number" step="0.1" min="0" value="0.5" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_turnover_max_pct" type="number" step="0.5" min="0" value="100" /></div>
+          </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="criteria-modal-footer">
+        <span id="criteria-modal-msg" class="muted"></span>
+        <button type="button" class="criteria-modal-cancel" data-act="close">Cancel</button>
+        <button type="submit" id="criteria-modal-submit" class="primary">Create rule</button>
+      </footer>
+    </form>
+  </dialog>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
