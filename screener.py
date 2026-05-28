@@ -1194,6 +1194,7 @@ def evaluate_ticker(
     macd_require_rising: bool = True,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
+    pct_change_min: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
@@ -1204,6 +1205,7 @@ def evaluate_ticker(
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
     apply_turnover: bool = False,
+    apply_pct_change: bool = False,
     as_of_offset: int = 0,
 ) -> ScreenHit | None:
     if as_of_offset < 0:
@@ -1238,6 +1240,15 @@ def evaluate_ticker(
     # Price-range filter (applied first - cheapest gate)
     if apply_price and not (price_min <= prev_close <= price_max):
         return None
+
+    # Latest-bar % change vs prior close. Equivalent to the "% chg" column
+    # the UI shows; gating here lets us early-exit before the expensive
+    # streak / RSI / MACD work for tickers that didn't move enough today.
+    if apply_pct_change:
+        if prior_close <= 0:
+            return None
+        if ((prev_close - prior_close) / prior_close * 100.0) < pct_change_min:
+            return None
 
     # Streak check. `streak_mode` decides what makes a streak:
     #   "high"        — each bar's high  strictly above the prior bar's high
@@ -1453,6 +1464,7 @@ def _evaluate_from_snapshot(
     macd_require_rising: bool,
     turnover_min_pct: float,
     turnover_max_pct: float,
+    pct_change_min: float,
     apply_high: bool,
     apply_rsi: bool,
     apply_rsi_dev: bool,
@@ -1463,6 +1475,7 @@ def _evaluate_from_snapshot(
     apply_ema_dev: bool,
     apply_macd: bool,
     apply_turnover: bool,
+    apply_pct_change: bool,
 ) -> ScreenHit | None:
     """Apply every filter against a single snapshot row + its trailing bars.
     Mirrors evaluate_ticker's gates but reads from a dict instead of a
@@ -1476,6 +1489,14 @@ def _evaluate_from_snapshot(
 
     if apply_price and not (price_min <= close <= price_max):
         return None
+
+    # Latest-bar % change vs prior close. Cheap early-exit before the
+    # streak / RSI / MACD work for tickers that didn't move enough today.
+    if apply_pct_change:
+        if prior_close <= 0:
+            return None
+        if ((close - prior_close) / prior_close * 100.0) < pct_change_min:
+            return None
 
     # recent_bars is JSONB; psycopg2 returns it as a dict. Tolerate str too
     # in case the column type ever changes to plain JSON.
@@ -1677,6 +1698,7 @@ def run_screen(
     macd_require_rising: bool = True,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
+    pct_change_min: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
@@ -1687,6 +1709,7 @@ def run_screen(
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
     apply_turnover: bool = False,
+    apply_pct_change: bool = False,
     as_of_offset: int = 0,
     lists: list[str] | None = None,
     extras: list[str] | None = None,
@@ -1743,6 +1766,7 @@ def run_screen(
                         macd_require_rising=macd_require_rising,
                         turnover_min_pct=turnover_min_pct,
                         turnover_max_pct=turnover_max_pct,
+                        pct_change_min=pct_change_min,
                         apply_high=apply_high, apply_rsi=apply_rsi,
                         apply_rsi_dev=apply_rsi_dev,
                         apply_rvol=apply_rvol,
@@ -1752,6 +1776,7 @@ def run_screen(
                         apply_ema_dev=apply_ema_dev,
                         apply_macd=apply_macd,
                         apply_turnover=apply_turnover,
+                        apply_pct_change=apply_pct_change,
                     )
                 except Exception as exc:
                     log.warning("snapshot evaluate failed for %s: %s", tk_name, exc)
@@ -1788,6 +1813,7 @@ def run_screen(
                 macd_require_rising=macd_require_rising,
                 turnover_min_pct=turnover_min_pct,
                 turnover_max_pct=turnover_max_pct,
+                pct_change_min=pct_change_min,
                 apply_high=apply_high,
                 apply_rsi=apply_rsi,
                 apply_rsi_dev=apply_rsi_dev,
@@ -1798,6 +1824,7 @@ def run_screen(
                 apply_ema_dev=apply_ema_dev,
                 apply_macd=apply_macd,
                 apply_turnover=apply_turnover,
+                apply_pct_change=apply_pct_change,
                 as_of_offset=as_of_offset,
             )
         except Exception as exc:
@@ -1917,6 +1944,7 @@ def diagnose_ticker(
     macd_require_rising: bool = True,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
+    pct_change_min: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
@@ -1927,6 +1955,7 @@ def diagnose_ticker(
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
     apply_turnover: bool = False,
+    apply_pct_change: bool = False,
     as_of_offset: int = 0,
 ) -> dict:
     """Run each filter independently and return a per-filter pass/fail
@@ -1988,6 +2017,17 @@ def diagnose_ticker(
     price_ok = price_min <= prev_close <= price_max
     add("price", f"Price ∈ [${price_min}, ${price_max}]", round(prev_close, 4),
         apply_price, price_ok, [price_min, price_max])
+
+    # 1b. Latest-bar % change vs prior close (must be ≥ threshold — a "green
+    # day" filter when the threshold is ≥ 0).
+    pct_change_val = None
+    if prior_close and prior_close > 0 and prev_close == prev_close:  # NaN-safe
+        pct_change_val = (prev_close - prior_close) / prior_close * 100.0
+    pct_change_ok = pct_change_val is not None and pct_change_val >= pct_change_min
+    add("pct_change", f"Latest bar % change ≥ {pct_change_min}%",
+        round(pct_change_val, 2) if pct_change_val is not None else None,
+        apply_pct_change, pct_change_ok, [pct_change_min, None],
+        {"prior_close": round(prior_close, 4) if prior_close == prior_close else None})
 
     # 2. Streak (mode: high / close / green / close_green)
     if streak_mode == "green":

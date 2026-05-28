@@ -63,6 +63,7 @@ DEFAULT_PARAMS: dict = {
     "macd_require_rising": True,
     "turnover_min_pct": 0.5,
     "turnover_max_pct": 100.0,
+    "pct_change_min": 5.0,
     "apply_high": True,
     "apply_rsi": True,
     "apply_rsi_dev": True,
@@ -73,6 +74,7 @@ DEFAULT_PARAMS: dict = {
     "apply_ema_dev": True,
     "apply_macd": True,
     "apply_turnover": False,
+    "apply_pct_change": False,
     "as_of_offset": 0,
     "lists": tuple(sorted(_VALID_LISTS)),
 }
@@ -91,9 +93,10 @@ def _cache_key(params: dict) -> tuple:
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
     macd = (round(float(params["macd_hist_min"]), 4), bool(params["macd_require_rising"])) if params["apply_macd"] else ("off",)
     turnover = (round(float(params["turnover_min_pct"]), 4), round(float(params["turnover_max_pct"]), 4)) if params["apply_turnover"] else ("off",)
+    pct_change = (round(float(params["pct_change_min"]), 4),) if params["apply_pct_change"] else ("off",)
     lists = tuple(sorted(params["lists"]))
     as_of = int(params["as_of_offset"])
-    return ("v11", as_of, price, price_dev, ema_dev, macd, turnover, high, rsi, rsi_dev, rvol, avg_vol, lists)
+    return ("v12", as_of, price, price_dev, ema_dev, macd, turnover, pct_change, high, rsi, rsi_dev, rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -162,6 +165,7 @@ def _parse_params() -> dict:
         "macd_require_rising": _parse_bool("macd_require_rising", True),
         "turnover_min_pct": _flt("turnover_min_pct", 0.5),
         "turnover_max_pct": _flt("turnover_max_pct", 100.0),
+        "pct_change_min": _flt("pct_change_min", 5.0),
         "apply_high": _parse_bool("apply_high", True),
         "apply_rsi": _parse_bool("apply_rsi", True),
         "apply_rsi_dev": _parse_bool("apply_rsi_dev", True),
@@ -172,6 +176,7 @@ def _parse_params() -> dict:
         "apply_ema_dev": _parse_bool("apply_ema_dev", True),
         "apply_macd": _parse_bool("apply_macd", True),
         "apply_turnover": _parse_bool("apply_turnover", False),
+        "apply_pct_change": _parse_bool("apply_pct_change", False),
         "as_of_offset": as_of_offset,
         "lists": tuple(wanted),
     }
@@ -231,6 +236,7 @@ def _api_screen_impl():
         macd_require_rising=params["macd_require_rising"],
         turnover_min_pct=params["turnover_min_pct"],
         turnover_max_pct=params["turnover_max_pct"],
+        pct_change_min=params["pct_change_min"],
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
         apply_rsi_dev=params["apply_rsi_dev"],
@@ -241,6 +247,7 @@ def _api_screen_impl():
         apply_ema_dev=params["apply_ema_dev"],
         apply_macd=params["apply_macd"],
         apply_turnover=params["apply_turnover"],
+        apply_pct_change=params["apply_pct_change"],
         as_of_offset=params["as_of_offset"],
         lists=list(params["lists"]),
     )
@@ -567,6 +574,7 @@ def api_debug(ticker: str):
         macd_require_rising=params["macd_require_rising"],
         turnover_min_pct=params["turnover_min_pct"],
         turnover_max_pct=params["turnover_max_pct"],
+        pct_change_min=params["pct_change_min"],
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
         apply_rsi_dev=params["apply_rsi_dev"],
@@ -577,6 +585,7 @@ def api_debug(ticker: str):
         apply_ema_dev=params["apply_ema_dev"],
         apply_macd=params["apply_macd"],
         apply_turnover=params["apply_turnover"],
+        apply_pct_change=params["apply_pct_change"],
         as_of_offset=params["as_of_offset"],
     )
     return jsonify(result)
