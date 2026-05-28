@@ -389,6 +389,186 @@ def _evaluate_one(baseline: dict, today_bar: dict, cfg: dict) -> dict | None:
     }
 
 
+# --- single-ticker diagnose (mirrors run() per-ticker exactly) ------------
+
+def diagnose(ticker: str, cfg: dict | None = None) -> dict:
+    """Dry-run the same pipeline a real scan would for one ticker:
+    look up the latest snapshot row, derive the baseline, fetch the
+    live Alpaca bar, and compute all four metrics. Returns a
+    pass/fail breakdown per filter plus the reason no alert would
+    fire (eligibility miss, missing data, or already-fired-today).
+
+    Designed so the UI can answer "why didn't I see BTU?" without
+    waiting for the next cron tick."""
+    if cfg is None:
+        cfg = get_config()
+    ticker = (ticker or "").strip().upper()
+    out: dict = {
+        "ticker": ticker,
+        "config": {
+            "pct_change_min": float(cfg["pct_change_min"]),
+            "rvol_min":       float(cfg["rvol_min"]),
+            "rvol_lookback":  int(cfg["rvol_lookback"]),
+            "high_lookback":  int(cfg["high_lookback"]),
+            "vol_mcap_min":   float(cfg["vol_mcap_min"]),
+            "enabled":        bool(cfg.get("enabled", True)),
+        },
+        "is_us": _is_us_ticker(ticker) if ticker else False,
+        "in_snapshot": False,
+        "as_of_baseline": None,
+        "today": None,
+        "already_fired": False,
+        "baseline": None,
+        "today_bar": None,
+        "filters": [],
+        "passes_all": False,
+        "reason": None,
+    }
+    if not ticker:
+        out["reason"] = "ticker required"
+        return out
+    if not snapshots.enabled():
+        out["reason"] = "DATABASE_URL not set — snapshot required"
+        return out
+    if not out["is_us"]:
+        out["reason"] = "not a US ticker (scanner is US-only — TSX/TSXV filtered upstream)"
+        return out
+
+    dates = snapshots.available_dates(1)
+    if not dates:
+        out["reason"] = "no snapshot data available — nightly job hasn't run"
+        return out
+    as_of = dates[0]
+    out["as_of_baseline"] = as_of
+    today_str = _et_now().strftime("%Y-%m-%d")
+    out["today"] = today_str
+
+    snap_row = None
+    for _t, row in snapshots.iter_for_date(as_of, tickers=[ticker]):
+        snap_row = row
+        break
+    if snap_row is None:
+        out["reason"] = (
+            f"ticker not in {as_of} snapshot — outside the screened "
+            f"universe, or the nightly job skipped it"
+        )
+        return out
+    out["in_snapshot"] = True
+
+    shares = snap_row.get("shares")
+    if shares is None or float(shares) <= 0:
+        out["reason"] = "snapshot row has no shares-outstanding — can't compute vol/float"
+        return out
+    bars = _bars_from_row(snap_row)
+    if not bars:
+        out["reason"] = "snapshot row has no recent_bars — can't derive prior baseline"
+        return out
+    prior_bars = [
+        b for b in bars
+        if isinstance(b, dict) and (b.get("d") or "9999-12-31") < today_str
+    ]
+    need = max(int(cfg["rvol_lookback"]), int(cfg["high_lookback"]), 1)
+    if len(prior_bars) < need:
+        out["reason"] = (
+            f"only {len(prior_bars)} prior bars in snapshot — "
+            f"need {need} for the configured lookbacks "
+            f"(rvol={int(cfg['rvol_lookback'])}, high={int(cfg['high_lookback'])})"
+        )
+        return out
+    try:
+        prior_close = float(prior_bars[-1].get("c") or 0)
+        vol_window  = prior_bars[-int(cfg["rvol_lookback"]):]
+        avg_vol     = float(np.mean([float(b.get("v") or 0) for b in vol_window]))
+        high_window = prior_bars[-int(cfg["high_lookback"]):]
+        high_n      = max(float(b.get("h") or 0) for b in high_window)
+    except (TypeError, ValueError) as exc:
+        out["reason"] = f"baseline numeric parse failed: {exc}"
+        return out
+    if prior_close <= 0 or avg_vol <= 0 or high_n <= 0:
+        out["reason"] = (
+            f"baseline non-positive (prior_close={prior_close}, "
+            f"avg_vol={avg_vol:.0f}, high_n={high_n})"
+        )
+        return out
+    out["baseline"] = {
+        "prior_close": prior_close,
+        "avg_vol":     avg_vol,
+        "high_n":      high_n,
+        "shares":      float(shares),
+    }
+    out["already_fired"] = already_fired_today(today_str, ticker)
+
+    today_bars = _fetch_today_bars([ticker], today_str)
+    today_bar = today_bars.get(ticker)
+    if not today_bar:
+        out["reason"] = (
+            "no live bar from Alpaca for today — market may not have "
+            "opened yet, ticker is halted, or it isn't on Alpaca's feed"
+        )
+        return out
+    try:
+        last_price = float(today_bar.get("c") or 0)
+        today_high = float(today_bar.get("h") or 0)
+        today_vol  = float(today_bar.get("v") or 0)
+    except (TypeError, ValueError) as exc:
+        out["reason"] = f"today bar numeric parse failed: {exc}"
+        return out
+    if last_price <= 0 or today_vol <= 0:
+        out["reason"] = (
+            f"today bar has zero price or volume "
+            f"(price={last_price}, vol={today_vol:.0f})"
+        )
+        return out
+    out["today_bar"] = {
+        "price":      last_price,
+        "today_high": today_high,
+        "today_vol":  today_vol,
+    }
+
+    pct_change = (last_price / prior_close - 1.0) * 100.0
+    rvol       = today_vol / avg_vol
+    vol_mcap   = (today_vol / float(shares)) * 100.0
+
+    out["filters"] = [
+        {"name": "pct_change",
+         "label": "% change vs prior close",
+         "threshold": float(cfg["pct_change_min"]),
+         "measured":  pct_change,
+         "unit": "%",
+         "passes": pct_change >= float(cfg["pct_change_min"])},
+        {"name": "rvol",
+         "label": f"Relative volume ({int(cfg['rvol_lookback'])}-day avg)",
+         "threshold": float(cfg["rvol_min"]),
+         "measured":  rvol,
+         "unit": "x",
+         "passes": rvol >= float(cfg["rvol_min"])},
+        {"name": "new_high",
+         "label": f"New {int(cfg['high_lookback'])}-day high",
+         "threshold": high_n,
+         "measured":  today_high,
+         "unit": "$",
+         "passes": today_high > high_n},
+        {"name": "vol_mcap",
+         "label": "Today's vol / shares outstanding",
+         "threshold": float(cfg["vol_mcap_min"]),
+         "measured":  vol_mcap,
+         "unit": "%",
+         "passes": vol_mcap >= float(cfg["vol_mcap_min"])},
+    ]
+    out["passes_all"] = all(f["passes"] for f in out["filters"])
+    if out["passes_all"] and out["already_fired"]:
+        out["reason"] = (
+            "would fire — but an alert for this ticker already fired "
+            "earlier today (one alert per ticker per day)"
+        )
+    elif out["passes_all"]:
+        out["reason"] = "passes all filters — would fire on next scan"
+    else:
+        failed = [f["label"] for f in out["filters"] if not f["passes"]]
+        out["reason"] = "fails: " + "; ".join(failed)
+    return out
+
+
 # --- dedup / persistence ---------------------------------------------------
 
 def already_fired_today(alert_date: str, ticker: str) -> bool:
