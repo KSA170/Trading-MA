@@ -463,13 +463,23 @@ def alerts_for_date(alert_date: str | None = None) -> list[dict]:
 
 # --- Telegram --------------------------------------------------------------
 
-def _format_telegram(ticker: str, m: dict, cfg: dict) -> str:
-    return (
-        f"🚀 <b>{ticker}</b> · momentum scan · ${m['price']:.2f}\n"
+def _format_telegram(ticker: str, m: dict, cfg: dict,
+                     insider: dict | None = None,
+                     fund: dict | None = None) -> str:
+    import enrich
+    lines = [
+        f"🚀 <b>{ticker}</b> · momentum scan · ${m['price']:.2f}",
         f"<i>+{m['pct_change']:.1f}% today · RVOL {m['rvol']:.1f}× · "
         f"new {cfg['high_lookback']}-day high (prior ${m['prior_high_n']:.2f}) · "
-        f"{m['vol_mcap_pct']:.2f}% of float</i>"
-    )
+        f"{m['vol_mcap_pct']:.2f}% of float</i>",
+    ]
+    insider_line = enrich.format_insider_line(insider)
+    if insider_line:
+        lines.append(insider_line)
+    fund_line = enrich.format_fundamentals_line(fund)
+    if fund_line:
+        lines.append(fund_line)
+    return "\n".join(lines)
 
 
 def _format_details(m: dict, cfg: dict) -> str:
@@ -547,7 +557,13 @@ def run() -> int:
         details = _format_details(m, cfg)
         if not record_alert(today, ticker, m, details):
             continue   # someone else inserted it first
-        msg = _format_telegram(ticker, m, cfg)
+        # Enrichment is best-effort. Both functions swallow exceptions
+        # and return None / {} on failure so a flaky upstream can't
+        # block the Telegram send.
+        import enrich
+        insider = enrich.last_insider_transaction(ticker)
+        fund = enrich.fundamentals(ticker)
+        msg = _format_telegram(ticker, m, cfg, insider=insider, fund=fund)
         try:
             ok = alerts_mod.send_telegram(msg)
             if not ok:
