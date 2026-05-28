@@ -1243,6 +1243,69 @@ table.sortable th.th-drag-over {
 }
 .momentum-header .rule-spacer { flex: 1; }
 
+.momentum-diagnose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 8px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.momentum-diagnose input {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  width: 100px;
+  text-transform: uppercase;
+}
+.momentum-diagnose-out {
+  padding: 8px;
+  margin: 0 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12px;
+}
+.momentum-diagnose-out.hidden { display: none; }
+.momentum-diag-header { padding-bottom: 6px; }
+.momentum-diag-header.pass { color: var(--green); }
+.momentum-diag-header.fail { color: var(--red); }
+.momentum-diag-context {
+  padding: 4px 0 8px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.momentum-diag-context code {
+  color: var(--text);
+  background: transparent;
+  padding: 0;
+}
+.momentum-diag-grid {
+  display: grid;
+  gap: 4px;
+}
+.momentum-diag-row {
+  display: grid;
+  grid-template-columns: 20px 1fr 120px 120px;
+  align-items: baseline;
+  gap: 8px;
+}
+.momentum-diag-row.pass .momentum-diag-tick { color: var(--green); }
+.momentum-diag-row.fail .momentum-diag-tick { color: var(--red); }
+.momentum-diag-row.fail .momentum-diag-measured { color: var(--red); }
+.momentum-diag-measured {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.momentum-diag-threshold {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .momentum-row {
   display: grid;
   grid-template-columns: 56px 80px 64px 64px 1fr 1fr 1fr;

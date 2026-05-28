@@ -335,6 +335,13 @@
           <button id="momentum-save-btn" type="button" title="Persist these thresholds. The next cron run (every ~5 min) will pick them up automatically.">Save</button>
           <span id="momentum-save-msg" class="muted"></span>
         </div>
+        <div class="momentum-diagnose">
+          <label class="muted" for="momentum-diagnose-ticker">Diagnose ticker:</label>
+          <input id="momentum-diagnose-ticker" type="text" placeholder="e.g. BTU" autocomplete="off" />
+          <button id="momentum-diagnose-btn" type="button" title="Run the same 4-filter check the scanner does, against this ticker right now. Shows every measured value vs its threshold so you can see exactly which filter blocked the alert.">Check</button>
+          <span id="momentum-diagnose-status" class="muted"></span>
+        </div>
+        <div id="momentum-diagnose-out" class="momentum-diagnose-out hidden"></div>
         <div class="momentum-header">
           <span id="momentum-as-of" class="muted"></span>
           <span class="rule-spacer"></span>

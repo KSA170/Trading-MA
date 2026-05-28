@@ -95,6 +95,10 @@ const els = {
   momentumSaveBtn: $('#momentum-save-btn'),
   momentumSaveMsg: $('#momentum-save-msg'),
   momentumAlertsToggleBtn: $('#momentum-alerts-toggle-btn'),
+  momentumDiagnoseTicker: $('#momentum-diagnose-ticker'),
+  momentumDiagnoseBtn: $('#momentum-diagnose-btn'),
+  momentumDiagnoseStatus: $('#momentum-diagnose-status'),
+  momentumDiagnoseOut: $('#momentum-diagnose-out'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
@@ -2638,6 +2642,113 @@ function startMomentumPolling() {
 
 if (els.momentumSaveBtn) els.momentumSaveBtn.addEventListener('click', saveMomentumConfig);
 if (els.momentumAlertsToggleBtn) els.momentumAlertsToggleBtn.addEventListener('click', toggleMomentumAlerts);
+
+function renderMomentumDiagnose(r) {
+  if (!els.momentumDiagnoseOut) return;
+  if (!r || r.error) {
+    els.momentumDiagnoseOut.classList.remove('hidden');
+    els.momentumDiagnoseOut.innerHTML =
+      `<p class="muted">${escapeHtml((r && r.error) || 'Diagnose failed.')}</p>`;
+    return;
+  }
+  const fmt = (v, unit, digits) => {
+    if (v === null || v === undefined || !Number.isFinite(v)) return '—';
+    const s = unit === '$' ? '$' + Number(v).toFixed(digits ?? 2)
+            : unit === 'x' ? Number(v).toFixed(digits ?? 2) + '×'
+            : unit === '%' ? Number(v).toFixed(digits ?? 2) + '%'
+            : String(v);
+    return s;
+  };
+  const headerCls = r.passes_all
+    ? (r.already_fired ? 'momentum-diag-header muted' : 'momentum-diag-header pass')
+    : 'momentum-diag-header fail';
+  const header = `
+    <div class="${headerCls}">
+      <strong>${escapeHtml(r.ticker)}</strong> ·
+      ${escapeHtml(r.reason || '')}
+    </div>`;
+
+  const ctxRows = [];
+  if (r.as_of_baseline)
+    ctxRows.push(`Baseline snapshot: <code>${escapeHtml(r.as_of_baseline)}</code>`);
+  if (r.today)
+    ctxRows.push(`Today (ET): <code>${escapeHtml(r.today)}</code>`);
+  if (r.baseline) {
+    ctxRows.push(
+      `Prior close <code>${fmt(r.baseline.prior_close, '$')}</code> · ` +
+      `avg vol <code>${Math.round(r.baseline.avg_vol).toLocaleString()}</code> · ` +
+      `${r.config.high_lookback}-day high <code>${fmt(r.baseline.high_n, '$')}</code> · ` +
+      `shares <code>${Math.round(r.baseline.shares).toLocaleString()}</code>`
+    );
+  }
+  if (r.today_bar) {
+    ctxRows.push(
+      `Today price <code>${fmt(r.today_bar.price, '$')}</code> · ` +
+      `today high <code>${fmt(r.today_bar.today_high, '$')}</code> · ` +
+      `today vol <code>${Math.round(r.today_bar.today_vol).toLocaleString()}</code>`
+    );
+  }
+  if (r.already_fired)
+    ctxRows.push(`<strong>Already fired today</strong> — dedupe blocks a second alert.`);
+  const ctx = ctxRows.length
+    ? `<div class="momentum-diag-context">${ctxRows.map(s => `<div>${s}</div>`).join('')}</div>`
+    : '';
+
+  const rows = (r.filters || []).map((f) => {
+    const tick = f.passes ? '✓' : '✗';
+    const cls = f.passes ? 'pass' : 'fail';
+    const measured = fmt(f.measured, f.unit);
+    const threshold = f.name === 'new_high'
+      ? `> ${fmt(f.threshold, f.unit)}`
+      : `≥ ${fmt(f.threshold, f.unit)}`;
+    return `
+      <div class="momentum-diag-row ${cls}">
+        <span class="momentum-diag-tick">${tick}</span>
+        <span class="momentum-diag-label">${escapeHtml(f.label)}</span>
+        <span class="momentum-diag-measured">${measured}</span>
+        <span class="momentum-diag-threshold muted">${threshold}</span>
+      </div>`;
+  }).join('');
+
+  els.momentumDiagnoseOut.classList.remove('hidden');
+  els.momentumDiagnoseOut.innerHTML = header + ctx + (rows
+    ? `<div class="momentum-diag-grid">${rows}</div>`
+    : '');
+}
+
+async function runMomentumDiagnose() {
+  if (!els.momentumDiagnoseBtn || !els.momentumDiagnoseTicker) return;
+  const ticker = (els.momentumDiagnoseTicker.value || '').trim().toUpperCase();
+  if (!ticker) {
+    if (els.momentumDiagnoseStatus) els.momentumDiagnoseStatus.textContent = 'Enter a ticker first.';
+    return;
+  }
+  const prevTxt = els.momentumDiagnoseBtn.textContent;
+  els.momentumDiagnoseBtn.disabled = true;
+  els.momentumDiagnoseBtn.textContent = 'Checking…';
+  if (els.momentumDiagnoseStatus) els.momentumDiagnoseStatus.textContent = '';
+  try {
+    const res = await fetch('/api/momentum/diagnose?ticker=' + encodeURIComponent(ticker), { cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      renderMomentumDiagnose({ error: data.error || ('HTTP ' + res.status) });
+      return;
+    }
+    renderMomentumDiagnose(data);
+  } catch (err) {
+    renderMomentumDiagnose({ error: (err && err.message) || 'network error' });
+  } finally {
+    els.momentumDiagnoseBtn.disabled = false;
+    els.momentumDiagnoseBtn.textContent = prevTxt;
+  }
+}
+
+if (els.momentumDiagnoseBtn) els.momentumDiagnoseBtn.addEventListener('click', runMomentumDiagnose);
+if (els.momentumDiagnoseTicker) {
+  els.momentumDiagnoseTicker.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); runMomentumDiagnose(); }
+  });
+}
 if (els.momentumList) {
   els.momentumList.addEventListener('click', (ev) => {
     const row = ev.target.closest('.momentum-row');
