@@ -414,6 +414,7 @@ def diagnose(ticker: str, as_of: str | None = None,
     out: dict = {
         "ticker": ticker,
         "mode": "historical" if is_historical else "live",
+        "source": None,
         "config": {
             "pct_change_min": float(cfg["pct_change_min"]),
             "rvol_min":       float(cfg["rvol_min"]),
@@ -525,7 +526,21 @@ def diagnose(ticker: str, as_of: str | None = None,
     }
     out["already_fired"] = already_fired_today(target_date, ticker)
 
-    if is_historical:
+    # Decide where the "today" bar comes from.
+    #   - historical: always from the snapshot (the only source we have)
+    #   - live + snapshot has today's bar: from the snapshot (the
+    #     nightly job at close+1hr has already written it, so an
+    #     Alpaca call here would be redundant — and probably fail
+    #     after-hours anyway)
+    #   - live + snapshot doesn't yet have today: from Alpaca (we're
+    #     mid-session; live in-progress bar is the right source)
+    today_in_snapshot = any(
+        isinstance(b, dict) and b.get("d") == target_date for b in bars
+    )
+    source = "snapshot" if (is_historical or today_in_snapshot) else "alpaca"
+    out["source"] = source
+
+    if source == "snapshot":
         today_bar = None
         for b in bars:
             if isinstance(b, dict) and b.get("d") == target_date:
@@ -597,7 +612,7 @@ def diagnose(ticker: str, as_of: str | None = None,
         out["reason"] = (
             f"would have fired — but an alert already fired for this "
             f"ticker on {target_date}"
-            if is_historical
+            if source == "snapshot"
             else "would fire — but an alert for this ticker already fired "
                  "earlier today (one alert per ticker per day)"
         )
@@ -605,7 +620,7 @@ def diagnose(ticker: str, as_of: str | None = None,
         out["reason"] = (
             f"EOD close on {target_date} passed all filters — a live scan "
             f"that day would have fired (or earlier on an intraday peak)"
-            if is_historical
+            if source == "snapshot"
             else "passes all filters — would fire on next scan"
         )
     else:
