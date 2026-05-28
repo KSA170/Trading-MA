@@ -63,6 +63,16 @@
       </div>
     </div>
 
+    <div class="filter-group" data-group="pct_change">
+      <label class="group-toggle" title="Filter the universe to tickers whose latest bar gained at least this much vs. the prior trading day's close. Day-over-day — same number as the '% chg' column in the results table. Threshold ≥ 0 implicitly requires a green day.">
+        <input type="checkbox" id="apply_pct_change" /> Latest bar % gain
+      </label>
+      <div class="filter">
+        <label>min (%)</label>
+        <input id="pct_change_min" type="number" step="0.5" min="0" value="5" />
+      </div>
+    </div>
+
     <div class="filter-group" data-group="high">
       <label class="group-toggle"><input type="checkbox" id="apply_high" checked /> Price streak</label>
       <div class="filter">
@@ -484,6 +494,13 @@
             <label class="group-toggle"><input type="checkbox" id="cm_apply_price" checked /> Price range</label>
             <div class="filter"><label>min ($)</label><input id="cm_price_min" type="number" step="0.5" min="0" value="1" /></div>
             <div class="filter"><label>max ($)</label><input id="cm_price_max" type="number" step="1" min="0" value="1000" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_pct_change">
+            <label class="group-toggle" title="Filter the universe to tickers whose latest bar gained at least this much vs. the prior trading day's close. Day-over-day — same number as the '% chg' column in the results table.">
+              <input type="checkbox" id="cm_apply_pct_change" /> Latest bar % gain
+            </label>
+            <div class="filter"><label>min (%)</label><input id="cm_pct_change_min" type="number" step="0.5" min="0" value="5" /></div>
           </div>
 
           <div class="filter-group" data-group="cm_high">

@@ -139,6 +139,7 @@ const inputs = {
   macd_hist_min: $('#macd_hist_min'),
   turnover_min_pct: $('#turnover_min_pct'),
   turnover_max_pct: $('#turnover_max_pct'),
+  pct_change_min: $('#pct_change_min'),
 };
 
 const refreshUniverseBtn = $('#refresh-universe-btn');
@@ -155,6 +156,7 @@ const toggles = {
   apply_macd: $('#apply_macd'),
   macd_require_rising: $('#macd_require_rising'),
   apply_turnover: $('#apply_turnover'),
+  apply_pct_change: $('#apply_pct_change'),
 };
 
 // Parallel inputs/toggles for the screener-rule criteria modal — same keys
@@ -178,6 +180,7 @@ const modalInputs = {
   macd_hist_min: $('#cm_macd_hist_min'),
   turnover_min_pct: $('#cm_turnover_min_pct'),
   turnover_max_pct: $('#cm_turnover_max_pct'),
+  pct_change_min: $('#cm_pct_change_min'),
 };
 const modalToggles = {
   apply_high: $('#cm_apply_high'),
@@ -191,6 +194,7 @@ const modalToggles = {
   apply_macd: $('#cm_apply_macd'),
   macd_require_rising: $('#cm_macd_require_rising'),
   apply_turnover: $('#cm_apply_turnover'),
+  apply_pct_change: $('#cm_apply_pct_change'),
 };
 
 // Setup-rule criteria fields inside the same modal (shown when rule
@@ -476,6 +480,7 @@ function syncDisabledStates() {
     apply_ema_dev: 'ema_dev',
     apply_macd: 'macd',
     apply_turnover: 'turnover',
+    apply_pct_change: 'pct_change',
   };
   for (const [toggleId, groupKey] of Object.entries(map)) {
     const t = toggles[toggleId];
@@ -1740,6 +1745,7 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
   if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
   if (p.apply_turnover) out.push(`Turnover ${n(p.turnover_min_pct)}–${n(p.turnover_max_pct)}%`);
+  if (p.apply_pct_change) out.push(`Latest % change ≥ ${n(p.pct_change_min)}%`);
   return out;
 }
 
@@ -2079,6 +2085,7 @@ function syncModalDisabled() {
     apply_ema_dev: 'cm_ema_dev',
     apply_macd: 'cm_macd',
     apply_turnover: 'cm_turnover',
+    apply_pct_change: 'cm_pct_change',
   };
   for (const [toggleKey, groupKey] of Object.entries(map)) {
     const t = modalToggles[toggleKey];
