@@ -218,6 +218,14 @@ def run() -> int:
 
     picker.init_tables()
 
+    # UI kill-switch — when the user has toggled alerts OFF in the
+    # watchlist panel, exit before any Alpaca calls / DB writes /
+    # Telegram. The workflow still runs on its 5-min schedule but
+    # does no work and fires nothing.
+    if not picker.get_config().get("intraday_alerts_enabled", True):
+        log.info("intraday alerts disabled in UI — skipping")
+        return 0
+
     now_et = _et_now()
     force = os.environ.get(_FORCE_RUN_ENV, "").lower() in ("1", "true", "yes")
     if not _market_is_open(now_et) and not force:

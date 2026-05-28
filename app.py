@@ -861,6 +861,20 @@ def api_picks_intraday_alerts():
     return jsonify({"alerts": picker.intraday_alerts_for_date(date)})
 
 
+@app.route("/api/picks/intraday-alerts/enabled", methods=["POST"])
+def api_picks_intraday_alerts_toggle():
+    """UI kill-switch for the picker_intraday workflow. When OFF, the
+    GitHub Actions cron still fires every 5 min but picker_intraday.run
+    exits immediately — no Alpaca calls, no DB writes, no Telegram."""
+    payload = request.get_json(silent=True) or {}
+    if "enabled" not in payload:
+        return jsonify({"error": "missing 'enabled' boolean"}), 400
+    enabled = bool(payload["enabled"])
+    if not picker.set_intraday_alerts_enabled(enabled):
+        return jsonify({"error": "could not persist toggle"}), 500
+    return jsonify({"enabled": picker.get_config()["intraday_alerts_enabled"]})
+
+
 @app.route("/api/picks/config", methods=["POST"])
 def api_picks_config():
     """Save picker config without recomputing."""
@@ -912,6 +926,20 @@ def api_momentum_save_config():
 def api_momentum_alerts():
     date = (request.args.get("date") or "").strip() or None
     return jsonify({"alerts": scanner_momentum.alerts_for_date(date)})
+
+
+@app.route("/api/momentum/enabled", methods=["POST"])
+def api_momentum_toggle():
+    """UI kill-switch for the momentum-scanner workflow. When OFF, the
+    GitHub Actions cron still fires every 5 min but scanner_momentum.run
+    exits immediately — no Alpaca calls, no DB writes, no Telegram."""
+    payload = request.get_json(silent=True) or {}
+    if "enabled" not in payload:
+        return jsonify({"error": "missing 'enabled' boolean"}), 400
+    enabled = bool(payload["enabled"])
+    if not scanner_momentum.set_enabled(enabled):
+        return jsonify({"error": "could not persist toggle"}), 500
+    return jsonify({"enabled": scanner_momentum.get_config()["enabled"]})
 
 
 # Provision the Postgres snapshot + alert tables (no-ops when DATABASE_URL

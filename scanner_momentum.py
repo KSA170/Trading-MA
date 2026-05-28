@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS momentum_scanner_config (
     vol_mcap_min    REAL,
     updated_at      TIMESTAMPTZ DEFAULT now()
 );
+-- Toggle that lets the UI pause the scanner without touching GitHub
+-- Actions. The workflow still fires every 5 min on schedule but exits
+-- immediately when this flag is FALSE.
+ALTER TABLE momentum_scanner_config
+    ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS momentum_scanner_alerts (
     alert_date    DATE NOT NULL,
@@ -106,6 +111,7 @@ def get_config() -> dict:
         "rvol_lookback":  DEFAULT_RVOL_LOOKBACK,
         "high_lookback":  DEFAULT_HIGH_LOOKBACK,
         "vol_mcap_min":   DEFAULT_VOL_MCAP_MIN,
+        "enabled":        True,
     }
     if not snapshots.enabled():
         return cfg
@@ -113,8 +119,8 @@ def get_config() -> dict:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
                 "SELECT pct_change_min, rvol_min, rvol_lookback, "
-                "high_lookback, vol_mcap_min FROM momentum_scanner_config "
-                "WHERE id = 1"
+                "high_lookback, vol_mcap_min, enabled "
+                "FROM momentum_scanner_config WHERE id = 1"
             )
             row = cur.fetchone()
     except Exception as exc:
@@ -127,7 +133,29 @@ def get_config() -> dict:
     if row[2] is not None: cfg["rvol_lookback"]  = int(row[2])
     if row[3] is not None: cfg["high_lookback"]  = int(row[3])
     if row[4] is not None: cfg["vol_mcap_min"]   = float(row[4])
+    if row[5] is not None: cfg["enabled"]        = bool(row[5])
     return cfg
+
+
+def set_enabled(enabled: bool) -> bool:
+    """Toggle the scanner kill-switch. Read by run() at startup;
+    when FALSE the workflow exits immediately."""
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO momentum_scanner_config (id, enabled, updated_at) "
+                "VALUES (1, %s, now()) "
+                "ON CONFLICT (id) DO UPDATE SET "
+                "enabled = EXCLUDED.enabled, "
+                "updated_at = now()",
+                (bool(enabled),),
+            )
+        return True
+    except Exception as exc:
+        log.warning("scanner_momentum.set_enabled failed: %s", exc)
+        return False
 
 
 def save_config(
@@ -501,6 +529,12 @@ def run() -> int:
         log.error("DATABASE_URL not set — cannot run momentum scanner")
         return 1
     init_tables()
+
+    # UI kill-switch — when the user has toggled the scanner OFF in
+    # the panel, exit before any Alpaca calls / DB writes / Telegram.
+    if not get_config().get("enabled", True):
+        log.info("scanner disabled in UI — skipping")
+        return 0
 
     now_et = _et_now()
     force = os.environ.get(_FORCE_RUN_ENV, "").lower() in ("1", "true", "yes")
