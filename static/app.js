@@ -66,6 +66,7 @@ const els = {
   picksBody: $('#picks-body'),
   picksList: $('#picks-list'),
   picksAsOf: $('#picks-as-of'),
+  picksAlertsToggleBtn: $('#picks-alerts-toggle-btn'),
   picksTuneBtn: $('#picks-tune-btn'),
   picksRunBtn: $('#picks-run-btn'),
   picksTune: $('#picks-tune'),
@@ -93,6 +94,7 @@ const els = {
   momentumVolMcap: $('#momentum-vol-mcap'),
   momentumSaveBtn: $('#momentum-save-btn'),
   momentumSaveMsg: $('#momentum-save-msg'),
+  momentumAlertsToggleBtn: $('#momentum-alerts-toggle-btn'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
@@ -2348,6 +2350,15 @@ async function loadIntradayAlerts() {
   } catch (_) { /* silent */ }
 }
 
+// Update an "Alerts: ON/OFF" toggle button — shared by the picks panel
+// and the momentum scanner panel. Uses the existing `button.warn` red
+// style for the OFF state so it's hard to miss when alerts are paused.
+function applyAlertsToggleBtn(btn, enabled) {
+  if (!btn) return;
+  btn.textContent = enabled ? 'Alerts: ON' : 'Alerts: OFF';
+  btn.classList.toggle('warn', !enabled);
+}
+
 async function loadPicks() {
   if (!els.picksList) return;
   try {
@@ -2356,8 +2367,38 @@ async function loadPicks() {
     await loadIntradayAlerts();
     const res = await fetch('/api/picks', { cache: 'no-store' });
     if (!res.ok) return;
-    renderPicks(await res.json());
+    const data = await res.json();
+    renderPicks(data);
+    if (data && data.config) {
+      applyAlertsToggleBtn(
+        els.picksAlertsToggleBtn,
+        data.config.intraday_alerts_enabled !== false,
+      );
+    }
   } catch (_) { /* silent */ }
+}
+
+async function togglePicksIntradayAlerts() {
+  if (!els.picksAlertsToggleBtn) return;
+  const next = !els.picksAlertsToggleBtn.textContent.includes('ON');
+  els.picksAlertsToggleBtn.disabled = true;
+  try {
+    const res = await fetch('/api/picks/intraday-alerts/enabled', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus('Toggle failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    applyAlertsToggleBtn(els.picksAlertsToggleBtn, !!data.enabled);
+  } catch (err) {
+    setStatus('Toggle failed: ' + (err && err.message ? err.message : 'network error'));
+  } finally {
+    els.picksAlertsToggleBtn.disabled = false;
+  }
 }
 
 // Auto-refresh picks every 60s. The intraday cron fires at 5-min
@@ -2417,6 +2458,7 @@ if (els.picksTuneBtn && els.picksTune) {
   });
 }
 if (els.picksRunBtn) els.picksRunBtn.addEventListener('click', runPicks);
+if (els.picksAlertsToggleBtn) els.picksAlertsToggleBtn.addEventListener('click', togglePicksIntradayAlerts);
 // Click a pick row → open the hover chart for that ticker.
 if (els.picksList) {
   els.picksList.addEventListener('click', (ev) => {
@@ -2512,7 +2554,36 @@ async function loadMomentumConfig() {
     if (!res.ok) return;
     const data = await res.json();
     momentumApplyConfigToUI(data.config);
+    if (data && data.config) {
+      applyAlertsToggleBtn(
+        els.momentumAlertsToggleBtn,
+        data.config.enabled !== false,
+      );
+    }
   } catch (_) { /* silent */ }
+}
+
+async function toggleMomentumAlerts() {
+  if (!els.momentumAlertsToggleBtn) return;
+  const next = !els.momentumAlertsToggleBtn.textContent.includes('ON');
+  els.momentumAlertsToggleBtn.disabled = true;
+  try {
+    const res = await fetch('/api/momentum/enabled', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus('Toggle failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    applyAlertsToggleBtn(els.momentumAlertsToggleBtn, !!data.enabled);
+  } catch (err) {
+    setStatus('Toggle failed: ' + (err && err.message ? err.message : 'network error'));
+  } finally {
+    els.momentumAlertsToggleBtn.disabled = false;
+  }
 }
 
 async function loadMomentumAlerts() {
@@ -2566,6 +2637,7 @@ function startMomentumPolling() {
 }
 
 if (els.momentumSaveBtn) els.momentumSaveBtn.addEventListener('click', saveMomentumConfig);
+if (els.momentumAlertsToggleBtn) els.momentumAlertsToggleBtn.addEventListener('click', toggleMomentumAlerts);
 if (els.momentumList) {
   els.momentumList.addEventListener('click', (ev) => {
     const row = ev.target.closest('.momentum-row');

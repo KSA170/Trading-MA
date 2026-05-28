@@ -95,6 +95,11 @@ CREATE TABLE IF NOT EXISTS picker_config (
     price_max   REAL,
     updated_at  TIMESTAMPTZ DEFAULT now()
 );
+-- Toggle that lets the UI pause the picker-intraday workflow without
+-- touching GitHub Actions. The workflow still fires every 5 min on
+-- schedule, but exits immediately when this flag is FALSE.
+ALTER TABLE picker_config
+    ADD COLUMN IF NOT EXISTS intraday_alerts_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
 -- Stage 2: intraday triggers that fire on the nightly top-25 watchlist.
 -- One row per (date, ticker, trigger_type) — dedupes so the cron can
@@ -508,14 +513,15 @@ def get_config() -> dict:
         "weights":   dict(DEFAULT_WEIGHTS),
         "price_min": DEFAULT_PRICE_MIN,
         "price_max": DEFAULT_PRICE_MAX,
+        "intraday_alerts_enabled": True,
     }
     if not snapshots.enabled():
         return cfg
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
-                "SELECT weights, price_min, price_max FROM picker_config "
-                "WHERE id = 1"
+                "SELECT weights, price_min, price_max, intraday_alerts_enabled "
+                "FROM picker_config WHERE id = 1"
             )
             row = cur.fetchone()
     except Exception as exc:
@@ -537,7 +543,33 @@ def get_config() -> dict:
         cfg["price_min"] = float(row[1])
     if row[2] is not None:
         cfg["price_max"] = float(row[2])
+    if row[3] is not None:
+        cfg["intraday_alerts_enabled"] = bool(row[3])
     return cfg
+
+
+def set_intraday_alerts_enabled(enabled: bool) -> bool:
+    """Toggle the intraday-alerts kill-switch. Read by picker_intraday.py
+    at startup; when FALSE the workflow exits immediately."""
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            # UPSERT the singleton row — if the row doesn't exist yet
+            # (fresh install), the other config fields stay NULL and
+            # get_config falls back to module defaults.
+            cur.execute(
+                "INSERT INTO picker_config (id, intraday_alerts_enabled, updated_at) "
+                "VALUES (1, %s, now()) "
+                "ON CONFLICT (id) DO UPDATE SET "
+                "intraday_alerts_enabled = EXCLUDED.intraday_alerts_enabled, "
+                "updated_at = now()",
+                (bool(enabled),),
+            )
+        return True
+    except Exception as exc:
+        log.warning("picker.set_intraday_alerts_enabled failed: %s", exc)
+        return False
 
 
 def save_config(weights: dict, price_min: float, price_max: float) -> bool:

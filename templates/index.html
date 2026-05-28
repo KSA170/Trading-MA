@@ -247,6 +247,7 @@
         <div class="picks-header">
           <span id="picks-as-of" class="muted"></span>
           <span class="rule-spacer"></span>
+          <button id="picks-alerts-toggle-btn" type="button" title="Pause / resume the intraday VWAP-reclaim alerts on tonight's picks. When OFF, the cron still runs every 5 min but exits immediately — no Telegram, no DB writes.">Alerts: …</button>
           <button id="picks-tune-btn" type="button" title="Show / hide the weight + price-range tuning panel">Tune…</button>
           <button id="picks-run-btn" type="button" title="Re-rank the universe right now with the current settings (synchronous, ~5-30s)">Re-rank now</button>
         </div>
@@ -337,6 +338,7 @@
         <div class="momentum-header">
           <span id="momentum-as-of" class="muted"></span>
           <span class="rule-spacer"></span>
+          <button id="momentum-alerts-toggle-btn" type="button" title="Pause / resume the real-time momentum scanner. When OFF, the cron still runs every 5 min but exits immediately — no Alpaca calls, no Telegram.">Alerts: …</button>
           <span id="momentum-count" class="muted"></span>
         </div>
         <div id="momentum-list">
