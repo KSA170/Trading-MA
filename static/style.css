@@ -1305,6 +1305,10 @@ table.sortable th.th-drag-over {
 .momentum-diag-row.pass .momentum-diag-tick { color: var(--green); }
 .momentum-diag-row.fail .momentum-diag-tick { color: var(--red); }
 .momentum-diag-row.fail .momentum-diag-measured { color: var(--red); }
+.momentum-diag-detail {
+  font-size: 11px;
+  padding-top: 2px;
+}
 .momentum-diag-measured {
   text-align: right;
   font-variant-numeric: tabular-nums;

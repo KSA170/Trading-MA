@@ -2723,10 +2723,32 @@ function renderMomentumDiagnose(r) {
     const threshold = f.name === 'new_high'
       ? `> ${fmt(f.threshold, f.unit)}`
       : `≥ ${fmt(f.threshold, f.unit)}`;
+    // Show the raw inputs to each ratio so the reader doesn't have to
+    // back-solve them from the context block. Only render if we have
+    // both today_bar and baseline (i.e. we got past every eligibility
+    // gate); otherwise leave blank.
+    let detail = '';
+    if (r.today_bar && r.baseline) {
+      const tb = r.today_bar, bl = r.baseline;
+      const px = (v) => '$' + Number(v).toFixed(2);
+      const vol = (v) => Math.round(v).toLocaleString();
+      if (f.name === 'pct_change') {
+        detail = `current price ${px(tb.price)} vs prior close ${px(bl.prior_close)}`;
+      } else if (f.name === 'rvol') {
+        detail = `today's vol ${vol(tb.today_vol)} ÷ ${r.config.rvol_lookback}-day avg ${vol(bl.avg_vol)}`;
+      } else if (f.name === 'new_high') {
+        detail = `today's high ${px(tb.today_high)} vs prior ${r.config.high_lookback}-day max ${px(bl.high_n)}`;
+      } else if (f.name === 'vol_mcap') {
+        detail = `today's vol ${vol(tb.today_vol)} ÷ shares outstanding ${vol(bl.shares)}`;
+      }
+    }
+    const detailHtml = detail
+      ? `<div class="momentum-diag-detail muted">${escapeHtml(detail)}</div>`
+      : '';
     return `
       <div class="momentum-diag-row ${cls}">
         <span class="momentum-diag-tick">${tick}</span>
-        <span class="momentum-diag-label">${escapeHtml(f.label)}</span>
+        <span class="momentum-diag-label">${escapeHtml(f.label)}${detailHtml}</span>
         <span class="momentum-diag-measured">${measured}</span>
         <span class="momentum-diag-threshold muted">${threshold}</span>
       </div>`;
