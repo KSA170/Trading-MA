@@ -338,7 +338,11 @@
         <div class="momentum-diagnose">
           <label class="muted" for="momentum-diagnose-ticker">Diagnose ticker:</label>
           <input id="momentum-diagnose-ticker" type="text" placeholder="e.g. BTU" autocomplete="off" />
-          <button id="momentum-diagnose-btn" type="button" title="Run the same 4-filter check the scanner does, against this ticker right now. Shows every measured value vs its threshold so you can see exactly which filter blocked the alert.">Check</button>
+          <label class="muted" for="momentum-diagnose-date">on:</label>
+          <select id="momentum-diagnose-date" title="'Today (live)' uses the in-progress Alpaca bar. Historical dates use the daily snapshot's EOD close — answers 'would this name have fired N days ago?' but only sees the day's closing values, not intraday peaks.">
+            <option value="">Today (live)</option>
+          </select>
+          <button id="momentum-diagnose-btn" type="button" title="Run the same 4-filter check the scanner does, against this ticker on the selected date. Shows every measured value vs its threshold so you can see exactly which filter blocked the alert.">Check</button>
           <span id="momentum-diagnose-status" class="muted"></span>
         </div>
         <div id="momentum-diagnose-out" class="momentum-diagnose-out hidden"></div>

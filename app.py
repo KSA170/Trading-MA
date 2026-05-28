@@ -930,14 +930,17 @@ def api_momentum_alerts():
 
 @app.route("/api/momentum/diagnose", methods=["GET"])
 def api_momentum_diagnose():
-    """Dry-run the scanner against one ticker right now — returns each
-    filter's measured value vs its threshold so the user can see why
-    a name they expected didn't fire. Hits Alpaca for the live bar so
-    it's never stale, but harmless to call at any hour."""
+    """Dry-run the scanner against one ticker — returns each filter's
+    measured value vs its threshold so the user can see why a name
+    they expected didn't fire. Optional `date=YYYY-MM-DD` flips into
+    historical mode (sources the "today" bar from the snapshot's
+    recent_bars instead of Alpaca, so you can re-check the last few
+    trading days). Without `date`, hits Alpaca for the live bar."""
     ticker = (request.args.get("ticker") or "").strip()
     if not ticker:
         return jsonify({"error": "ticker query param required"}), 400
-    return jsonify(scanner_momentum.diagnose(ticker))
+    as_of = (request.args.get("date") or "").strip() or None
+    return jsonify(scanner_momentum.diagnose(ticker, as_of=as_of))
 
 
 @app.route("/api/momentum/enabled", methods=["POST"])

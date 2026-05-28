@@ -1261,6 +1261,14 @@ table.sortable th.th-drag-over {
   width: 100px;
   text-transform: uppercase;
 }
+.momentum-diagnose select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+}
 .momentum-diagnose-out {
   padding: 8px;
   margin: 0 0 8px;
