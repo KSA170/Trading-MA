@@ -96,6 +96,7 @@ const els = {
   momentumSaveMsg: $('#momentum-save-msg'),
   momentumAlertsToggleBtn: $('#momentum-alerts-toggle-btn'),
   momentumDiagnoseTicker: $('#momentum-diagnose-ticker'),
+  momentumDiagnoseDate: $('#momentum-diagnose-date'),
   momentumDiagnoseBtn: $('#momentum-diagnose-btn'),
   momentumDiagnoseStatus: $('#momentum-diagnose-status'),
   momentumDiagnoseOut: $('#momentum-diagnose-out'),
@@ -2643,6 +2644,23 @@ function startMomentumPolling() {
 if (els.momentumSaveBtn) els.momentumSaveBtn.addEventListener('click', saveMomentumConfig);
 if (els.momentumAlertsToggleBtn) els.momentumAlertsToggleBtn.addEventListener('click', toggleMomentumAlerts);
 
+function refreshMomentumDiagnoseDates(dates, keepSelected) {
+  const sel = els.momentumDiagnoseDate;
+  if (!sel || !Array.isArray(dates)) return;
+  const want = keepSelected != null ? String(keepSelected) : sel.value;
+  // Always keep "Today (live)" as the first option; replace the rest.
+  while (sel.options.length > 1) sel.remove(1);
+  for (const d of dates) {
+    const o = document.createElement('option');
+    o.value = d;
+    o.textContent = d;
+    sel.appendChild(o);
+  }
+  if (want && Array.from(sel.options).some(o => o.value === want)) {
+    sel.value = want;
+  }
+}
+
 function renderMomentumDiagnose(r) {
   if (!els.momentumDiagnoseOut) return;
   if (!r || r.error) {
@@ -2650,6 +2668,9 @@ function renderMomentumDiagnose(r) {
     els.momentumDiagnoseOut.innerHTML =
       `<p class="muted">${escapeHtml((r && r.error) || 'Diagnose failed.')}</p>`;
     return;
+  }
+  if (Array.isArray(r.available_dates) && r.available_dates.length) {
+    refreshMomentumDiagnoseDates(r.available_dates);
   }
   const fmt = (v, unit, digits) => {
     if (v === null || v === undefined || !Number.isFinite(v)) return '—';
@@ -2662,17 +2683,18 @@ function renderMomentumDiagnose(r) {
   const headerCls = r.passes_all
     ? (r.already_fired ? 'momentum-diag-header muted' : 'momentum-diag-header pass')
     : 'momentum-diag-header fail';
+  const modeBadge = r.mode === 'historical'
+    ? ` <span class="muted">· historical EOD · ${escapeHtml(r.today || '')}</span>`
+    : ` <span class="muted">· live · ${escapeHtml(r.today || '')}</span>`;
   const header = `
     <div class="${headerCls}">
-      <strong>${escapeHtml(r.ticker)}</strong> ·
+      <strong>${escapeHtml(r.ticker)}</strong>${modeBadge}<br>
       ${escapeHtml(r.reason || '')}
     </div>`;
 
   const ctxRows = [];
   if (r.as_of_baseline)
-    ctxRows.push(`Baseline snapshot: <code>${escapeHtml(r.as_of_baseline)}</code>`);
-  if (r.today)
-    ctxRows.push(`Today (ET): <code>${escapeHtml(r.today)}</code>`);
+    ctxRows.push(`Baseline from snapshot: <code>${escapeHtml(r.as_of_baseline)}</code>`);
   if (r.baseline) {
     ctxRows.push(
       `Prior close <code>${fmt(r.baseline.prior_close, '$')}</code> · ` +
@@ -2701,10 +2723,32 @@ function renderMomentumDiagnose(r) {
     const threshold = f.name === 'new_high'
       ? `> ${fmt(f.threshold, f.unit)}`
       : `≥ ${fmt(f.threshold, f.unit)}`;
+    // Show the raw inputs to each ratio so the reader doesn't have to
+    // back-solve them from the context block. Only render if we have
+    // both today_bar and baseline (i.e. we got past every eligibility
+    // gate); otherwise leave blank.
+    let detail = '';
+    if (r.today_bar && r.baseline) {
+      const tb = r.today_bar, bl = r.baseline;
+      const px = (v) => '$' + Number(v).toFixed(2);
+      const vol = (v) => Math.round(v).toLocaleString();
+      if (f.name === 'pct_change') {
+        detail = `current price ${px(tb.price)} vs prior close ${px(bl.prior_close)}`;
+      } else if (f.name === 'rvol') {
+        detail = `today's vol ${vol(tb.today_vol)} ÷ ${r.config.rvol_lookback}-day avg ${vol(bl.avg_vol)}`;
+      } else if (f.name === 'new_high') {
+        detail = `today's high ${px(tb.today_high)} vs prior ${r.config.high_lookback}-day max ${px(bl.high_n)}`;
+      } else if (f.name === 'vol_mcap') {
+        detail = `today's vol ${vol(tb.today_vol)} ÷ shares outstanding ${vol(bl.shares)}`;
+      }
+    }
+    const detailHtml = detail
+      ? `<div class="momentum-diag-detail muted">${escapeHtml(detail)}</div>`
+      : '';
     return `
       <div class="momentum-diag-row ${cls}">
         <span class="momentum-diag-tick">${tick}</span>
-        <span class="momentum-diag-label">${escapeHtml(f.label)}</span>
+        <span class="momentum-diag-label">${escapeHtml(f.label)}${detailHtml}</span>
         <span class="momentum-diag-measured">${measured}</span>
         <span class="momentum-diag-threshold muted">${threshold}</span>
       </div>`;
@@ -2723,12 +2767,15 @@ async function runMomentumDiagnose() {
     if (els.momentumDiagnoseStatus) els.momentumDiagnoseStatus.textContent = 'Enter a ticker first.';
     return;
   }
+  const date = els.momentumDiagnoseDate ? (els.momentumDiagnoseDate.value || '').trim() : '';
   const prevTxt = els.momentumDiagnoseBtn.textContent;
   els.momentumDiagnoseBtn.disabled = true;
   els.momentumDiagnoseBtn.textContent = 'Checking…';
   if (els.momentumDiagnoseStatus) els.momentumDiagnoseStatus.textContent = '';
   try {
-    const res = await fetch('/api/momentum/diagnose?ticker=' + encodeURIComponent(ticker), { cache: 'no-store' });
+    let url = '/api/momentum/diagnose?ticker=' + encodeURIComponent(ticker);
+    if (date) url += '&date=' + encodeURIComponent(date);
+    const res = await fetch(url, { cache: 'no-store' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       renderMomentumDiagnose({ error: data.error || ('HTTP ' + res.status) });
@@ -2747,6 +2794,12 @@ if (els.momentumDiagnoseBtn) els.momentumDiagnoseBtn.addEventListener('click', r
 if (els.momentumDiagnoseTicker) {
   els.momentumDiagnoseTicker.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') { ev.preventDefault(); runMomentumDiagnose(); }
+  });
+}
+if (els.momentumDiagnoseDate) {
+  els.momentumDiagnoseDate.addEventListener('change', () => {
+    const t = (els.momentumDiagnoseTicker && els.momentumDiagnoseTicker.value || '').trim();
+    if (t) runMomentumDiagnose();
   });
 }
 if (els.momentumList) {

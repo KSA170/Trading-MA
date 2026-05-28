@@ -1261,6 +1261,14 @@ table.sortable th.th-drag-over {
   width: 100px;
   text-transform: uppercase;
 }
+.momentum-diagnose select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+}
 .momentum-diagnose-out {
   padding: 8px;
   margin: 0 0 8px;
@@ -1297,6 +1305,10 @@ table.sortable th.th-drag-over {
 .momentum-diag-row.pass .momentum-diag-tick { color: var(--green); }
 .momentum-diag-row.fail .momentum-diag-tick { color: var(--red); }
 .momentum-diag-row.fail .momentum-diag-measured { color: var(--red); }
+.momentum-diag-detail {
+  font-size: 11px;
+  padding-top: 2px;
+}
 .momentum-diag-measured {
   text-align: right;
   font-variant-numeric: tabular-nums;

@@ -391,20 +391,29 @@ def _evaluate_one(baseline: dict, today_bar: dict, cfg: dict) -> dict | None:
 
 # --- single-ticker diagnose (mirrors run() per-ticker exactly) ------------
 
-def diagnose(ticker: str, cfg: dict | None = None) -> dict:
+def diagnose(ticker: str, as_of: str | None = None,
+             cfg: dict | None = None) -> dict:
     """Dry-run the same pipeline a real scan would for one ticker:
     look up the latest snapshot row, derive the baseline, fetch the
     live Alpaca bar, and compute all four metrics. Returns a
     pass/fail breakdown per filter plus the reason no alert would
     fire (eligibility miss, missing data, or already-fired-today).
 
+    `as_of` (YYYY-MM-DD) flips into historical mode — the "today"
+    bar is sourced from the snapshot's recent_bars instead of
+    Alpaca, so you can ask "would BTU have fired 3 days ago?".
+    Historical mode only sees EOD closes; a real intraday scan
+    could have fired on a peak that the close didn't preserve.
+
     Designed so the UI can answer "why didn't I see BTU?" without
     waiting for the next cron tick."""
     if cfg is None:
         cfg = get_config()
     ticker = (ticker or "").strip().upper()
+    is_historical = bool((as_of or "").strip())
     out: dict = {
         "ticker": ticker,
+        "mode": "historical" if is_historical else "live",
         "config": {
             "pct_change_min": float(cfg["pct_change_min"]),
             "rvol_min":       float(cfg["rvol_min"]),
@@ -417,6 +426,7 @@ def diagnose(ticker: str, cfg: dict | None = None) -> dict:
         "in_snapshot": False,
         "as_of_baseline": None,
         "today": None,
+        "available_dates": [],
         "already_fired": False,
         "baseline": None,
         "today_bar": None,
@@ -438,39 +448,56 @@ def diagnose(ticker: str, cfg: dict | None = None) -> dict:
     if not dates:
         out["reason"] = "no snapshot data available — nightly job hasn't run"
         return out
-    as_of = dates[0]
-    out["as_of_baseline"] = as_of
-    today_str = _et_now().strftime("%Y-%m-%d")
-    out["today"] = today_str
+    snap_as_of = dates[0]
+    out["as_of_baseline"] = snap_as_of
 
     snap_row = None
-    for _t, row in snapshots.iter_for_date(as_of, tickers=[ticker]):
+    for _t, row in snapshots.iter_for_date(snap_as_of, tickers=[ticker]):
         snap_row = row
         break
     if snap_row is None:
         out["reason"] = (
-            f"ticker not in {as_of} snapshot — outside the screened "
+            f"ticker not in {snap_as_of} snapshot — outside the screened "
             f"universe, or the nightly job skipped it"
         )
         return out
     out["in_snapshot"] = True
 
-    shares = snap_row.get("shares")
-    if shares is None or float(shares) <= 0:
-        out["reason"] = "snapshot row has no shares-outstanding — can't compute vol/float"
-        return out
     bars = _bars_from_row(snap_row)
     if not bars:
         out["reason"] = "snapshot row has no recent_bars — can't derive prior baseline"
         return out
+
+    # Populate the UI dropdown — last 5 completed-session bar dates,
+    # strictly before today's ET date so every option is a finished day.
+    today_et = _et_now().strftime("%Y-%m-%d")
+    bar_dates_sorted = sorted(
+        {b.get("d") for b in bars if isinstance(b, dict) and b.get("d")},
+        reverse=True,
+    )
+    out["available_dates"] = [d for d in bar_dates_sorted if d < today_et][:5]
+
+    target_date = (as_of or "").strip() if is_historical else today_et
+    out["today"] = target_date
+    if is_historical and target_date not in bar_dates_sorted:
+        out["reason"] = (
+            f"no snapshot bar for {target_date} — not a trading day, "
+            f"or outside the snapshot's {len(bars)}-bar history window"
+        )
+        return out
+
+    shares = snap_row.get("shares")
+    if shares is None or float(shares) <= 0:
+        out["reason"] = "snapshot row has no shares-outstanding — can't compute vol/float"
+        return out
     prior_bars = [
         b for b in bars
-        if isinstance(b, dict) and (b.get("d") or "9999-12-31") < today_str
+        if isinstance(b, dict) and (b.get("d") or "9999-12-31") < target_date
     ]
     need = max(int(cfg["rvol_lookback"]), int(cfg["high_lookback"]), 1)
     if len(prior_bars) < need:
         out["reason"] = (
-            f"only {len(prior_bars)} prior bars in snapshot — "
+            f"only {len(prior_bars)} prior bars before {target_date} — "
             f"need {need} for the configured lookbacks "
             f"(rvol={int(cfg['rvol_lookback'])}, high={int(cfg['high_lookback'])})"
         )
@@ -496,26 +523,36 @@ def diagnose(ticker: str, cfg: dict | None = None) -> dict:
         "high_n":      high_n,
         "shares":      float(shares),
     }
-    out["already_fired"] = already_fired_today(today_str, ticker)
+    out["already_fired"] = already_fired_today(target_date, ticker)
 
-    today_bars = _fetch_today_bars([ticker], today_str)
-    today_bar = today_bars.get(ticker)
-    if not today_bar:
-        out["reason"] = (
-            "no live bar from Alpaca for today — market may not have "
-            "opened yet, ticker is halted, or it isn't on Alpaca's feed"
-        )
-        return out
+    if is_historical:
+        today_bar = None
+        for b in bars:
+            if isinstance(b, dict) and b.get("d") == target_date:
+                today_bar = {"c": b.get("c"), "h": b.get("h"), "v": b.get("v")}
+                break
+        if not today_bar:
+            out["reason"] = f"snapshot has no bar for {target_date}"
+            return out
+    else:
+        today_bars = _fetch_today_bars([ticker], target_date)
+        today_bar = today_bars.get(ticker)
+        if not today_bar:
+            out["reason"] = (
+                "no live bar from Alpaca for today — market may not have "
+                "opened yet, ticker is halted, or it isn't on Alpaca's feed"
+            )
+            return out
     try:
         last_price = float(today_bar.get("c") or 0)
         today_high = float(today_bar.get("h") or 0)
         today_vol  = float(today_bar.get("v") or 0)
     except (TypeError, ValueError) as exc:
-        out["reason"] = f"today bar numeric parse failed: {exc}"
+        out["reason"] = f"bar numeric parse failed: {exc}"
         return out
     if last_price <= 0 or today_vol <= 0:
         out["reason"] = (
-            f"today bar has zero price or volume "
+            f"bar has zero price or volume "
             f"(price={last_price}, vol={today_vol:.0f})"
         )
         return out
@@ -558,11 +595,19 @@ def diagnose(ticker: str, cfg: dict | None = None) -> dict:
     out["passes_all"] = all(f["passes"] for f in out["filters"])
     if out["passes_all"] and out["already_fired"]:
         out["reason"] = (
-            "would fire — but an alert for this ticker already fired "
-            "earlier today (one alert per ticker per day)"
+            f"would have fired — but an alert already fired for this "
+            f"ticker on {target_date}"
+            if is_historical
+            else "would fire — but an alert for this ticker already fired "
+                 "earlier today (one alert per ticker per day)"
         )
     elif out["passes_all"]:
-        out["reason"] = "passes all filters — would fire on next scan"
+        out["reason"] = (
+            f"EOD close on {target_date} passed all filters — a live scan "
+            f"that day would have fired (or earlier on an intraday peak)"
+            if is_historical
+            else "passes all filters — would fire on next scan"
+        )
     else:
         failed = [f["label"] for f in out["filters"] if not f["passes"]]
         out["reason"] = "fails: " + "; ".join(failed)
