@@ -1062,6 +1062,10 @@ table.sortable th.th-drag-over {
 .pick-row:hover { border-color: var(--accent); }
 .pick-rank { color: var(--muted); font-size: 12px; text-align: right; }
 .pick-ticker { font-weight: 600; }
+.pick-ticker[data-ticker] {
+  cursor: help;
+  border-bottom: 1px dotted rgba(88, 166, 255, 0.5);
+}
 .pick-close { color: var(--muted); font-size: 12px; }
 .pick-composite {
   font-weight: 700;
@@ -1251,6 +1255,19 @@ table.sortable th.th-drag-over {
   font-size: 12px;
   flex-wrap: wrap;
 }
+.momentum-diagnose-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 8px;
+}
+.momentum-diagnose-bar .section-toggle {
+  width: auto;
+  background: transparent;
+  border: none;
+  padding: 0 4px;
+}
+.momentum-diagnose-body.collapsed-section { display: none; }
 .momentum-diagnose input {
   background: var(--panel);
   color: var(--text);
@@ -1335,6 +1352,10 @@ table.sortable th.th-drag-over {
 .momentum-row:hover { border-color: var(--accent); }
 .momentum-time { color: var(--muted); font-size: 11px; }
 .momentum-ticker { font-weight: 600; }
+.momentum-ticker[data-ticker] {
+  cursor: help;
+  border-bottom: 1px dotted rgba(88, 166, 255, 0.5);
+}
 .momentum-price { color: var(--muted); }
 .momentum-pct {
   font-weight: 700;

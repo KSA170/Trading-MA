@@ -335,15 +335,21 @@
           <button id="momentum-save-btn" type="button" title="Persist these thresholds. The next cron run (every ~5 min) will pick them up automatically.">Save</button>
           <span id="momentum-save-msg" class="muted"></span>
         </div>
-        <div class="momentum-diagnose">
-          <label class="muted" for="momentum-diagnose-ticker">Diagnose ticker:</label>
-          <input id="momentum-diagnose-ticker" type="text" placeholder="e.g. BTU" autocomplete="off" />
-          <label class="muted" for="momentum-diagnose-date">on:</label>
-          <select id="momentum-diagnose-date" title="'Today (live)' uses the in-progress Alpaca bar. Historical dates use the daily snapshot's EOD close — answers 'would this name have fired N days ago?' but only sees the day's closing values, not intraday peaks.">
-            <option value="">Today (live)</option>
-          </select>
-          <button id="momentum-diagnose-btn" type="button" title="Run the same 4-filter check the scanner does, against this ticker on the selected date. Shows every measured value vs its threshold so you can see exactly which filter blocked the alert.">Check</button>
-          <span id="momentum-diagnose-status" class="muted"></span>
+        <div class="momentum-diagnose-bar">
+          <button id="momentum-diagnose-toggle" type="button" class="section-toggle" aria-controls="momentum-diagnose-body momentum-diagnose-out" aria-expanded="true" title="Show / hide the diagnose ticker panel">
+            <span class="chevron">▾</span>
+          </button>
+          <div id="momentum-diagnose-body" class="momentum-diagnose">
+            <label class="muted" for="momentum-diagnose-ticker">Diagnose ticker:</label>
+            <input id="momentum-diagnose-ticker" type="text" placeholder="e.g. BTU" autocomplete="off" />
+            <label class="muted" for="momentum-diagnose-date">on:</label>
+            <select id="momentum-diagnose-date" title="'Today (live)' uses the in-progress Alpaca bar. Historical dates use the daily snapshot's EOD close — answers 'would this name have fired N days ago?' but only sees the day's closing values, not intraday peaks.">
+              <option value="">Today (live)</option>
+            </select>
+            <button id="momentum-diagnose-btn" type="button" title="Run the same 4-filter check the scanner does, against this ticker on the selected date. Shows every measured value vs its threshold so you can see exactly which filter blocked the alert.">Check</button>
+            <button id="momentum-diagnose-clear-btn" type="button" disabled title="Clear the ticker, hide the result, and reset the date dropdown to Today.">Clear</button>
+            <span id="momentum-diagnose-status" class="muted"></span>
+          </div>
         </div>
         <div id="momentum-diagnose-out" class="momentum-diagnose-out hidden"></div>
         <div class="momentum-header">
