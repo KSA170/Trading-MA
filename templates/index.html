@@ -332,6 +332,16 @@
             <input id="momentum-vol-mcap" type="number" min="0" step="0.1" value="0.5" />
             <span class="momentum-unit">%</span>
           </label>
+          <label class="momentum-field" title="Drop micro-caps below this market-cap floor (shares outstanding × current price, in millions of dollars). Default 250 = $250M.">
+            <span>Min market cap</span>
+            <input id="momentum-mcap-min" type="number" min="0" step="50" value="250" />
+            <span class="momentum-unit">$M</span>
+          </label>
+          <label class="momentum-field" title="Drop mega-caps above this ceiling (shares outstanding × current price, in millions of dollars). Default 5,000,000 = $5T.">
+            <span>Max market cap</span>
+            <input id="momentum-mcap-max" type="number" min="0" step="1000" value="5000000" />
+            <span class="momentum-unit">$M</span>
+          </label>
           <button id="momentum-save-btn" type="button" title="Persist these thresholds. The next cron run (every ~5 min) will pick them up automatically.">Save</button>
           <span id="momentum-save-msg" class="muted"></span>
         </div>

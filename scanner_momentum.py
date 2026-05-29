@@ -53,6 +53,8 @@ DEFAULT_RVOL_MIN:       float = 5.0    # today's vol / N-day avg
 DEFAULT_RVOL_LOOKBACK:  int   = 20     # N (days) for the rvol denominator
 DEFAULT_HIGH_LOOKBACK:  int   = 20     # N (days) for the new-high check
 DEFAULT_VOL_MCAP_MIN:   float = 0.5    # % of shares outstanding traded today
+DEFAULT_MCAP_MIN_M:     float = 250.0       # $M — drop micro-caps below this
+DEFAULT_MCAP_MAX_M:     float = 5_000_000.0  # $M (= $5T) — drop mega-caps above this
 
 _FORCE_RUN_ENV = "MOMENTUM_SCANNER_FORCE_RUN"
 
@@ -74,6 +76,14 @@ CREATE TABLE IF NOT EXISTS momentum_scanner_config (
 -- immediately when this flag is FALSE.
 ALTER TABLE momentum_scanner_config
     ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
+-- Market-cap band, stored in $millions for readable UI inputs.
+-- Default 250 (= $250M) → 5,000,000 (= $5T) drops microcaps and
+-- caps the very top of mega-cap so the scanner stays focused on
+-- the mid-to-large-cap band where reproducible momentum lives.
+ALTER TABLE momentum_scanner_config
+    ADD COLUMN IF NOT EXISTS mcap_min_m REAL;
+ALTER TABLE momentum_scanner_config
+    ADD COLUMN IF NOT EXISTS mcap_max_m REAL;
 
 CREATE TABLE IF NOT EXISTS momentum_scanner_alerts (
     alert_date    DATE NOT NULL,
@@ -111,6 +121,8 @@ def get_config() -> dict:
         "rvol_lookback":  DEFAULT_RVOL_LOOKBACK,
         "high_lookback":  DEFAULT_HIGH_LOOKBACK,
         "vol_mcap_min":   DEFAULT_VOL_MCAP_MIN,
+        "mcap_min_m":     DEFAULT_MCAP_MIN_M,
+        "mcap_max_m":     DEFAULT_MCAP_MAX_M,
         "enabled":        True,
     }
     if not snapshots.enabled():
@@ -119,7 +131,8 @@ def get_config() -> dict:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
                 "SELECT pct_change_min, rvol_min, rvol_lookback, "
-                "high_lookback, vol_mcap_min, enabled "
+                "high_lookback, vol_mcap_min, enabled, "
+                "mcap_min_m, mcap_max_m "
                 "FROM momentum_scanner_config WHERE id = 1"
             )
             row = cur.fetchone()
@@ -134,6 +147,8 @@ def get_config() -> dict:
     if row[3] is not None: cfg["high_lookback"]  = int(row[3])
     if row[4] is not None: cfg["vol_mcap_min"]   = float(row[4])
     if row[5] is not None: cfg["enabled"]        = bool(row[5])
+    if row[6] is not None: cfg["mcap_min_m"]     = float(row[6])
+    if row[7] is not None: cfg["mcap_max_m"]     = float(row[7])
     return cfg
 
 
@@ -162,6 +177,7 @@ def save_config(
     pct_change_min: float, rvol_min: float,
     rvol_lookback: int, high_lookback: int,
     vol_mcap_min: float,
+    mcap_min_m: float, mcap_max_m: float,
 ) -> bool:
     if not snapshots.enabled():
         return False
@@ -170,18 +186,22 @@ def save_config(
             cur.execute(
                 "INSERT INTO momentum_scanner_config "
                 "(id, pct_change_min, rvol_min, rvol_lookback, "
-                "high_lookback, vol_mcap_min, updated_at) "
-                "VALUES (1, %s, %s, %s, %s, %s, now()) "
+                "high_lookback, vol_mcap_min, mcap_min_m, mcap_max_m, "
+                "updated_at) "
+                "VALUES (1, %s, %s, %s, %s, %s, %s, %s, now()) "
                 "ON CONFLICT (id) DO UPDATE SET "
                 "pct_change_min = EXCLUDED.pct_change_min, "
                 "rvol_min       = EXCLUDED.rvol_min, "
                 "rvol_lookback  = EXCLUDED.rvol_lookback, "
                 "high_lookback  = EXCLUDED.high_lookback, "
                 "vol_mcap_min   = EXCLUDED.vol_mcap_min, "
+                "mcap_min_m     = EXCLUDED.mcap_min_m, "
+                "mcap_max_m     = EXCLUDED.mcap_max_m, "
                 "updated_at = now()",
                 (float(pct_change_min), float(rvol_min),
                  int(rvol_lookback), int(high_lookback),
-                 float(vol_mcap_min)),
+                 float(vol_mcap_min),
+                 float(mcap_min_m), float(mcap_max_m)),
             )
         return True
     except Exception as exc:
@@ -461,8 +481,8 @@ def _fetch_today_bars(symbols: list[str], today_str: str) -> dict[str, dict]:
 # --- per-ticker evaluation -------------------------------------------------
 
 def _evaluate_one(baseline: dict, today_bar: dict, cfg: dict) -> dict | None:
-    """Compute all four metrics for one ticker. Returns the metrics dict
-    if every filter passes, else None."""
+    """Compute all metrics for one ticker. Returns the metrics dict if
+    every filter passes, else None."""
     try:
         last_price  = float(today_bar.get("c") or 0)
         today_high  = float(today_bar.get("h") or 0)
@@ -473,15 +493,19 @@ def _evaluate_one(baseline: dict, today_bar: dict, cfg: dict) -> dict | None:
         return None
 
     prior_close = baseline["prior_close"]
+    shares      = baseline["shares"]
     pct_change  = (last_price / prior_close - 1.0) * 100.0
     rvol        = today_vol / baseline["avg_vol"]
-    vol_mcap    = (today_vol / baseline["shares"]) * 100.0
+    vol_mcap    = (today_vol / shares) * 100.0
+    mcap_m      = (shares * last_price) / 1e6   # $M, matches UI unit
     new_high_ok = today_high > baseline["high_n"]
 
     if pct_change < cfg["pct_change_min"]:   return None
     if rvol       < cfg["rvol_min"]:         return None
     if not new_high_ok:                      return None
     if vol_mcap   < cfg["vol_mcap_min"]:     return None
+    if mcap_m < cfg.get("mcap_min_m", DEFAULT_MCAP_MIN_M): return None
+    if mcap_m > cfg.get("mcap_max_m", DEFAULT_MCAP_MAX_M): return None
 
     return {
         "price":        last_price,
@@ -492,6 +516,7 @@ def _evaluate_one(baseline: dict, today_bar: dict, cfg: dict) -> dict | None:
         "pct_change":   pct_change,
         "rvol":         rvol,
         "vol_mcap_pct": vol_mcap,
+        "mcap_m":       mcap_m,
     }
 
 
@@ -527,6 +552,8 @@ def diagnose(ticker: str, as_of: str | None = None,
             "rvol_lookback":  int(cfg["rvol_lookback"]),
             "high_lookback":  int(cfg["high_lookback"]),
             "vol_mcap_min":   float(cfg["vol_mcap_min"]),
+            "mcap_min_m":     float(cfg.get("mcap_min_m", DEFAULT_MCAP_MIN_M)),
+            "mcap_max_m":     float(cfg.get("mcap_max_m", DEFAULT_MCAP_MAX_M)),
             "enabled":        bool(cfg.get("enabled", True)),
         },
         "is_us": _is_us_ticker(ticker) if ticker else False,
@@ -693,6 +720,9 @@ def diagnose(ticker: str, as_of: str | None = None,
     pct_change = (last_price / prior_close - 1.0) * 100.0
     rvol       = today_vol / avg_vol
     vol_mcap   = (today_vol / float(shares)) * 100.0
+    mcap_m     = (float(shares) * last_price) / 1e6
+    mcap_min_m = float(cfg.get("mcap_min_m", DEFAULT_MCAP_MIN_M))
+    mcap_max_m = float(cfg.get("mcap_max_m", DEFAULT_MCAP_MAX_M))
 
     out["filters"] = [
         {"name": "pct_change",
@@ -719,6 +749,13 @@ def diagnose(ticker: str, as_of: str | None = None,
          "measured":  vol_mcap,
          "unit": "%",
          "passes": vol_mcap >= float(cfg["vol_mcap_min"])},
+        {"name": "mcap_band",
+         "label": "Market cap (shares × price)",
+         "threshold":     mcap_min_m,
+         "threshold_max": mcap_max_m,
+         "measured":      mcap_m,
+         "unit": "M$",
+         "passes": mcap_min_m <= mcap_m <= mcap_max_m},
     ]
     out["passes_all"] = all(f["passes"] for f in out["filters"])
     if out["passes_all"] and out["already_fired"]:
@@ -846,20 +883,37 @@ def alerts_for_date(alert_date: str | None = None) -> list[dict]:
 
 def _format_telegram(ticker: str, m: dict, cfg: dict,
                      insider: dict | None = None,
-                     fund: dict | None = None) -> str:
+                     fund: dict | None = None,
+                     news: list[dict] | None = None) -> str:
+    """Build the HTML Telegram body. Two-line header (ticker + name,
+    price) followed by a bold-metric block for the four signals, then
+    optional insider / fundamentals / news sections that drop out
+    cleanly when the upstream returned nothing."""
     import enrich
+    import html as _html
+    name = (fund or {}).get("name")
+    name_part = f" — {_html.escape(name)}" if name else ""
     lines = [
-        f"🚀 <b>{ticker}</b> · momentum scan · ${m['price']:.2f}",
-        f"<i>+{m['pct_change']:.1f}% today · RVOL {m['rvol']:.1f}× · "
-        f"new {cfg['high_lookback']}-day high (prior ${m['prior_high_n']:.2f}) · "
-        f"{m['vol_mcap_pct']:.2f}% of float</i>",
+        f"🚀 <b>{_html.escape(ticker)}</b>{name_part}",
+        f"💵 Price <b>${m['price']:.2f}</b>",
+        "",
+        f"📈 <b>+{m['pct_change']:.2f}%</b> today  ·  "
+        f"🔥 RVOL <b>{m['rvol']:.2f}×</b>",
+        f"🎯 <b>New {cfg['high_lookback']}-day high</b> "
+        f"(prior ${m['prior_high_n']:.2f})  ·  "
+        f"🌊 <b>{m['vol_mcap_pct']:.2f}%</b> of float",
     ]
     insider_line = enrich.format_insider_line(insider)
     if insider_line:
+        lines.append("")
         lines.append(insider_line)
     fund_line = enrich.format_fundamentals_line(fund)
     if fund_line:
         lines.append(fund_line)
+    news_block = enrich.format_news_block(news)
+    if news_block:
+        lines.append("")
+        lines.append(news_block)
     return "\n".join(lines)
 
 
@@ -900,9 +954,10 @@ def run() -> int:
     cfg = get_config()
     log.info(
         "config: pct_change>=%.2f, rvol>=%.2fx (lookback=%d), "
-        "new %d-day high, vol/mcap>=%.3f%%",
+        "new %d-day high, vol/mcap>=%.3f%%, mcap=$%.0fM-$%.0fM",
         cfg["pct_change_min"], cfg["rvol_min"], cfg["rvol_lookback"],
         cfg["high_lookback"], cfg["vol_mcap_min"],
+        cfg["mcap_min_m"], cfg["mcap_max_m"],
     )
 
     t0 = time.time()
@@ -944,13 +999,14 @@ def run() -> int:
         details = _format_details(m, cfg)
         if not record_alert(today, ticker, m, details):
             continue   # someone else inserted it first
-        # Enrichment is best-effort. Both functions swallow exceptions
-        # and return None / {} on failure so a flaky upstream can't
-        # block the Telegram send.
+        # Enrichment is best-effort. Every function swallows exceptions
+        # and returns None / {} / [] on failure so a flaky upstream
+        # can't block the Telegram send.
         import enrich
         insider = enrich.last_insider_transaction(ticker)
         fund = enrich.fundamentals(ticker)
-        msg = _format_telegram(ticker, m, cfg, insider=insider, fund=fund)
+        news = enrich.recent_news(ticker)
+        msg = _format_telegram(ticker, m, cfg, insider=insider, fund=fund, news=news)
         try:
             ok = alerts_mod.send_telegram(msg)
             if not ok:

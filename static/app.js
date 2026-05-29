@@ -92,6 +92,8 @@ const els = {
   momentumRvolLookback: $('#momentum-rvol-lookback'),
   momentumHighLookback: $('#momentum-high-lookback'),
   momentumVolMcap: $('#momentum-vol-mcap'),
+  momentumMcapMin: $('#momentum-mcap-min'),
+  momentumMcapMax: $('#momentum-mcap-max'),
   momentumSaveBtn: $('#momentum-save-btn'),
   momentumSaveMsg: $('#momentum-save-msg'),
   momentumAlertsToggleBtn: $('#momentum-alerts-toggle-btn'),
@@ -2505,6 +2507,10 @@ function momentumApplyConfigToUI(cfg) {
     els.momentumHighLookback.value = String(cfg.high_lookback);
   if (els.momentumVolMcap && cfg.vol_mcap_min != null)
     els.momentumVolMcap.value = String(cfg.vol_mcap_min);
+  if (els.momentumMcapMin && cfg.mcap_min_m != null)
+    els.momentumMcapMin.value = String(cfg.mcap_min_m);
+  if (els.momentumMcapMax && cfg.mcap_max_m != null)
+    els.momentumMcapMax.value = String(cfg.mcap_max_m);
 }
 
 function momentumConfigFromUI() {
@@ -2514,6 +2520,8 @@ function momentumConfigFromUI() {
     rvol_lookback:  Number(els.momentumRvolLookback && els.momentumRvolLookback.value) || 0,
     high_lookback:  Number(els.momentumHighLookback && els.momentumHighLookback.value) || 0,
     vol_mcap_min:   Number(els.momentumVolMcap && els.momentumVolMcap.value) || 0,
+    mcap_min_m:     Number(els.momentumMcapMin && els.momentumMcapMin.value) || 0,
+    mcap_max_m:     Number(els.momentumMcapMax && els.momentumMcapMax.value) || 0,
   };
 }
 
@@ -2679,11 +2687,19 @@ function renderMomentumDiagnose(r) {
   }
   const fmt = (v, unit, digits) => {
     if (v === null || v === undefined || !Number.isFinite(v)) return '—';
-    const s = unit === '$' ? '$' + Number(v).toFixed(digits ?? 2)
-            : unit === 'x' ? Number(v).toFixed(digits ?? 2) + '×'
-            : unit === '%' ? Number(v).toFixed(digits ?? 2) + '%'
-            : String(v);
-    return s;
+    if (unit === 'M$') {
+      // Compact dollar formatter for market-cap values stored in $M.
+      const dollars = Number(v) * 1e6;
+      const a = Math.abs(dollars);
+      if (a >= 1e12) return '$' + (dollars / 1e12).toFixed(2) + 'T';
+      if (a >= 1e9)  return '$' + (dollars / 1e9).toFixed(2)  + 'B';
+      if (a >= 1e6)  return '$' + (dollars / 1e6).toFixed(0)  + 'M';
+      return '$' + Math.round(dollars).toLocaleString();
+    }
+    return unit === '$' ? '$' + Number(v).toFixed(digits ?? 2)
+         : unit === 'x' ? Number(v).toFixed(digits ?? 2) + '×'
+         : unit === '%' ? Number(v).toFixed(digits ?? 2) + '%'
+         : String(v);
   };
   const headerCls = r.passes_all
     ? (r.already_fired ? 'momentum-diag-header muted' : 'momentum-diag-header pass')
@@ -2732,9 +2748,11 @@ function renderMomentumDiagnose(r) {
     const tick = f.passes ? '✓' : '✗';
     const cls = f.passes ? 'pass' : 'fail';
     const measured = fmt(f.measured, f.unit);
-    const threshold = f.name === 'new_high'
-      ? `> ${fmt(f.threshold, f.unit)}`
-      : `≥ ${fmt(f.threshold, f.unit)}`;
+    let threshold;
+    if (f.name === 'new_high') threshold = `> ${fmt(f.threshold, f.unit)}`;
+    else if (f.name === 'mcap_band')
+      threshold = `${fmt(f.threshold, f.unit)} – ${fmt(f.threshold_max, f.unit)}`;
+    else threshold = `≥ ${fmt(f.threshold, f.unit)}`;
     // Show the raw inputs to each ratio so the reader doesn't have to
     // back-solve them from the context block. Only render if we have
     // both today_bar and baseline (i.e. we got past every eligibility
@@ -2752,6 +2770,8 @@ function renderMomentumDiagnose(r) {
         detail = `today's high ${px(tb.today_high)} vs prior ${r.config.high_lookback}-day max ${px(bl.high_n)}`;
       } else if (f.name === 'vol_mcap') {
         detail = `today's vol ${vol(tb.today_vol)} ÷ shares outstanding ${vol(bl.shares)}`;
+      } else if (f.name === 'mcap_band') {
+        detail = `shares ${vol(bl.shares)} × current price ${px(tb.price)}`;
       }
     }
     const detailHtml = detail

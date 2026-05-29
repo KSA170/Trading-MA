@@ -257,6 +257,7 @@ def fundamentals(ticker: str) -> dict:
     formatter can render whichever fields are available without
     branching on None at every read."""
     out: dict[str, Any] = {
+        "name": None,
         "market_cap": None,
         "trailing_pe": None,
         "forward_pe": None,
@@ -269,6 +270,10 @@ def fundamentals(ticker: str) -> dict:
     try:
         import yfinance as yf
         info = yf.Ticker(ticker).info or {}
+        # yfinance exposes the issuer's name under one of three keys
+        # depending on the data source; prefer longName, then shortName.
+        out["name"] = (info.get("longName") or info.get("shortName")
+                       or info.get("displayName"))
         out["market_cap"]        = info.get("marketCap")
         out["trailing_pe"]       = info.get("trailingPE")
         out["forward_pe"]        = info.get("forwardPE")
@@ -282,6 +287,129 @@ def fundamentals(ticker: str) -> dict:
     except Exception as exc:
         log.warning("fundamentals lookup failed for %s: %s", ticker, exc)
     return out
+
+
+# --- catalyst news --------------------------------------------------------
+
+def _yf_news_item_normalise(item: dict) -> dict | None:
+    """yfinance's news payload changed shape around 0.2.50 — older
+    entries are flat ({title, publisher, providerPublishTime, summary,
+    link}), newer ones nest in a `content` dict. Normalise to a flat
+    dict the caller can use without knowing which shape it got."""
+    if not isinstance(item, dict):
+        return None
+    content = item.get("content") if isinstance(item.get("content"), dict) else None
+    title     = (content or item).get("title")
+    summary   = (content or item).get("summary") or (content or item).get("description")
+    publisher = None
+    if content:
+        provider = content.get("provider")
+        if isinstance(provider, dict):
+            publisher = provider.get("displayName")
+    publisher = publisher or item.get("publisher")
+    raw_ts = ((content or {}).get("pubDate")
+              or item.get("providerPublishTime")
+              or item.get("pubDate"))
+    pub_ts: float | None = None
+    if isinstance(raw_ts, (int, float)):
+        pub_ts = float(raw_ts)
+    elif isinstance(raw_ts, str) and raw_ts:
+        try:
+            from datetime import datetime
+            pub_ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pub_ts = None
+    link = None
+    if content:
+        canonical = content.get("canonicalUrl")
+        if isinstance(canonical, dict):
+            link = canonical.get("url")
+    link = link or item.get("link")
+    if not title:
+        return None
+    return {
+        "title":     title,
+        "summary":   summary,
+        "publisher": publisher,
+        "pub_ts":    pub_ts,
+        "link":      link,
+    }
+
+
+def recent_news(ticker: str, limit: int = 4,
+                max_age_days: int = 7) -> list[dict]:
+    """Latest news items for `ticker` from Yahoo Finance, filtered to
+    the last `max_age_days` and capped at `limit` entries. Used as the
+    "catalyst" block on momentum-scanner Telegram alerts. Returns []
+    on any upstream failure so the alert still goes out without the
+    catalyst section."""
+    try:
+        import yfinance as yf
+        items = yf.Ticker(ticker).news or []
+    except Exception as exc:
+        log.warning("recent_news lookup failed for %s: %s", ticker, exc)
+        return []
+    if not items:
+        return []
+    import time as _time
+    cutoff = _time.time() - max_age_days * 86400
+    normalised: list[dict] = []
+    for raw in items:
+        n = _yf_news_item_normalise(raw)
+        if n is None:
+            continue
+        if n["pub_ts"] is not None and n["pub_ts"] < cutoff:
+            continue
+        normalised.append(n)
+    # Newest first — pubDate may be missing on some items so they keep
+    # their feed order at the bottom.
+    normalised.sort(
+        key=lambda x: x["pub_ts"] if x["pub_ts"] is not None else 0,
+        reverse=True,
+    )
+    return normalised[:limit]
+
+
+def _time_ago(pub_ts: float | None) -> str:
+    if pub_ts is None:
+        return ""
+    import time as _time
+    delta = _time.time() - pub_ts
+    if delta < 0:
+        return ""
+    if delta < 3600:
+        return f"{int(delta // 60)}m"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h"
+    return f"{int(delta // 86400)}d"
+
+
+def format_news_block(news: list[dict] | None,
+                      summary_chars: int = 180) -> str | None:
+    """HTML block of catalyst lines for the Telegram alert. Returns
+    None when there's nothing to show so the caller can omit the
+    section cleanly."""
+    if not news:
+        return None
+    import html as _html
+    lines = ["📰 <b>Catalysts:</b>"]
+    for n in news:
+        title = _html.escape(n.get("title") or "")
+        meta_parts: list[str] = []
+        if n.get("publisher"):
+            meta_parts.append(_html.escape(n["publisher"]))
+        ago = _time_ago(n.get("pub_ts"))
+        if ago:
+            meta_parts.append(ago)
+        meta = f" <i>({' · '.join(meta_parts)})</i>" if meta_parts else ""
+        lines.append(f"• <b>{title}</b>{meta}")
+        summary = (n.get("summary") or "").strip()
+        if summary:
+            summary = " ".join(summary.split())
+            if len(summary) > summary_chars:
+                summary = summary[:summary_chars - 1].rstrip() + "…"
+            lines.append(f"  {_html.escape(summary)}")
+    return "\n".join(lines)
 
 
 # --- formatting helpers used by the Telegram message ----------------
