@@ -1337,7 +1337,7 @@ table.sortable th.th-drag-over {
 
 .momentum-row {
   display: grid;
-  grid-template-columns: 56px 80px 64px 64px 1fr 1fr 1fr;
+  grid-template-columns: 24px 56px 80px 64px 64px 1fr 1fr 1fr;
   align-items: center;
   gap: 10px;
   padding: 6px 8px;
@@ -1348,6 +1348,41 @@ table.sortable th.th-drag-over {
   cursor: pointer;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
+}
+.momentum-row-select {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.momentum-row-select input { cursor: pointer; }
+
+.momentum-selection-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+.momentum-selection-toolbar.hidden { display: none; }
+.momentum-selection-toolbar .rule-spacer { flex: 1; }
+.momentum-select-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.momentum-selection-toolbar button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.momentum-selection-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .momentum-row:hover { border-color: var(--accent); }
 .momentum-time { color: var(--muted); font-size: 11px; }

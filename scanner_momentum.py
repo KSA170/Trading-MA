@@ -99,6 +99,12 @@ CREATE TABLE IF NOT EXISTS momentum_scanner_alerts (
 );
 CREATE INDEX IF NOT EXISTS momentum_scanner_alerts_date_idx
     ON momentum_scanner_alerts (alert_date DESC, fired_at DESC);
+-- Soft-delete column for "Clear selected / Clear all" in the panel.
+-- Hidden rows still satisfy the dedupe check (fired_tickers_for_date
+-- + already_fired_today) so the scanner won't re-fire a ticker the
+-- user has explicitly cleared; only the UI hides them from view.
+ALTER TABLE momentum_scanner_alerts
+    ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE;
 """
 
 
@@ -839,7 +845,9 @@ def record_alert(alert_date: str, ticker: str, metrics: dict,
 
 def alerts_for_date(alert_date: str | None = None) -> list[dict]:
     """Read alerts for `alert_date` (default: most recent date in the
-    table), newest first. Used by the UI panel."""
+    table), newest first. Hidden rows (soft-deleted via the UI's
+    Clear button) are filtered out — the underlying row stays in the
+    table so dedupe still works, but it doesn't show up here."""
     if not snapshots.enabled():
         return []
     try:
@@ -848,15 +856,21 @@ def alerts_for_date(alert_date: str | None = None) -> list[dict]:
                 cur.execute(
                     "SELECT alert_date, ticker, fired_at, price, pct_change, "
                     "rvol, vol_mcap_pct, new_high, details "
-                    "FROM momentum_scanner_alerts WHERE alert_date = %s "
+                    "FROM momentum_scanner_alerts "
+                    "WHERE alert_date = %s AND hidden = FALSE "
                     "ORDER BY fired_at DESC", (alert_date,),
                 )
             else:
+                # MAX() over the unhidden subset — if every row for
+                # today is hidden, fall back to the most recent date
+                # that still has visible rows.
                 cur.execute(
                     "SELECT alert_date, ticker, fired_at, price, pct_change, "
                     "rvol, vol_mcap_pct, new_high, details "
-                    "FROM momentum_scanner_alerts WHERE alert_date = ("
-                    "  SELECT MAX(alert_date) FROM momentum_scanner_alerts"
+                    "FROM momentum_scanner_alerts "
+                    "WHERE hidden = FALSE AND alert_date = ("
+                    "  SELECT MAX(alert_date) FROM momentum_scanner_alerts "
+                    "  WHERE hidden = FALSE"
                     ") ORDER BY fired_at DESC"
                 )
             rows = cur.fetchall()
@@ -877,6 +891,50 @@ def alerts_for_date(alert_date: str | None = None) -> list[dict]:
     except Exception as exc:
         log.warning("scanner_momentum.alerts_for_date failed: %s", exc)
         return []
+
+
+def hide_alerts(alert_date: str | None = None,
+                tickers: list[str] | None = None) -> int:
+    """Soft-delete rows the user has cleared from the panel. The row
+    stays in momentum_scanner_alerts so dedupe still works — only
+    the visibility flag flips. Returns the number of rows hidden.
+
+    - `tickers` empty / None  → hide every row for `alert_date`.
+    - `alert_date` empty / None → use the most recent date with any
+      visible rows (matches alerts_for_date's default)."""
+    if not snapshots.enabled():
+        return 0
+    norm_tickers = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            if alert_date:
+                date_clause = "alert_date = %s"
+                date_args: tuple = (alert_date,)
+            else:
+                # Resolve the latest date that still has visible rows
+                # at SQL time so the UI and the hide call agree.
+                date_clause = (
+                    "alert_date = (SELECT MAX(alert_date) "
+                    "FROM momentum_scanner_alerts WHERE hidden = FALSE)"
+                )
+                date_args = ()
+            if norm_tickers:
+                cur.execute(
+                    "UPDATE momentum_scanner_alerts SET hidden = TRUE "
+                    f"WHERE {date_clause} AND ticker = ANY(%s) "
+                    "AND hidden = FALSE",
+                    (*date_args, norm_tickers),
+                )
+            else:
+                cur.execute(
+                    "UPDATE momentum_scanner_alerts SET hidden = TRUE "
+                    f"WHERE {date_clause} AND hidden = FALSE",
+                    date_args,
+                )
+            return cur.rowcount or 0
+    except Exception as exc:
+        log.warning("scanner_momentum.hide_alerts failed: %s", exc)
+        return 0
 
 
 # --- Telegram --------------------------------------------------------------

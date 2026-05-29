@@ -368,6 +368,16 @@
           <button id="momentum-alerts-toggle-btn" type="button" title="Pause / resume the real-time momentum scanner. When OFF, the cron still runs every 5 min but exits immediately — no Alpaca calls, no Telegram.">Alerts: …</button>
           <span id="momentum-count" class="muted"></span>
         </div>
+        <div id="momentum-selection-toolbar" class="momentum-selection-toolbar hidden">
+          <label class="momentum-select-all" title="Select / deselect every visible alert">
+            <input id="momentum-select-all" type="checkbox" />
+            <span class="muted">Select all</span>
+          </label>
+          <span id="momentum-selection-count" class="muted">0 selected</span>
+          <span class="rule-spacer"></span>
+          <button id="momentum-clear-selected-btn" type="button" disabled title="Soft-delete the selected alerts. The scanner's dedupe still treats them as 'fired', so they won't re-fire later today.">Clear selected</button>
+          <button id="momentum-clear-all-btn" type="button" title="Soft-delete every alert visible for the current date. Dedupe is preserved, so today's cleared tickers won't fire again until tomorrow.">Clear all today</button>
+        </div>
         <div id="momentum-list">
           <p class="muted history-empty">No alerts yet today. The scanner runs every ~5 min during US market hours.</p>
         </div>

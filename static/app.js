@@ -87,6 +87,11 @@ const els = {
   momentumList: $('#momentum-list'),
   momentumAsOf: $('#momentum-as-of'),
   momentumCount: $('#momentum-count'),
+  momentumSelectionToolbar: $('#momentum-selection-toolbar'),
+  momentumSelectAll: $('#momentum-select-all'),
+  momentumSelectionCount: $('#momentum-selection-count'),
+  momentumClearSelectedBtn: $('#momentum-clear-selected-btn'),
+  momentumClearAllBtn: $('#momentum-clear-all-btn'),
   momentumPctChange: $('#momentum-pct-change'),
   momentumRvol: $('#momentum-rvol'),
   momentumRvolLookback: $('#momentum-rvol-lookback'),
@@ -2525,9 +2530,24 @@ function momentumConfigFromUI() {
   };
 }
 
+// Per-panel selection state — kept separate from the screener's
+// selectedTickers so the two don't trample each other.
+let momentumLastAlerts = [];
+const momentumSelected = new Set();
+let momentumLastDate = null;
+
 function renderMomentumAlerts(alerts) {
   if (!els.momentumList) return;
   alerts = alerts || [];
+  momentumLastAlerts = alerts;
+  momentumLastDate = alerts.length ? alerts[0].alert_date || null : null;
+  // Drop stale picks the server no longer has (e.g., they were
+  // cleared in another tab or the day rolled over).
+  const visible = new Set(alerts.map((a) => a.ticker));
+  for (const t of [...momentumSelected]) {
+    if (!visible.has(t)) momentumSelected.delete(t);
+  }
+
   if (els.momentumAsOf) {
     els.momentumAsOf.textContent = alerts.length
       ? `as of ${alerts[0].alert_date || '?'}`
@@ -2540,6 +2560,7 @@ function renderMomentumAlerts(alerts) {
   }
   if (!alerts.length) {
     els.momentumList.innerHTML = '<p class="muted history-empty">No alerts yet today. The scanner runs every ~5 min during US market hours.</p>';
+    momentumUpdateSelectionUI();
     return;
   }
   const rows = alerts.map((a) => {
@@ -2550,8 +2571,12 @@ function renderMomentumAlerts(alerts) {
     const vf  = a.vol_mcap_pct != null ? `${Number(a.vol_mcap_pct).toFixed(2)}%` : '';
     const nh  = a.new_high != null ? `> $${Number(a.new_high).toFixed(2)}` : '';
     const fired = a.fired_at ? formatTriggerTime(a.fired_at) : '';
+    const checked = momentumSelected.has(t) ? ' checked' : '';
     return `
-      <div class="momentum-row">
+      <div class="momentum-row" data-row-ticker="${escapeHtml(t)}">
+        <label class="momentum-row-select" title="Select this alert">
+          <input type="checkbox" class="momentum-row-cb" data-ticker-select="${escapeHtml(t)}"${checked} />
+        </label>
         <span class="momentum-time">${escapeHtml(fired)}</span>
         <span class="momentum-ticker" data-ticker="${escapeHtml(t)}">${escapeHtml(t)}</span>
         <span class="momentum-price">${escapeHtml(px)}</span>
@@ -2563,6 +2588,72 @@ function renderMomentumAlerts(alerts) {
     `;
   });
   els.momentumList.innerHTML = rows.join('');
+  momentumUpdateSelectionUI();
+}
+
+function momentumUpdateSelectionUI() {
+  const total = momentumLastAlerts.length;
+  const count = momentumSelected.size;
+  if (els.momentumSelectionToolbar)
+    els.momentumSelectionToolbar.classList.toggle('hidden', total === 0);
+  if (els.momentumSelectionCount)
+    els.momentumSelectionCount.textContent =
+      count === 1 ? '1 selected' : `${count} selected`;
+  if (els.momentumClearSelectedBtn)
+    els.momentumClearSelectedBtn.disabled = count === 0;
+  if (els.momentumClearAllBtn)
+    els.momentumClearAllBtn.disabled = total === 0;
+  if (els.momentumSelectAll) {
+    if (!total) {
+      els.momentumSelectAll.checked = false;
+      els.momentumSelectAll.indeterminate = false;
+    } else {
+      const allChecked = momentumLastAlerts.every((a) => momentumSelected.has(a.ticker));
+      els.momentumSelectAll.checked = allChecked && count > 0;
+      els.momentumSelectAll.indeterminate = count > 0 && !allChecked;
+    }
+  }
+}
+
+async function momentumHide(tickers) {
+  try {
+    const body = { tickers };
+    if (momentumLastDate) body.date = momentumLastDate;
+    const res = await fetch('/api/momentum/alerts/hide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setStatus('Clear failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    // Drop the cleared tickers from the selection set so the next
+    // render doesn't try to keep them checked.
+    if (tickers && tickers.length) {
+      tickers.forEach((t) => momentumSelected.delete(t));
+    } else {
+      momentumSelected.clear();
+    }
+    await loadMomentumAlerts();
+  } catch (err) {
+    setStatus('Clear failed: ' + (err && err.message ? err.message : 'network error'));
+  }
+}
+
+function momentumClearSelected() {
+  if (momentumSelected.size === 0) return;
+  momentumHide([...momentumSelected]);
+}
+
+function momentumClearAll() {
+  if (momentumLastAlerts.length === 0) return;
+  if (!window.confirm(`Clear all ${momentumLastAlerts.length} alert(s) for ${momentumLastDate || 'today'}?`)) return;
+  // Empty list = "all" on the server side. We still pass the date
+  // explicitly so a slow refresh between confirm and POST doesn't
+  // accidentally clear a different day's rows.
+  momentumHide([]);
 }
 
 async function loadMomentumConfig() {
@@ -2855,8 +2946,20 @@ wireCollapse(
 
 if (els.momentumList) {
   els.momentumList.addEventListener('click', (ev) => {
-    // Click anywhere on the row still opens the chart, but the hover
-    // trigger is now narrowed to the ticker span only (so passing the
+    // Checkbox interactions update the selection set instead of
+    // opening the chart.
+    const cb = ev.target.closest('input.momentum-row-cb');
+    if (cb) {
+      const t = cb.dataset.tickerSelect;
+      if (t) {
+        if (cb.checked) momentumSelected.add(t);
+        else momentumSelected.delete(t);
+        momentumUpdateSelectionUI();
+      }
+      return;
+    }
+    // Click anywhere else on the row opens the chart, but the hover
+    // trigger is narrowed to the ticker span only (so passing the
     // mouse over the metrics doesn't pop the chart).
     const row = ev.target.closest('.momentum-row');
     const tickerEl = row && row.querySelector('[data-ticker]');
@@ -2865,6 +2968,20 @@ if (els.momentumList) {
   els.momentumList.addEventListener('mouseover', onTickerEnter);
   els.momentumList.addEventListener('mouseout', onTickerLeave);
 }
+if (els.momentumSelectAll) {
+  els.momentumSelectAll.addEventListener('change', () => {
+    if (els.momentumSelectAll.checked) {
+      momentumLastAlerts.forEach((a) => momentumSelected.add(a.ticker));
+    } else {
+      momentumSelected.clear();
+    }
+    renderMomentumAlerts(momentumLastAlerts);
+  });
+}
+if (els.momentumClearSelectedBtn)
+  els.momentumClearSelectedBtn.addEventListener('click', momentumClearSelected);
+if (els.momentumClearAllBtn)
+  els.momentumClearAllBtn.addEventListener('click', momentumClearAll);
 wireCollapse(els.momentumToggle, els.momentumBody, 'collapse_momentum');
 loadMomentumConfig();
 loadMomentumAlerts();
