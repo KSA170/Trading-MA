@@ -912,12 +912,17 @@ def api_momentum_save_config():
         rvol_lookback  = int(payload.get("rvol_lookback",    cfg["rvol_lookback"]))
         high_lookback  = int(payload.get("high_lookback",    cfg["high_lookback"]))
         vol_mcap_min   = float(payload.get("vol_mcap_min",   cfg["vol_mcap_min"]))
+        mcap_min_m     = float(payload.get("mcap_min_m",     cfg["mcap_min_m"]))
+        mcap_max_m     = float(payload.get("mcap_max_m",     cfg["mcap_max_m"]))
     except (TypeError, ValueError):
         return jsonify({"error": "all fields must be numeric"}), 400
     if rvol_lookback < 1 or high_lookback < 1:
         return jsonify({"error": "lookback windows must be >= 1 day"}), 400
+    if mcap_min_m < 0 or mcap_max_m <= 0 or mcap_min_m >= mcap_max_m:
+        return jsonify({"error": "market-cap band must satisfy 0 <= min < max"}), 400
     ok = scanner_momentum.save_config(
         pct_change_min, rvol_min, rvol_lookback, high_lookback, vol_mcap_min,
+        mcap_min_m, mcap_max_m,
     )
     return jsonify({"saved": ok, "config": scanner_momentum.get_config()})
 
