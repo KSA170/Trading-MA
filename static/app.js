@@ -2683,9 +2683,15 @@ function renderMomentumDiagnose(r) {
   const headerCls = r.passes_all
     ? (r.already_fired ? 'momentum-diag-header muted' : 'momentum-diag-header pass')
     : 'momentum-diag-header fail';
-  const modeBadge = r.mode === 'historical'
-    ? ` <span class="muted">· historical EOD · ${escapeHtml(r.today || '')}</span>`
-    : ` <span class="muted">· live · ${escapeHtml(r.today || '')}</span>`;
+  // Three states worth distinguishing in the badge:
+  //   - historical EOD: past date, snapshot bar
+  //   - today EOD:      today's date, snapshot bar (post-close, after
+  //                     the nightly job has written today's bar)
+  //   - live:           today's date, in-progress Alpaca bar
+  let modeLabel = 'live';
+  if (r.mode === 'historical') modeLabel = 'historical EOD';
+  else if (r.source === 'snapshot') modeLabel = 'today EOD';
+  const modeBadge = ` <span class="muted">· ${modeLabel} · ${escapeHtml(r.today || '')}</span>`;
   const header = `
     <div class="${headerCls}">
       <strong>${escapeHtml(r.ticker)}</strong>${modeBadge}<br>
