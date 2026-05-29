@@ -95,9 +95,12 @@ const els = {
   momentumSaveBtn: $('#momentum-save-btn'),
   momentumSaveMsg: $('#momentum-save-msg'),
   momentumAlertsToggleBtn: $('#momentum-alerts-toggle-btn'),
+  momentumDiagnoseToggle: $('#momentum-diagnose-toggle'),
+  momentumDiagnoseBody: $('#momentum-diagnose-body'),
   momentumDiagnoseTicker: $('#momentum-diagnose-ticker'),
   momentumDiagnoseDate: $('#momentum-diagnose-date'),
   momentumDiagnoseBtn: $('#momentum-diagnose-btn'),
+  momentumDiagnoseClearBtn: $('#momentum-diagnose-clear-btn'),
   momentumDiagnoseStatus: $('#momentum-diagnose-status'),
   momentumDiagnoseOut: $('#momentum-diagnose-out'),
   setupsStatus: $('#setups-status'),
@@ -2321,9 +2324,9 @@ function renderPicks(data) {
     const metaParts = [ret, dist, atr, dvol].filter(Boolean);
     const badges = renderPickTriggerBadges(p.ticker);
     return `
-      <div class="pick-row" data-ticker="${escapeHtml(p.ticker)}">
+      <div class="pick-row">
         <span class="pick-rank">${p.rank}</span>
-        <span class="pick-ticker">${escapeHtml(p.ticker)}</span>
+        <span class="pick-ticker" data-ticker="${escapeHtml(p.ticker)}">${escapeHtml(p.ticker)}</span>
         <span class="pick-close">${escapeHtml(close)}</span>
         <span class="pick-composite" title="Composite — weighted sum of the 5 sub-scores">${Math.round(p.composite)}</span>
         <span class="pick-bars">
@@ -2464,13 +2467,14 @@ if (els.picksTuneBtn && els.picksTune) {
 }
 if (els.picksRunBtn) els.picksRunBtn.addEventListener('click', runPicks);
 if (els.picksAlertsToggleBtn) els.picksAlertsToggleBtn.addEventListener('click', togglePicksIntradayAlerts);
-// Click a pick row → open the hover chart for that ticker.
+// Click a pick row → open the hover chart for that ticker. The hover
+// trigger is narrowed to the ticker span only (data-ticker lives on
+// .pick-ticker), but clicking anywhere on the row still works.
 if (els.picksList) {
   els.picksList.addEventListener('click', (ev) => {
     const row = ev.target.closest('.pick-row');
-    if (row && row.dataset.ticker) {
-      showHoverChart(row.dataset.ticker, row);
-    }
+    const tickerEl = row && row.querySelector('[data-ticker]');
+    if (tickerEl) showHoverChart(tickerEl.dataset.ticker, tickerEl);
   });
   // Same mouseover/mouseout pattern the scanner table uses — the
   // shared onTickerEnter/Leave handlers key off any [data-ticker]
@@ -2539,9 +2543,9 @@ function renderMomentumAlerts(alerts) {
     const nh  = a.new_high != null ? `> $${Number(a.new_high).toFixed(2)}` : '';
     const fired = a.fired_at ? formatTriggerTime(a.fired_at) : '';
     return `
-      <div class="momentum-row" data-ticker="${escapeHtml(t)}">
+      <div class="momentum-row">
         <span class="momentum-time">${escapeHtml(fired)}</span>
-        <span class="momentum-ticker">${escapeHtml(t)}</span>
+        <span class="momentum-ticker" data-ticker="${escapeHtml(t)}">${escapeHtml(t)}</span>
         <span class="momentum-price">${escapeHtml(px)}</span>
         <span class="momentum-metric momentum-pct" title="% change vs prior trading day's close">${escapeHtml(pct)}</span>
         <span class="momentum-metric" title="Relative volume — today's volume / prior N-day avg">${escapeHtml(rv)} RVOL</span>
@@ -2663,6 +2667,7 @@ function refreshMomentumDiagnoseDates(dates, keepSelected) {
 
 function renderMomentumDiagnose(r) {
   if (!els.momentumDiagnoseOut) return;
+  if (els.momentumDiagnoseClearBtn) els.momentumDiagnoseClearBtn.disabled = false;
   if (!r || r.error) {
     els.momentumDiagnoseOut.classList.remove('hidden');
     els.momentumDiagnoseOut.innerHTML =
@@ -2797,7 +2802,20 @@ async function runMomentumDiagnose() {
   }
 }
 
+function clearMomentumDiagnose() {
+  if (els.momentumDiagnoseOut) {
+    els.momentumDiagnoseOut.classList.add('hidden');
+    els.momentumDiagnoseOut.innerHTML = '';
+  }
+  if (els.momentumDiagnoseStatus) els.momentumDiagnoseStatus.textContent = '';
+  if (els.momentumDiagnoseTicker) els.momentumDiagnoseTicker.value = '';
+  if (els.momentumDiagnoseDate) els.momentumDiagnoseDate.value = '';
+  refreshMomentumDiagnoseDates([]);
+  if (els.momentumDiagnoseClearBtn) els.momentumDiagnoseClearBtn.disabled = true;
+}
+
 if (els.momentumDiagnoseBtn) els.momentumDiagnoseBtn.addEventListener('click', runMomentumDiagnose);
+if (els.momentumDiagnoseClearBtn) els.momentumDiagnoseClearBtn.addEventListener('click', clearMomentumDiagnose);
 if (els.momentumDiagnoseTicker) {
   els.momentumDiagnoseTicker.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') { ev.preventDefault(); runMomentumDiagnose(); }
@@ -2809,12 +2827,20 @@ if (els.momentumDiagnoseDate) {
     if (t) runMomentumDiagnose();
   });
 }
+wireCollapse(
+  els.momentumDiagnoseToggle,
+  [els.momentumDiagnoseBody, els.momentumDiagnoseOut],
+  'collapse_momentum_diagnose',
+);
+
 if (els.momentumList) {
   els.momentumList.addEventListener('click', (ev) => {
+    // Click anywhere on the row still opens the chart, but the hover
+    // trigger is now narrowed to the ticker span only (so passing the
+    // mouse over the metrics doesn't pop the chart).
     const row = ev.target.closest('.momentum-row');
-    if (row && row.dataset.ticker) {
-      showHoverChart(row.dataset.ticker, row);
-    }
+    const tickerEl = row && row.querySelector('[data-ticker]');
+    if (tickerEl) showHoverChart(tickerEl.dataset.ticker, tickerEl);
   });
   els.momentumList.addEventListener('mouseover', onTickerEnter);
   els.momentumList.addEventListener('mouseout', onTickerLeave);
