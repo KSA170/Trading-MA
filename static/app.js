@@ -2683,14 +2683,15 @@ function renderMomentumDiagnose(r) {
   const headerCls = r.passes_all
     ? (r.already_fired ? 'momentum-diag-header muted' : 'momentum-diag-header pass')
     : 'momentum-diag-header fail';
-  // Three states worth distinguishing in the badge:
-  //   - historical EOD: past date, snapshot bar
-  //   - today EOD:      today's date, snapshot bar (post-close, after
-  //                     the nightly job has written today's bar)
-  //   - live:           today's date, in-progress Alpaca bar
+  // Four states worth distinguishing in the badge — source matters
+  // because Alpaca-IEX intraday volume is a tiny fraction of SIP, so
+  // a "live (Alpaca-IEX)" RVOL number is not directly comparable to
+  // the snapshot's EOD value.
   let modeLabel = 'live';
   if (r.mode === 'historical') modeLabel = 'historical EOD';
   else if (r.source === 'snapshot') modeLabel = 'today EOD';
+  else if (r.source === 'yahoo') modeLabel = 'live (Yahoo)';
+  else if (r.source === 'alpaca-iex') modeLabel = 'live (Alpaca-IEX)';
   const modeBadge = ` <span class="muted">· ${modeLabel} · ${escapeHtml(r.today || '')}</span>`;
   const header = `
     <div class="${headerCls}">

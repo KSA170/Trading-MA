@@ -314,9 +314,27 @@ def _load_universe_baseline(today_str: str, rvol_lookback: int,
     return out
 
 
-# --- today's live bar from Alpaca ------------------------------------------
+# --- today's in-progress daily bar ----------------------------------------
+#
+# Two implementations, dispatched at the bottom by env var:
+#
+#   _fetch_today_bars_yahoo  (default) — yfinance / Yahoo's quote feed.
+#       FREE. Returns SIP-consolidated cumulative volume, so RVOL math
+#       reflects what's actually traded across the consolidated tape.
+#       Slower per scan (~2-3 min for 5k tickers) and Yahoo can be
+#       flaky, but the volume numbers are right.
+#
+#   _fetch_today_bars_alpaca_iex — Alpaca with `feed=iex`.
+#       Fast (<60s for 5k tickers) but only reports IEX-attributed
+#       trades, typically 2-3% of a NYSE/NASDAQ name's total volume.
+#       That severely under-counts intraday cumulative volume → RVOL
+#       barely moves off zero during the day → almost no alerts fire.
+#       Use only when an Algo Trader Plus subscription is in place
+#       (then the feed can be switched to "sip" in alerts.py).
+#
+# Switch via env var MOMENTUM_BARS_FEED=alpaca on the cron runner.
 
-def _fetch_today_bars(symbols: list[str], today_str: str) -> dict[str, dict]:
+def _fetch_today_bars_alpaca_iex(symbols: list[str], today_str: str) -> dict[str, dict]:
     """Daily bar with start=today for each symbol — Alpaca returns the
     in-progress today bar (cumulative since open). Reuses the splitting
     helper alerts.py uses for nightly bars so a single rejected symbol
@@ -350,6 +368,94 @@ def _fetch_today_bars(symbols: list[str], today_str: str) -> dict[str, dict]:
             continue
         out[sym] = last
     return out
+
+
+def _fetch_today_bars_yahoo(symbols: list[str], today_str: str) -> dict[str, dict]:
+    """Free Yahoo Finance source for the in-progress daily bar.
+    Replaces Alpaca's IEX-only intraday feed which only reports trades
+    routed through IEX (~2-3% of a NYSE/NASDAQ large-cap's volume) and
+    therefore under-counts today's cumulative volume by 30-50x.
+
+    yfinance.download() handles Yahoo's auth/crumb dance internally and
+    parallelises symbol requests across a thread pool, so a 5k-ticker
+    universe completes in 2-3 min. Tickers Yahoo doesn't recognise, or
+    that have no trades on `today_str`, are silently dropped — same
+    contract as the Alpaca variant.
+
+    Returns {ticker: {c, h, v}} keyed by the caller's original symbols.
+    Our universe already uses hyphens for share classes (BRK-B) which
+    matches Yahoo's convention, so no symbol translation is needed."""
+    if not symbols:
+        return {}
+    import yfinance as yf
+    import pandas as pd
+
+    out: dict[str, dict] = {}
+    chunk = 200
+    for i in range(0, len(symbols), chunk):
+        batch = symbols[i:i + chunk]
+        try:
+            df = yf.download(
+                tickers=" ".join(batch),
+                period="2d",          # in-progress today + yesterday
+                interval="1d",
+                progress=False,
+                auto_adjust=False,
+                threads=True,
+                group_by="ticker",
+            )
+        except Exception as exc:
+            log.warning(
+                "yahoo batch %d-%d (%d symbols) failed: %s",
+                i, i + len(batch), len(batch), exc,
+            )
+            continue
+        if df is None or df.empty:
+            continue
+
+        # Single-ticker call returns a flat OHLCV frame (no MultiIndex);
+        # multi-ticker returns columns indexed by (ticker, field).
+        is_multi = isinstance(df.columns, pd.MultiIndex)
+        for sym in batch:
+            try:
+                sub = df[sym] if is_multi else df
+            except (KeyError, ValueError):
+                continue
+            if sub is None or sub.empty:
+                continue
+            try:
+                last_idx = sub.index[-1]
+                last_date = (last_idx.strftime("%Y-%m-%d")
+                             if hasattr(last_idx, "strftime")
+                             else str(last_idx)[:10])
+            except Exception:
+                continue
+            if last_date != today_str:
+                # Either Yahoo's most-recent bar is yesterday's (no
+                # trades today yet) or the symbol is stale — skip.
+                continue
+            try:
+                row = sub.iloc[-1]
+                close = float(row["Close"])
+                high  = float(row["High"])
+                vol   = float(row["Volume"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if not (close > 0 and vol > 0):
+                continue
+            out[sym] = {"c": close, "h": high, "v": vol}
+    return out
+
+
+def _fetch_today_bars(symbols: list[str], today_str: str) -> dict[str, dict]:
+    """Dispatch to the configured intraday data source. Defaults to
+    Yahoo (free, SIP-consolidated volume). Set MOMENTUM_BARS_FEED=alpaca
+    on the cron runner once an Algo Trader Plus subscription is active
+    and `feed=iex` has been changed to `feed=sip` in alerts.py."""
+    src = os.environ.get("MOMENTUM_BARS_FEED", "yahoo").strip().lower()
+    if src == "alpaca":
+        return _fetch_today_bars_alpaca_iex(symbols, today_str)
+    return _fetch_today_bars_yahoo(symbols, today_str)
 
 
 # --- per-ticker evaluation -------------------------------------------------
@@ -537,7 +643,14 @@ def diagnose(ticker: str, as_of: str | None = None,
     today_in_snapshot = any(
         isinstance(b, dict) and b.get("d") == target_date for b in bars
     )
-    source = "snapshot" if (is_historical or today_in_snapshot) else "alpaca"
+    if is_historical or today_in_snapshot:
+        source = "snapshot"
+    else:
+        # Live mode → which intraday feed the scanner is currently
+        # configured to use. Surface it so the user can tell whether
+        # they're looking at IEX-only or SIP-consolidated volume.
+        feed = os.environ.get("MOMENTUM_BARS_FEED", "yahoo").strip().lower()
+        source = "alpaca-iex" if feed == "alpaca" else "yahoo"
     out["source"] = source
 
     if source == "snapshot":
