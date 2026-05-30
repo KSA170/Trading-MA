@@ -933,6 +933,21 @@ def api_momentum_alerts():
     return jsonify({"alerts": scanner_momentum.alerts_for_date(date)})
 
 
+@app.route("/api/momentum/alerts/hide", methods=["POST"])
+def api_momentum_alerts_hide():
+    """Soft-delete momentum alerts from the panel. Body:
+        {date?: 'YYYY-MM-DD', tickers?: ['BTU', ...]}
+    Missing date → most recent date with visible rows.
+    Missing/empty tickers → clear ALL visible rows for the date."""
+    payload = request.get_json(silent=True) or {}
+    date = (payload.get("date") or "").strip() or None
+    raw_tickers = payload.get("tickers")
+    if raw_tickers is not None and not isinstance(raw_tickers, list):
+        return jsonify({"error": "tickers must be a list"}), 400
+    n = scanner_momentum.hide_alerts(date, raw_tickers)
+    return jsonify({"hidden": n})
+
+
 @app.route("/api/momentum/diagnose", methods=["GET"])
 def api_momentum_diagnose():
     """Dry-run the scanner against one ticker — returns each filter's
