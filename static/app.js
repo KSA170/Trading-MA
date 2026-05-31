@@ -2291,7 +2291,10 @@ function picksMiniBar(label, value) {
 let _picksIntradayByTicker = {};
 
 const _PICK_TRIGGER_LABELS = {
-  vwap_reclaim: { glyph: '⚡', name: 'VWAP reclaim' },
+  pivot_breakout: { glyph: '🎯', name: '20-day pivot breakout' },
+  orb:            { glyph: '🚀', name: 'Opening range breakout' },
+  // Kept for legacy alerts already in the DB from the prior trigger.
+  vwap_reclaim:   { glyph: '⚡', name: 'VWAP reclaim' },
 };
 
 function renderPickTriggerBadges(ticker) {
