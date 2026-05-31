@@ -2305,13 +2305,21 @@ function renderPickTriggerBadges(ticker) {
   }).join('');
 }
 
+// Hydration latch — the tuning inputs (weight sliders, price band)
+// must only be set from the server response on the FIRST render.
+// Subsequent polls re-render the rows and leave the inputs alone,
+// otherwise the 60s loadPicks tick wipes in-progress edits before
+// the user can click Re-rank.
+let _picksTuningHydrated = false;
+
 function renderPicks(data) {
   const picks = (data && data.picks) || [];
   const cfg = (data && data.config) || null;
-  if (cfg) {
+  if (cfg && !_picksTuningHydrated) {
     picksApplyWeightsToUI(cfg.weights);
     if (els.picksPriceMin && cfg.price_min != null) els.picksPriceMin.value = String(cfg.price_min);
     if (els.picksPriceMax && cfg.price_max != null) els.picksPriceMax.value = String(cfg.price_max);
+    _picksTuningHydrated = true;
   }
   if (!els.picksList) return;
   if (!picks.length) {
