@@ -517,6 +517,7 @@ def _evaluate_one(baseline: dict, today_bar: dict, cfg: dict) -> dict | None:
         "price":        last_price,
         "today_high":   today_high,
         "today_vol":    today_vol,
+        "avg_vol":      baseline["avg_vol"],   # denominator used for rvol
         "prior_close":  prior_close,
         "prior_high_n": baseline["high_n"],
         "pct_change":   pct_change,
@@ -939,32 +940,133 @@ def hide_alerts(alert_date: str | None = None,
 
 # --- Telegram --------------------------------------------------------------
 
+_VERDICT_MAX_SCORE = 14
+# Tuned so a "barely passes thresholds" alert lands in PASS, a typical
+# good setup with one supportive enrichment lands in WATCH, and a strong
+# setup with multiple supportive signals lands in BUY.
+_VERDICT_BUY_MIN   = 9
+_VERDICT_WATCH_MIN = 5
+_VERDICT_INSIDER_RECENT_DAYS = 60   # only count Form 4s newer than this
+
+
+def _fmt_compact_vol(v: float) -> str:
+    """Compact share-count formatter — '12.0M', '350K', '8.4B'."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    a = abs(n)
+    if a >= 1e9: return f"{n/1e9:.1f}B"
+    if a >= 1e6: return f"{n/1e6:.1f}M"
+    if a >= 1e3: return f"{n/1e3:.0f}K"
+    return f"{int(n):,}"
+
+
+def _insider_is_recent(insider: dict | None,
+                       max_age_days: int = _VERDICT_INSIDER_RECENT_DAYS) -> bool:
+    """True only when the insider transaction is within max_age_days.
+    Older Form 4s still display on the alert (still useful context) but
+    don't count toward the verdict — a 6-month-old buy says nothing
+    about the current move."""
+    if not insider:
+        return False
+    raw = insider.get("transaction_date") or insider.get("filing_date")
+    if not raw:
+        return False
+    try:
+        d = datetime.strptime(raw, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return False
+    age_days = (datetime.utcnow() - d).days
+    return 0 <= age_days <= max_age_days
+
+
+def compute_verdict(m: dict,
+                    insider: dict | None,
+                    news: list[dict] | None) -> dict:
+    """Score the alert across pct_change, RVOL, vol-of-float, insider
+    activity, and catalyst news. Output: {label, glyph, score, max}
+    where label is BUY / WATCH / PASS.
+
+    Every alert that reaches this function has already cleared the four
+    filters; the verdict measures how far ABOVE the thresholds the
+    setup actually sits and whether enrichment supports a high-
+    conviction call."""
+    score = 0
+
+    pct = float(m.get("pct_change") or 0)
+    if   pct >= 15: score += 3
+    elif pct >= 8:  score += 2
+    elif pct >= 5:  score += 1
+
+    rvol = float(m.get("rvol") or 0)
+    if   rvol >= 10: score += 3
+    elif rvol >= 5:  score += 2
+    elif rvol >= 2.5: score += 1
+
+    vmp = float(m.get("vol_mcap_pct") or 0)
+    if   vmp >= 3:   score += 3
+    elif vmp >= 1:   score += 2
+    elif vmp >= 0.5: score += 1
+
+    # New high is one of the four filter gates, so it's always true
+    # by the time we get here — still counts as positive evidence
+    # rather than a constant offset, to keep the score interpretable.
+    score += 1
+
+    if _insider_is_recent(insider):
+        code = (insider.get("code") or "").upper()
+        if code == "P":   score += 2     # open-market BUY
+        elif code == "S": score -= 1     # SELL drags the verdict
+
+    n_news = len(news or [])
+    if   n_news >= 2: score += 2
+    elif n_news >= 1: score += 1
+
+    if score >= _VERDICT_BUY_MIN:
+        label, glyph = "BUY", "🟢"
+    elif score >= _VERDICT_WATCH_MIN:
+        label, glyph = "WATCH", "🟡"
+    else:
+        label, glyph = "PASS", "🔴"
+    return {"label": label, "glyph": glyph,
+            "score": score, "max": _VERDICT_MAX_SCORE}
+
+
 def _format_telegram(ticker: str, m: dict, cfg: dict,
                      insider: dict | None = None,
                      fund: dict | None = None,
                      news: list[dict] | None = None) -> str:
-    """Build the HTML Telegram body. Two-line header (ticker + name,
-    price) followed by a bold-metric block for the four signals, then
-    optional insider / fundamentals / news sections that drop out
-    cleanly when the upstream returned nothing."""
+    """Build the HTML Telegram body. Header (ticker + name, price)
+    followed by a bold-metric block, then enrichment sections, then
+    the verdict footer. Insider line is ALWAYS emitted — when there's
+    no Form 4 data we surface that explicitly with ❌ rather than
+    silently omitting the line."""
     import enrich
     import html as _html
     name = (fund or {}).get("name")
     name_part = f" — {_html.escape(name)}" if name else ""
+    today_vol = _fmt_compact_vol(m.get("today_vol") or 0)
+    avg_vol   = _fmt_compact_vol(m.get("avg_vol") or 0)
+    rvol_lb   = int(cfg.get("rvol_lookback", 20))
     lines = [
         f"🚀 <b>{_html.escape(ticker)}</b>{name_part}",
         f"💵 Price <b>${m['price']:.2f}</b>",
         "",
         f"📈 <b>+{m['pct_change']:.2f}%</b> today  ·  "
-        f"🔥 RVOL <b>{m['rvol']:.2f}×</b>",
+        f"🔥 RVOL <b>{m['rvol']:.2f}×</b> "
+        f"<i>({today_vol} ÷ {avg_vol} {rvol_lb}d avg)</i>",
         f"🎯 <b>New {cfg['high_lookback']}-day high</b> "
         f"(prior ${m['prior_high_n']:.2f})  ·  "
         f"🌊 <b>{m['vol_mcap_pct']:.2f}%</b> of float",
     ]
+    # Insider always shows — placeholder when no Form 4 data.
     insider_line = enrich.format_insider_line(insider)
+    lines.append("")
     if insider_line:
-        lines.append("")
         lines.append(insider_line)
+    else:
+        lines.append("📋 Insider: ❌ <i>(no recent Form 4 activity)</i>")
     fund_line = enrich.format_fundamentals_line(fund)
     if fund_line:
         lines.append(fund_line)
@@ -972,6 +1074,13 @@ def _format_telegram(ticker: str, m: dict, cfg: dict,
     if news_block:
         lines.append("")
         lines.append(news_block)
+    # Verdict footer — based on the collective signal + catalysts.
+    v = compute_verdict(m, insider, news)
+    lines.append("")
+    lines.append(
+        f"🧭 <b>Verdict:</b> {v['glyph']} <b>{v['label']}</b> "
+        f"<i>({v['score']}/{v['max']})</i>"
+    )
     return "\n".join(lines)
 
 
