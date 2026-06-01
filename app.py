@@ -61,6 +61,8 @@ DEFAULT_PARAMS: dict = {
     "ema_dev_max_pct": 3.0,
     "macd_hist_min": 0.0,
     "macd_require_rising": True,
+    "macd_line_min": 0.0,
+    "macd_line_max": 10.0,
     "turnover_min_pct": 0.5,
     "turnover_max_pct": 100.0,
     "pct_change_min": 5.0,
@@ -73,6 +75,7 @@ DEFAULT_PARAMS: dict = {
     "apply_price_dev": True,
     "apply_ema_dev": True,
     "apply_macd": True,
+    "apply_macd_line": False,
     "apply_turnover": False,
     "apply_pct_change": False,
     "as_of_offset": 0,
@@ -92,11 +95,12 @@ def _cache_key(params: dict) -> tuple:
     price_dev = (round(float(params["price_dev_min_pct"]), 3), round(float(params["price_dev_max_pct"]), 3)) if params["apply_price_dev"] else ("off",)
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
     macd = (round(float(params["macd_hist_min"]), 4), bool(params["macd_require_rising"])) if params["apply_macd"] else ("off",)
+    macd_line = (round(float(params["macd_line_min"]), 4), round(float(params["macd_line_max"]), 4)) if params["apply_macd_line"] else ("off",)
     turnover = (round(float(params["turnover_min_pct"]), 4), round(float(params["turnover_max_pct"]), 4)) if params["apply_turnover"] else ("off",)
     pct_change = (round(float(params["pct_change_min"]), 4),) if params["apply_pct_change"] else ("off",)
     lists = tuple(sorted(params["lists"]))
     as_of = int(params["as_of_offset"])
-    return ("v12", as_of, price, price_dev, ema_dev, macd, turnover, pct_change, high, rsi, rsi_dev, rvol, avg_vol, lists)
+    return ("v13", as_of, price, price_dev, ema_dev, macd, macd_line, turnover, pct_change, high, rsi, rsi_dev, rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -163,6 +167,8 @@ def _parse_params() -> dict:
         "ema_dev_max_pct": _flt("ema_dev_max_pct", 3),
         "macd_hist_min": _flt("macd_hist_min", 0),
         "macd_require_rising": _parse_bool("macd_require_rising", True),
+        "macd_line_min": _flt("macd_line_min", 0.0),
+        "macd_line_max": _flt("macd_line_max", 10.0),
         "turnover_min_pct": _flt("turnover_min_pct", 0.5),
         "turnover_max_pct": _flt("turnover_max_pct", 100.0),
         "pct_change_min": _flt("pct_change_min", 5.0),
@@ -175,6 +181,7 @@ def _parse_params() -> dict:
         "apply_price_dev": _parse_bool("apply_price_dev", True),
         "apply_ema_dev": _parse_bool("apply_ema_dev", True),
         "apply_macd": _parse_bool("apply_macd", True),
+        "apply_macd_line": _parse_bool("apply_macd_line", False),
         "apply_turnover": _parse_bool("apply_turnover", False),
         "apply_pct_change": _parse_bool("apply_pct_change", False),
         "as_of_offset": as_of_offset,
@@ -234,6 +241,8 @@ def _api_screen_impl():
         ema_dev_max_pct=params["ema_dev_max_pct"],
         macd_hist_min=params["macd_hist_min"],
         macd_require_rising=params["macd_require_rising"],
+        macd_line_min=params["macd_line_min"],
+        macd_line_max=params["macd_line_max"],
         turnover_min_pct=params["turnover_min_pct"],
         turnover_max_pct=params["turnover_max_pct"],
         pct_change_min=params["pct_change_min"],
@@ -246,6 +255,7 @@ def _api_screen_impl():
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
         apply_macd=params["apply_macd"],
+        apply_macd_line=params["apply_macd_line"],
         apply_turnover=params["apply_turnover"],
         apply_pct_change=params["apply_pct_change"],
         as_of_offset=params["as_of_offset"],
@@ -572,6 +582,8 @@ def api_debug(ticker: str):
         ema_dev_max_pct=params["ema_dev_max_pct"],
         macd_hist_min=params["macd_hist_min"],
         macd_require_rising=params["macd_require_rising"],
+        macd_line_min=params["macd_line_min"],
+        macd_line_max=params["macd_line_max"],
         turnover_min_pct=params["turnover_min_pct"],
         turnover_max_pct=params["turnover_max_pct"],
         pct_change_min=params["pct_change_min"],
@@ -584,6 +596,7 @@ def api_debug(ticker: str):
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
         apply_macd=params["apply_macd"],
+        apply_macd_line=params["apply_macd_line"],
         apply_turnover=params["apply_turnover"],
         apply_pct_change=params["apply_pct_change"],
         as_of_offset=params["as_of_offset"],

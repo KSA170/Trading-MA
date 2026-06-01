@@ -154,6 +154,8 @@ const inputs = {
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
   macd_hist_min: $('#macd_hist_min'),
+  macd_line_min: $('#macd_line_min'),
+  macd_line_max: $('#macd_line_max'),
   turnover_min_pct: $('#turnover_min_pct'),
   turnover_max_pct: $('#turnover_max_pct'),
   pct_change_min: $('#pct_change_min'),
@@ -172,6 +174,7 @@ const toggles = {
   apply_ema_dev: $('#apply_ema_dev'),
   apply_macd: $('#apply_macd'),
   macd_require_rising: $('#macd_require_rising'),
+  apply_macd_line: $('#apply_macd_line'),
   apply_turnover: $('#apply_turnover'),
   apply_pct_change: $('#apply_pct_change'),
 };
@@ -195,6 +198,8 @@ const modalInputs = {
   ema_dev_min_pct: $('#cm_ema_dev_min_pct'),
   ema_dev_max_pct: $('#cm_ema_dev_max_pct'),
   macd_hist_min: $('#cm_macd_hist_min'),
+  macd_line_min: $('#cm_macd_line_min'),
+  macd_line_max: $('#cm_macd_line_max'),
   turnover_min_pct: $('#cm_turnover_min_pct'),
   turnover_max_pct: $('#cm_turnover_max_pct'),
   pct_change_min: $('#cm_pct_change_min'),
@@ -210,6 +215,7 @@ const modalToggles = {
   apply_ema_dev: $('#cm_apply_ema_dev'),
   apply_macd: $('#cm_apply_macd'),
   macd_require_rising: $('#cm_macd_require_rising'),
+  apply_macd_line: $('#cm_apply_macd_line'),
   apply_turnover: $('#cm_apply_turnover'),
   apply_pct_change: $('#cm_apply_pct_change'),
 };
@@ -496,6 +502,7 @@ function syncDisabledStates() {
     apply_price_dev: 'price_dev',
     apply_ema_dev: 'ema_dev',
     apply_macd: 'macd',
+    apply_macd_line: 'macd_line',
     apply_turnover: 'turnover',
     apply_pct_change: 'pct_change',
   };
@@ -1759,6 +1766,7 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_price_dev) out.push(`vs EMA21 ${n(p.price_dev_min_pct)}–${n(p.price_dev_max_pct)}%`);
   if (p.apply_ema_dev) out.push(`EMA21 vs EMA50 ${n(p.ema_dev_min_pct)}–${n(p.ema_dev_max_pct)}%`);
   if (p.apply_macd) out.push(`MACD hist ≥ ${n(p.macd_hist_min)}${p.macd_require_rising ? ' & rising' : ''}`);
+  if (p.apply_macd_line) out.push(`MACD line ${n(p.macd_line_min)}–${n(p.macd_line_max)}`);
   if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
   if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
   if (p.apply_turnover) out.push(`Turnover ${n(p.turnover_min_pct)}–${n(p.turnover_max_pct)}%`);
@@ -2101,6 +2109,7 @@ function syncModalDisabled() {
     apply_price_dev: 'cm_price_dev',
     apply_ema_dev: 'cm_ema_dev',
     apply_macd: 'cm_macd',
+    apply_macd_line: 'cm_macd_line',
     apply_turnover: 'cm_turnover',
     apply_pct_change: 'cm_pct_change',
   };
