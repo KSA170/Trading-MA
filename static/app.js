@@ -1446,17 +1446,38 @@ function drawHoverChart(data) {
   rsi.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
   rsi.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 
-  // Compress the RSI pane (~25% of plot area). setHeight on the small pane
-  // forces pane 0 to absorb the rest.
+  // Pane 2 — MACD(12, 26, 9): line + signal + histogram. The histogram
+  // is the diff between the two lines (MACD − signal); positive bars
+  // green / negative bars red. Zero line dashed grey so the
+  // crossover point is visible at a glance.
+  const macdHist = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
+    priceLineVisible: false, lastValueVisible: false,
+  }, 2);
+  const macdLine = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
+  }, 2);
+  const macdSignal = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+  }, 2);
+  macdHist.setData(rows.filter((r) => r.macd_hist != null).map((r) => ({
+    time: r.time, value: r.macd_hist,
+    color: r.macd_hist >= 0 ? 'rgba(63,185,80,0.6)' : 'rgba(248,81,73,0.6)',
+  })));
+  macdLine.setData(rows.filter((r) => r.macd != null).map((r) => ({ time: r.time, value: r.macd })));
+  macdSignal.setData(rows.filter((r) => r.macd_signal != null).map((r) => ({ time: r.time, value: r.macd_signal })));
+  macdLine.createPriceLine({ price: 0, color: '#6e7681', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
+
+  // Compress the two oscillator panes (~80px each); the price pane
+  // absorbs the rest. Aligning their right-side scale widths keeps the
+  // time axis straight across all three panes.
   const apply = () => {
     try {
       const panes = _hoverChart.panes() || [];
       panes.forEach((p) => {
         try { p.priceScale('right').applyOptions({ minimumWidth: 56 }); } catch (_) {}
       });
-      if (panes.length >= 2 && panes[1].setHeight) {
-        panes[1].setHeight(80);
-      }
+      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(80);
+      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(80);
     } catch (_) { /* ignore */ }
     try { _hoverChart.timeScale().fitContent(); } catch (_) {}
   };

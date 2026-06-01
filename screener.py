@@ -1902,8 +1902,8 @@ def reference_dates(n: int = 21) -> list[dict]:
 # --- chart payload ---------------------------------------------------------
 
 def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
-    """Daily OHLCV + EMA(21)/EMA(50) + RSI(14)/9d-SMA-of-RSI for the hover
-    chart. No MACD — that pane was dropped from the UI."""
+    """Daily OHLCV + EMA(21)/EMA(50) + RSI(14)/9d-SMA-of-RSI +
+    MACD(12, 26, 9) — line, signal, histogram — for the hover chart."""
     df = _cached_history(ticker, period=period)
     if df is None or df.empty:
         return None
@@ -1913,6 +1913,12 @@ def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
     df["EMA50"] = ema(df["Close"], 50)
     df["RSI"] = rsi_wilder(df["Close"], 14)
     df["RSI_SMA9"] = df["RSI"].rolling(window=9, min_periods=9).mean()
+    # MACD(12, 26, 9) — same recipe used in the snapshot builder / screener.
+    macd_line = ema(df["Close"], 12) - ema(df["Close"], 26)
+    macd_signal = ema(macd_line, 9)
+    df["MACD"] = macd_line
+    df["MACD_SIGNAL"] = macd_signal
+    df["MACD_HIST"] = macd_line - macd_signal
 
     rows = []
     for idx, r in df.iterrows():
@@ -1927,6 +1933,9 @@ def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
             "ema50": _safe(r["EMA50"]),
             "rsi": _safe(r["RSI"]),
             "rsi_sma9": _safe(r["RSI_SMA9"]),
+            "macd": _safe(r["MACD"]),
+            "macd_signal": _safe(r["MACD_SIGNAL"]),
+            "macd_hist": _safe(r["MACD_HIST"]),
         })
     return {
         "ticker": display_symbol(ticker),
