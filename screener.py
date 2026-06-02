@@ -833,6 +833,7 @@ def _row_from_df(ticker: str, df: pd.DataFrame) -> dict | None:
         "rsi14": _scalar("rsi14"),
         "rsi_sma9": _scalar("rsi_sma9"),
         "macd": _scalar("macd"),
+        "macd_prev": _scalar("macd", -2),
         "macd_signal": _scalar("macd_signal"),
         "macd_hist": _scalar("macd_hist"),
         "macd_hist_prev": _scalar("macd_hist", -2),
@@ -1192,8 +1193,9 @@ def evaluate_ticker(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
-    macd_dev_pct_min: float = -50.0,
-    macd_dev_pct_max: float = 50.0,
+    macd_vs_signal_mode: str = "within_pct",
+    macd_vs_signal_pct: float = 5.0,
+    macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
     pct_change_min: float = 5.0,
@@ -1206,7 +1208,7 @@ def evaluate_ticker(
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
-    apply_macd_dev_pct: bool = False,
+    apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
     apply_pct_change: bool = False,
     as_of_offset: int = 0,
@@ -1350,6 +1352,7 @@ def evaluate_ticker(
 
     # MACD(12, 26, 9) — histogram threshold and optional "rising" gate.
     macd_val = _scalar("macd")
+    macd_prev_val = _scalar("macd", eval_idx - 1)
     macd_signal_val = _scalar("macd_signal")
     macd_hist_val = _scalar("macd_hist")
     macd_hist_prev = _scalar("macd_hist", eval_idx - 1)
@@ -1361,18 +1364,24 @@ def evaluate_ticker(
             return None
         if macd_require_rising and not (macd_hist_val > macd_hist_prev):
             return None
-    # MACD % deviation: signed percent the MACD line sits above or below
-    # its 9-day SMA (the signal line). Equivalent to the histogram
-    # normalised by |signal|, so the value is comparable across tickers
-    # at any price level. Positive = MACD above signal (bullish
-    # divergence); negative = below. Small |%dev| windows like ±5%
-    # isolate near-crossover setups; wider ones like +30 to +100%
-    # isolate stocks with strong, established momentum.
-    if apply_macd_dev_pct:
-        denom = abs(macd_signal_val) if abs(macd_signal_val) > 1e-6 else 1e-6
-        macd_dev_pct = (macd_val - macd_signal_val) / denom * 100.0
-        if not (macd_dev_pct_min <= macd_dev_pct <= macd_dev_pct_max):
-            return None
+    # MACD vs signal:
+    #   within_pct   — |MACD − signal| / max(|signal|, ε) × 100 ≤ X
+    #                  (near-crossover; about to cross either way)
+    #   above_signal — MACD ≥ signal (bullish crossover already in place)
+    # macd_line_rising — independent gate, requires today's MACD line >
+    # yesterday's regardless of the mode above.
+    if apply_macd_vs_signal:
+        if macd_vs_signal_mode == "above_signal":
+            if not (macd_val >= macd_signal_val):
+                return None
+        else:  # within_pct
+            denom = abs(macd_signal_val) if abs(macd_signal_val) > 1e-6 else 1e-6
+            gap_pct = abs(macd_val - macd_signal_val) / denom * 100.0
+            if gap_pct > macd_vs_signal_pct:
+                return None
+        if macd_line_rising:
+            if macd_prev_val is None or not (macd_val > macd_prev_val):
+                return None
 
     # Relative volume: eval-bar volume / mean of the prior rvol_lookback bars
     vol_window_start = eval_idx - rvol_lookback
@@ -1477,8 +1486,9 @@ def _evaluate_from_snapshot(
     ema_dev_max_pct: float,
     macd_hist_min: float,
     macd_require_rising: bool,
-    macd_dev_pct_min: float,
-    macd_dev_pct_max: float,
+    macd_vs_signal_mode: str,
+    macd_vs_signal_pct: float,
+    macd_line_rising: bool,
     turnover_min_pct: float,
     turnover_max_pct: float,
     pct_change_min: float,
@@ -1491,7 +1501,7 @@ def _evaluate_from_snapshot(
     apply_price_dev: bool,
     apply_ema_dev: bool,
     apply_macd: bool,
-    apply_macd_dev_pct: bool,
+    apply_macd_vs_signal: bool,
     apply_turnover: bool,
     apply_pct_change: bool,
 ) -> ScreenHit | None:
@@ -1603,6 +1613,7 @@ def _evaluate_from_snapshot(
     macd_hist_val = row.get("macd_hist")
     macd_hist_prev = row.get("macd_hist_prev")
     macd_val = row.get("macd")
+    macd_prev_val = row.get("macd_prev")
     macd_signal_val = row.get("macd_signal")
     if macd_hist_val is None or macd_hist_prev is None:
         return None
@@ -1611,15 +1622,22 @@ def _evaluate_from_snapshot(
             return None
         if macd_require_rising and not (macd_hist_val > macd_hist_prev):
             return None
-    # MACD % deviation — see twin block in the single-ticker path for the
+    # MACD vs signal — see twin block in the single-ticker path for the
     # full rationale.
-    if apply_macd_dev_pct:
-        if macd_signal_val is None:
+    if apply_macd_vs_signal:
+        if macd_val is None or macd_signal_val is None:
             return None
-        denom = abs(macd_signal_val) if abs(macd_signal_val) > 1e-6 else 1e-6
-        macd_dev_pct = (macd_val - macd_signal_val) / denom * 100.0
-        if not (macd_dev_pct_min <= macd_dev_pct <= macd_dev_pct_max):
-            return None
+        if macd_vs_signal_mode == "above_signal":
+            if not (macd_val >= macd_signal_val):
+                return None
+        else:  # within_pct
+            denom = abs(macd_signal_val) if abs(macd_signal_val) > 1e-6 else 1e-6
+            gap_pct = abs(macd_val - macd_signal_val) / denom * 100.0
+            if gap_pct > macd_vs_signal_pct:
+                return None
+        if macd_line_rising:
+            if macd_prev_val is None or not (macd_val > macd_prev_val):
+                return None
 
     # Relative volume — recompute against the user-specified lookback (the
     # `avg_volume` column in the snapshot is fixed to 10d; we need the
@@ -1723,8 +1741,9 @@ def run_screen(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
-    macd_dev_pct_min: float = -50.0,
-    macd_dev_pct_max: float = 50.0,
+    macd_vs_signal_mode: str = "within_pct",
+    macd_vs_signal_pct: float = 5.0,
+    macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
     pct_change_min: float = 5.0,
@@ -1737,7 +1756,7 @@ def run_screen(
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
-    apply_macd_dev_pct: bool = False,
+    apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
     apply_pct_change: bool = False,
     as_of_offset: int = 0,
@@ -1794,8 +1813,9 @@ def run_screen(
                         ema_dev_max_pct=ema_dev_max_pct,
                         macd_hist_min=macd_hist_min,
                         macd_require_rising=macd_require_rising,
-                        macd_dev_pct_min=macd_dev_pct_min,
-                        macd_dev_pct_max=macd_dev_pct_max,
+                        macd_vs_signal_mode=macd_vs_signal_mode,
+                        macd_vs_signal_pct=macd_vs_signal_pct,
+                        macd_line_rising=macd_line_rising,
                         turnover_min_pct=turnover_min_pct,
                         turnover_max_pct=turnover_max_pct,
                         pct_change_min=pct_change_min,
@@ -1807,7 +1827,7 @@ def run_screen(
                         apply_price_dev=apply_price_dev,
                         apply_ema_dev=apply_ema_dev,
                         apply_macd=apply_macd,
-                        apply_macd_dev_pct=apply_macd_dev_pct,
+                        apply_macd_vs_signal=apply_macd_vs_signal,
                         apply_turnover=apply_turnover,
                         apply_pct_change=apply_pct_change,
                     )
@@ -1844,8 +1864,9 @@ def run_screen(
                 ema_dev_max_pct=ema_dev_max_pct,
                 macd_hist_min=macd_hist_min,
                 macd_require_rising=macd_require_rising,
-                macd_dev_pct_min=macd_dev_pct_min,
-                macd_dev_pct_max=macd_dev_pct_max,
+                macd_vs_signal_mode=macd_vs_signal_mode,
+                macd_vs_signal_pct=macd_vs_signal_pct,
+                macd_line_rising=macd_line_rising,
                 turnover_min_pct=turnover_min_pct,
                 turnover_max_pct=turnover_max_pct,
                 pct_change_min=pct_change_min,
@@ -1858,7 +1879,7 @@ def run_screen(
                 apply_price_dev=apply_price_dev,
                 apply_ema_dev=apply_ema_dev,
                 apply_macd=apply_macd,
-                apply_macd_dev_pct=apply_macd_dev_pct,
+                apply_macd_vs_signal=apply_macd_vs_signal,
                 apply_turnover=apply_turnover,
                 apply_pct_change=apply_pct_change,
                 as_of_offset=as_of_offset,
@@ -1987,8 +2008,9 @@ def diagnose_ticker(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
-    macd_dev_pct_min: float = -50.0,
-    macd_dev_pct_max: float = 50.0,
+    macd_vs_signal_mode: str = "within_pct",
+    macd_vs_signal_pct: float = 5.0,
+    macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
     pct_change_min: float = 5.0,
@@ -2001,7 +2023,7 @@ def diagnose_ticker(
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
-    apply_macd_dev_pct: bool = False,
+    apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
     apply_pct_change: bool = False,
     as_of_offset: int = 0,
@@ -2203,19 +2225,34 @@ def diagnose_ticker(
         {"prev_hist": round(macd_hist_prev, 4) if macd_hist_prev is not None else None,
          "rising": macd_hist_val is not None and macd_hist_prev is not None and macd_hist_val > macd_hist_prev})
 
-    # 7b. MACD line % deviation from its 9d SMA (signal line)
+    # 7b. MACD vs signal line — mode-driven gate (within X% / at-or-above)
+    # plus an independent "MACD line rising" check.
     macd_line_val = _scalar("macd")
+    macd_line_prev_val = _scalar("macd", eval_idx - 1)
     macd_sig_val_audit = _scalar("macd_signal")
-    macd_dev_pct_val = None
+    gap_pct_val = None
     if macd_line_val is not None and macd_sig_val_audit is not None:
         denom = abs(macd_sig_val_audit) if abs(macd_sig_val_audit) > 1e-6 else 1e-6
-        macd_dev_pct_val = (macd_line_val - macd_sig_val_audit) / denom * 100.0
-    macd_dev_ok = (macd_dev_pct_val is not None
-                   and macd_dev_pct_min <= macd_dev_pct_val <= macd_dev_pct_max)
-    add("macd_dev_pct",
-        f"MACD %dev from signal ∈ [{macd_dev_pct_min}%, {macd_dev_pct_max}%]",
-        round(macd_dev_pct_val, 2) if macd_dev_pct_val is not None else None,
-        apply_macd_dev_pct, macd_dev_ok, [macd_dev_pct_min, macd_dev_pct_max], None)
+        gap_pct_val = abs(macd_line_val - macd_sig_val_audit) / denom * 100.0
+    if macd_vs_signal_mode == "above_signal":
+        mode_ok = (macd_line_val is not None and macd_sig_val_audit is not None
+                   and macd_line_val >= macd_sig_val_audit)
+        mode_desc = "MACD ≥ signal"
+    else:
+        mode_ok = (gap_pct_val is not None and gap_pct_val <= macd_vs_signal_pct)
+        mode_desc = f"|MACD − signal| ≤ {macd_vs_signal_pct}% of |signal|"
+    rising_ok = (not macd_line_rising
+                 or (macd_line_val is not None and macd_line_prev_val is not None
+                     and macd_line_val > macd_line_prev_val))
+    macd_vs_sig_ok = mode_ok and rising_ok
+    desc = mode_desc + (" + rising" if macd_line_rising else "")
+    obs = round(gap_pct_val, 2) if gap_pct_val is not None else None
+    add("macd_vs_signal", desc, obs, apply_macd_vs_signal, macd_vs_sig_ok,
+        [macd_vs_signal_mode, macd_vs_signal_pct, macd_line_rising],
+        {"macd": round(macd_line_val, 4) if macd_line_val is not None else None,
+         "signal": round(macd_sig_val_audit, 4) if macd_sig_val_audit is not None else None,
+         "macd_prev": round(macd_line_prev_val, 4) if macd_line_prev_val is not None else None,
+         "rising": macd_line_val is not None and macd_line_prev_val is not None and macd_line_val > macd_line_prev_val})
 
     # 8. Relative volume
     vol_window_start = eval_idx - rvol_lookback

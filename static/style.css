@@ -513,7 +513,7 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 .hover-chart {
   position: fixed;
   width: 900px;
-  height: 720px;
+  height: 760px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
