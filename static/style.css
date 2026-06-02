@@ -1501,3 +1501,283 @@ table.sortable th.th-drag-over {
   border-radius: 4px;
   font-size: 11px;
 }
+
+/* --- App-level tabs (Stock screener / Options screener) ---------------- */
+.app-tabs {
+  display: flex;
+  gap: 4px;
+  margin-left: 24px;
+  margin-right: auto;
+}
+.app-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  border-radius: 6px 6px 0 0;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.app-tab:hover { color: var(--text); }
+.app-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--panel-2);
+}
+.tab-content.hidden { display: none; }
+button.hidden { display: none; }
+
+/* --- Options screener tab content -------------------------------------- */
+.options-screener { padding: 16px 20px; }
+.options-controls {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  margin-bottom: 16px;
+}
+.options-control { display: flex; flex-direction: column; gap: 4px; }
+.options-control label { font-size: 12px; }
+.options-control input {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+#options-ticker { width: 120px; text-transform: uppercase; font-weight: 600; }
+#options-dte-min, #options-dte-max { width: 80px; }
+.options-actions { flex-direction: row; align-items: stretch; gap: 8px; }
+.options-status-wrap { flex: 1 1 auto; min-width: 100px; }
+
+/* --- Composite score bar ----------------------------------------------- */
+.composite-bar-wrap { margin: 14px 0; }
+.composite-bar {
+  position: relative;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: linear-gradient(to right,
+    rgba(248, 81, 73, 0.18) 0%,
+    rgba(248, 81, 73, 0.18) 35%,
+    rgba(139, 148, 158, 0.10) 35%,
+    rgba(139, 148, 158, 0.10) 65%,
+    rgba(63, 185, 80, 0.18) 65%,
+    rgba(63, 185, 80, 0.18) 100%);
+  overflow: hidden;
+}
+.composite-fill {
+  position: absolute;
+  top: 0; bottom: 0;
+  left: 0;
+  background: rgba(88, 166, 255, 0.18);
+}
+.composite-thresh {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--muted);
+}
+.composite-marker {
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 4px;
+  background: var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(88, 166, 255, 0.7);
+  transform: translateX(-2px);
+}
+.composite-bar-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  padding-top: 4px;
+}
+
+/* --- Options result block (composite view) ----------------------------- */
+.options-result {
+  padding: 14px 16px;
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.options-result.hidden { display: none; }
+.options-result-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  font-size: 14px;
+  flex-wrap: wrap;
+}
+.options-result-header.verdict-buy   { color: var(--green); }
+.options-result-header.verdict-watch { color: var(--yellow); }
+.options-result-header.verdict-pass  { color: var(--red); }
+.options-result-header .options-ticker-name {
+  font-size: 16px;
+  color: var(--text);
+}
+.badge-override {
+  font-size: 11px;
+  background: rgba(210, 169, 34, 0.18);
+  color: var(--yellow);
+  border: 1px solid var(--yellow);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-weight: 600;
+}
+.options-prose {
+  padding: 10px 12px;
+  margin: 10px 0;
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  line-height: 1.55;
+  font-size: 13px;
+}
+.options-contract-card { padding: 8px 0; }
+.options-contract-line {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.options-contract-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px 14px;
+  font-variant-numeric: tabular-nums;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-radius: 4px;
+}
+.options-contract-grid > div { display: flex; flex-direction: column; gap: 1px; }
+.options-contract-grid .muted { font-size: 11px; }
+.options-warn {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--red);
+  border-radius: 4px;
+  color: var(--red);
+  background: rgba(248, 81, 73, 0.08);
+}
+
+/* --- Layer breakdown --------------------------------------------------- */
+.layer-breakdown {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--panel);
+  border-radius: 6px;
+}
+.layer-row { padding: 4px 0; }
+.layer-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.layer-name { flex: 1; line-height: 1.4; }
+.layer-name .muted { font-size: 11px; }
+.layer-score { font-size: 13px; white-space: nowrap; }
+.layer-bar {
+  position: relative;
+  height: 8px;
+  background: rgba(139, 148, 158, 0.18);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.layer-fill { height: 100%; background: var(--accent); }
+.layer-subs { font-size: 11px; padding-top: 3px; font-style: italic; }
+.layer-partial-badge {
+  font-size: 10px;
+  background: rgba(210, 169, 34, 0.2);
+  color: var(--yellow);
+  border: 1px solid var(--yellow);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  cursor: help;
+  font-weight: 600;
+}
+
+/* Composite-color classes for fills */
+.composite-strong-bull .composite-fill,
+.composite-strong-bull .layer-fill { background: var(--green); }
+.composite-bull .composite-fill,
+.composite-bull .layer-fill { background: rgba(63, 185, 80, 0.7); }
+.composite-mild-bull .composite-fill,
+.composite-mild-bull .layer-fill { background: rgba(88, 166, 255, 0.6); }
+.composite-mild-bear .composite-fill,
+.composite-mild-bear .layer-fill { background: rgba(210, 169, 34, 0.7); }
+.composite-bear .composite-fill,
+.composite-bear .layer-fill { background: rgba(248, 81, 73, 0.6); }
+.composite-strong-bear .composite-fill,
+.composite-strong-bear .layer-fill { background: var(--red); }
+
+.options-iv-context, .options-earnings { padding: 4px 0; }
+.options-partial-note {
+  padding: 6px 10px;
+  margin-top: 8px;
+  border-left: 2px solid var(--yellow);
+  background: rgba(210, 169, 34, 0.05);
+  font-size: 11px;
+}
+.options-reasons {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+.options-reasons summary { cursor: pointer; font-size: 12px; }
+.options-reasons summary:hover { color: var(--text); }
+.options-reasons ul { margin: 4px 0; padding-left: 20px; }
+.options-reasons li { padding: 1px 0; font-size: 12px; }
+.options-disclaimer-inline { padding-top: 8px; font-size: 11px; }
+.options-reason { padding: 6px 0; }
+
+/* --- Options history list --------------------------------------------- */
+.options-history-panel { margin-top: 16px; }
+.options-history-row {
+  display: grid;
+  grid-template-columns: 90px 60px 80px 1fr 100px 110px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  margin-bottom: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.options-history-row:hover { border-color: var(--accent); }
+.options-history-row.verdict-buy   { border-left: 3px solid var(--green); }
+.options-history-row.verdict-watch { border-left: 3px solid var(--yellow); }
+.options-history-row.verdict-pass  { border-left: 3px solid var(--red); }
+
+.options-disclaimer {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  background: var(--panel);
+}

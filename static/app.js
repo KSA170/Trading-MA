@@ -110,15 +110,22 @@ const els = {
   momentumDiagnoseClearBtn: $('#momentum-diagnose-clear-btn'),
   momentumDiagnoseStatus: $('#momentum-diagnose-status'),
   momentumDiagnoseOut: $('#momentum-diagnose-out'),
-  optionsToggle: $('#options-toggle'),
-  optionsBody: $('#options-body'),
   optionsTicker: $('#options-ticker'),
+  optionsDteMin: $('#options-dte-min'),
+  optionsDteMax: $('#options-dte-max'),
   optionsLookupBtn: $('#options-lookup-btn'),
   optionsClearBtn: $('#options-clear-btn'),
+  optionsResetDteBtn: $('#options-reset-dte-btn'),
   optionsStatus: $('#options-status'),
   optionsResult: $('#options-result'),
   optionsHistoryList: $('#options-history-list'),
   optionsHistoryStatus: $('#options-history-status'),
+  optionsHistoryToggle: $('#options-history-toggle'),
+  optionsHistoryBody: $('#options-history-body'),
+  tabBtnStock: $('#tab-btn-stock'),
+  tabBtnOptions: $('#tab-btn-options'),
+  tabStock: $('#tab-stock'),
+  tabOptions: $('#tab-options'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
@@ -3268,13 +3275,73 @@ syncRuleTypeUI();
 wireCollapse(els.setupsToggle, els.setupsBody, 'collapse_setups');
 
 
-// --- options recommender -------------------------------------------------
-// On-demand pipeline: type a ticker, get {direction, contract, verdict,
-// rationale}. Results are persisted server-side and the panel also
-// shows the most recent N recommendations for quick re-reference.
+// --- options recommender (composite-score) -------------------------------
+// Type a ticker (and optional DTE range), get a weighted-composite-score
+// recommendation: 5 layers × weights → 0-100 → verdict + contract + prose.
 
 const _OPTIONS_VERDICT_GLYPH = { BUY: '🟢', WATCH: '🟡', PASS: '🔴' };
 const _OPTIONS_DIR_GLYPH     = { call: '📈', put: '📉' };
+const _LAYER_LABELS = {
+  price:         { label: 'Price Trajectory', desc: 'RSI · MACD · EMA stack · volume spike' },
+  catalyst:      { label: 'Catalyst Events',  desc: 'earnings timing · analyst actions · news' },
+  institutional: { label: 'Institutional',    desc: 'insider Form 4 · analyst sentiment' },
+  fundamentals:  { label: 'Fundamentals',     desc: 'revenue growth · P/E reasonableness' },
+  sector:        { label: 'Sector Trend',     desc: 'sector ETF 5d vs SPY 5d' },
+};
+
+function compositeColorClass(score) {
+  if (score == null) return 'composite-neutral';
+  if (score >= 75) return 'composite-strong-bull';
+  if (score >= 65) return 'composite-bull';
+  if (score >= 50) return 'composite-mild-bull';
+  if (score > 35)  return 'composite-mild-bear';
+  if (score > 25)  return 'composite-bear';
+  return 'composite-strong-bear';
+}
+
+function renderCompositeBar(score, verdict) {
+  if (score == null) return '';
+  const pct = Math.max(0, Math.min(100, score));
+  const cls = compositeColorClass(score);
+  return `
+    <div class="composite-bar-wrap">
+      <div class="composite-bar ${cls}">
+        <div class="composite-fill" style="width:${pct}%"></div>
+        <div class="composite-thresh thresh-put"  style="left:35%" title="≤ 35 → BUY PUT"></div>
+        <div class="composite-thresh thresh-call" style="left:65%" title="≥ 65 → BUY CALL"></div>
+        <div class="composite-marker" style="left:${pct}%"></div>
+      </div>
+      <div class="composite-bar-labels muted">
+        <span>0</span><span>35 (put)</span><span>50</span><span>65 (call)</span><span>100</span>
+      </div>
+    </div>`;
+}
+
+function renderLayerBreakdown(layers) {
+  if (!layers || typeof layers !== 'object') return '';
+  const rows = Object.entries(_LAYER_LABELS).map(([key, meta]) => {
+    const layer = layers[key];
+    if (!layer) return '';
+    const score = Number(layer.score);
+    const weight = Math.round((layer.weight ?? 0) * 100);
+    const pct = Math.max(0, Math.min(100, score));
+    const cls = compositeColorClass(score);
+    const partial = layer.partial ? ' <span class="layer-partial-badge" title="Some sub-signals require paid data feeds we don\'t have access to (dark pool prints, unusual options flow, 13F).">partial data</span>' : '';
+    const subs = layer.sub_scores
+      ? Object.entries(layer.sub_scores).map(([k, v]) => `${k.replace(/_/g, ' ')} ${Math.round(v)}`).join(' · ')
+      : '';
+    return `
+      <div class="layer-row">
+        <div class="layer-row-head">
+          <span class="layer-name"><b>${escapeHtml(meta.label)}</b> ${partial}<br><span class="muted">${escapeHtml(meta.desc)}</span></span>
+          <span class="layer-score"><b>${Math.round(score)}</b><span class="muted"> / 100 · ${weight}%</span></span>
+        </div>
+        <div class="layer-bar ${cls}"><div class="layer-fill" style="width:${pct}%"></div></div>
+        <div class="layer-subs muted">${escapeHtml(subs)}</div>
+      </div>`;
+  }).join('');
+  return `<div class="layer-breakdown">${rows}</div>`;
+}
 
 function renderOptionsResult(rec) {
   if (!els.optionsResult) return;
@@ -3285,25 +3352,35 @@ function renderOptionsResult(rec) {
     return;
   }
 
-  const hasContract = !!rec.contract;
   const verdict = rec.verdict || 'PASS';
   const verdictGlyph = _OPTIONS_VERDICT_GLYPH[verdict] || '⚪';
   const dirGlyph = _OPTIONS_DIR_GLYPH[rec.direction] || '·';
-  const score = Number.isFinite(rec.score) ? `${rec.score >= 0 ? '+' : ''}${rec.score}` : '?';
+  const conviction = rec.conviction || 'none';
+  const score = rec.composite_score;
 
-  let header = '';
-  if (rec.direction && hasContract) {
+  const header = `
+    <div class="options-result-header verdict-${verdict.toLowerCase()}">
+      <span class="options-verdict">${verdictGlyph} <b>${verdict}</b></span>
+      ${rec.direction ? `<span class="options-direction">${dirGlyph} <b>${rec.direction.toUpperCase()}</b></span>` : ''}
+      <span class="options-ticker-name"><b>${escapeHtml(rec.ticker)}</b></span>
+      <span class="muted">· composite <b>${score != null ? Math.round(score) : '—'}</b>/100</span>
+      ${conviction !== 'none' ? `<span class="muted">· ${escapeHtml(conviction)} conviction</span>` : ''}
+      ${rec.post_earnings_override ? '<span class="badge-override" title="Expiry shifted to 7-10 days after the next earnings date to avoid IV crush.">post-earnings expiry</span>' : ''}
+    </div>`;
+
+  const compositeBar = renderCompositeBar(score, verdict);
+
+  const prose = rec.prose_rationale
+    ? `<div class="options-prose">${escapeHtml(rec.prose_rationale)}</div>`
+    : '';
+
+  let contractCard = '';
+  if (rec.contract) {
     const c = rec.contract;
-    header = `
-      <div class="options-result-header verdict-${verdict.toLowerCase()}">
-        <span class="options-verdict">${verdictGlyph} <b>${verdict}</b></span>
-        <span class="options-direction">${dirGlyph} <b>${rec.direction.toUpperCase()}</b></span>
-        <span class="options-ticker-name"><b>${escapeHtml(rec.ticker)}</b></span>
-        <span class="muted">· score ${score}</span>
-      </div>
+    contractCard = `
       <div class="options-contract-card">
         <div class="options-contract-line">
-          <span class="muted">Contract:</span>
+          <span class="muted">Suggested contract:</span>
           <span><b>${escapeHtml(c.contract_symbol || '')}</b></span>
         </div>
         <div class="options-contract-grid">
@@ -3315,20 +3392,13 @@ function renderOptionsResult(rec) {
           <div><span class="muted">IV</span><span>${c.iv != null ? fmtNum(c.iv * 100, 1) + '%' : '—'}</span></div>
           <div><span class="muted">OI</span><span>${c.open_interest != null ? Math.round(c.open_interest).toLocaleString() : '—'}</span></div>
         </div>
-        ${rec.earnings_spans_expiration ? '<div class="options-warn">⚠ Contract spans the next earnings date — IV crush risk after the announcement.</div>' : ''}
+        ${rec.earnings_spans_expiration ? '<div class="options-warn">⚠ Contract spans the next earnings date — IV crush risk after the announcement; consider closing before.</div>' : ''}
       </div>`;
-  } else {
-    header = `
-      <div class="options-result-header verdict-pass">
-        <span class="options-verdict">${verdictGlyph} <b>${verdict}</b></span>
-        <span class="options-ticker-name"><b>${escapeHtml(rec.ticker)}</b></span>
-        <span class="muted">· score ${score}</span>
-      </div>`;
+  } else if (rec.reason) {
+    contractCard = `<div class="options-reason muted">${escapeHtml(rec.reason)}</div>`;
   }
 
-  const reasonLine = rec.reason
-    ? `<div class="options-reason muted">${escapeHtml(rec.reason)}</div>`
-    : '';
+  const layerBreakdown = renderLayerBreakdown(rec.layers);
 
   const ivc = rec.iv_context || {};
   const ivLine = ivc.regime && ivc.regime !== 'unknown'
@@ -3341,21 +3411,26 @@ function renderOptionsResult(rec) {
     : '';
 
   const earningsLine = rec.earnings_date
-    ? `<div class="options-earnings muted">Next earnings: <b>${escapeHtml(rec.earnings_date)}</b></div>`
+    ? `<div class="options-earnings muted">Next earnings: <b>${escapeHtml(rec.earnings_date)}</b>${rec.post_earnings_override ? ' (expiry adjusted)' : ''}</div>`
     : '';
 
-  const rationale = Array.isArray(rec.rationale) && rec.rationale.length
-    ? `<div class="options-rationale">
-         <div class="muted">Rationale</div>
-         <ul>${rec.rationale.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
-       </div>`
+  const reasons = Array.isArray(rec.reasons) && rec.reasons.length
+    ? `<details class="options-reasons">
+         <summary class="muted">Signal-level reasons (${rec.reasons.length})</summary>
+         <ul>${rec.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
+       </details>`
+    : '';
+
+  const partialNote = rec.partial_data_note
+    ? `<div class="options-partial-note muted"><i>${escapeHtml(rec.partial_data_note)}</i></div>`
     : '';
 
   const disclaimer = rec.disclaimer
     ? `<div class="options-disclaimer-inline muted"><i>${escapeHtml(rec.disclaimer)}</i></div>`
     : '';
 
-  els.optionsResult.innerHTML = header + reasonLine + ivLine + earningsLine + rationale + disclaimer;
+  els.optionsResult.innerHTML =
+    header + compositeBar + prose + contractCard + layerBreakdown + ivLine + earningsLine + reasons + partialNote + disclaimer;
 }
 
 function renderOptionsHistory(items) {
@@ -3376,17 +3451,25 @@ function renderOptionsHistory(items) {
     const dirGlyph = _OPTIONS_DIR_GLYPH[r.direction] || '·';
     const strikeStr = r.strike != null ? `$${fmtNum(r.strike, 2)}` : '';
     const midStr = r.mid_price != null ? `mid $${fmtNum(r.mid_price, 2)}` : '';
-    const deltaStr = r.delta != null ? `Δ ${r.delta >= 0 ? '+' : ''}${fmtNum(r.delta, 2)}` : '';
+    const compositeStr = r.composite_score != null ? `composite ${Math.round(r.composite_score)}` : '';
     return `
       <div class="options-history-row verdict-${verdict.toLowerCase()}" data-ticker="${escapeHtml(r.ticker)}">
         <span class="options-history-verdict">${glyph} <b>${verdict}</b></span>
         <span class="options-history-dir">${dirGlyph} ${dir}</span>
         <span class="options-history-ticker"><b>${escapeHtml(r.ticker)}</b></span>
         <span class="muted">${escapeHtml(r.expiration || '')} ${strikeStr}</span>
-        <span class="muted">${deltaStr}</span>
         <span class="muted">${midStr}</span>
+        <span class="muted">${compositeStr}</span>
       </div>`;
   }).join('');
+}
+
+function _readDteRange() {
+  const min = parseInt((els.optionsDteMin && els.optionsDteMin.value) || '15', 10);
+  const max = parseInt((els.optionsDteMax && els.optionsDteMax.value) || '60', 10);
+  if (!Number.isFinite(min) || min < 1) return [15, 60];
+  if (!Number.isFinite(max) || max <= min) return [min, min + 1];
+  return [min, max];
 }
 
 async function runOptionsLookup() {
@@ -3396,20 +3479,20 @@ async function runOptionsLookup() {
     if (els.optionsStatus) els.optionsStatus.textContent = 'Enter a ticker first.';
     return;
   }
+  const [dteMin, dteMax] = _readDteRange();
   const prevTxt = els.optionsLookupBtn.textContent;
   els.optionsLookupBtn.disabled = true;
   els.optionsLookupBtn.textContent = 'Analyzing…';
   if (els.optionsStatus) els.optionsStatus.textContent = '';
   try {
-    const res = await fetch('/api/options/lookup?ticker=' + encodeURIComponent(ticker), { cache: 'no-store' });
+    const url = `/api/options/lookup?ticker=${encodeURIComponent(ticker)}&dte_min=${dteMin}&dte_max=${dteMax}`;
+    const res = await fetch(url, { cache: 'no-store' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       renderOptionsResult({ error: data.error || ('HTTP ' + res.status), ticker });
       return;
     }
     renderOptionsResult(data);
-    // Refresh the persisted-history list — the lookup may have written
-    // a new row if the recommendation surfaced a contract.
     loadOptionsHistory();
   } catch (err) {
     renderOptionsResult({ error: (err && err.message) || 'network error', ticker });
@@ -3429,6 +3512,11 @@ function clearOptionsResult() {
   if (els.optionsClearBtn) els.optionsClearBtn.disabled = true;
 }
 
+function resetDteRange() {
+  if (els.optionsDteMin) els.optionsDteMin.value = '15';
+  if (els.optionsDteMax) els.optionsDteMax.value = '60';
+}
+
 async function loadOptionsHistory() {
   try {
     const res = await fetch('/api/options/recommendations', { cache: 'no-store' });
@@ -3438,10 +3526,59 @@ async function loadOptionsHistory() {
   } catch (_) { /* silent */ }
 }
 
-if (els.optionsLookupBtn) els.optionsLookupBtn.addEventListener('click', runOptionsLookup);
-if (els.optionsClearBtn) els.optionsClearBtn.addEventListener('click', clearOptionsResult);
+// --- tab switching --------------------------------------------------------
+function activateTab(name, persist = true) {
+  const isOptions = name === 'options';
+  if (els.tabStock)       els.tabStock.classList.toggle('hidden', isOptions);
+  if (els.tabOptions)     els.tabOptions.classList.toggle('hidden', !isOptions);
+  if (els.tabBtnStock) {
+    els.tabBtnStock.classList.toggle('active', !isOptions);
+    els.tabBtnStock.setAttribute('aria-selected', !isOptions);
+  }
+  if (els.tabBtnOptions) {
+    els.tabBtnOptions.classList.toggle('active', isOptions);
+    els.tabBtnOptions.setAttribute('aria-selected', isOptions);
+  }
+  // Hide the global "Run screen" + Warm cache buttons on the options tab —
+  // they belong to the stock-screener pipeline. Status text stays visible.
+  const runBtn  = document.getElementById('run-btn');
+  const warmBtn = document.getElementById('warm-btn');
+  if (runBtn)  runBtn.classList.toggle('hidden', isOptions);
+  if (warmBtn) warmBtn.classList.toggle('hidden', isOptions);
+  if (persist) {
+    try { localStorage.setItem('app_tab', name); } catch (_) {}
+    if (history && history.replaceState) {
+      const hash = isOptions ? '#options' : '#stock';
+      if (location.hash !== hash) history.replaceState(null, '', hash);
+    }
+  }
+}
+
+function _initialTab() {
+  const fromHash = (location.hash || '').replace('#', '');
+  if (fromHash === 'options' || fromHash === 'stock') return fromHash;
+  try { return localStorage.getItem('app_tab') || 'stock'; } catch (_) { return 'stock'; }
+}
+
+if (els.tabBtnStock)   els.tabBtnStock  .addEventListener('click', () => activateTab('stock'));
+if (els.tabBtnOptions) els.tabBtnOptions.addEventListener('click', () => activateTab('options'));
+activateTab(_initialTab(), false);
+
+if (els.optionsLookupBtn)   els.optionsLookupBtn  .addEventListener('click', runOptionsLookup);
+if (els.optionsClearBtn)    els.optionsClearBtn   .addEventListener('click', clearOptionsResult);
+if (els.optionsResetDteBtn) els.optionsResetDteBtn.addEventListener('click', resetDteRange);
 if (els.optionsTicker) {
   els.optionsTicker.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); runOptionsLookup(); }
+  });
+}
+if (els.optionsDteMin) {
+  els.optionsDteMin.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); runOptionsLookup(); }
+  });
+}
+if (els.optionsDteMax) {
+  els.optionsDteMax.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') { ev.preventDefault(); runOptionsLookup(); }
   });
 }
@@ -3454,7 +3591,7 @@ if (els.optionsHistoryList) {
     }
   });
 }
-wireCollapse(els.optionsToggle, els.optionsBody, 'collapse_options');
+wireCollapse(els.optionsHistoryToggle, els.optionsHistoryBody, 'collapse_options_history');
 loadOptionsHistory();
 
 

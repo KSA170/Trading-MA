@@ -10,6 +10,10 @@
 <body>
   <header class="topbar">
     <h1>Trading MA <span class="muted">— Breakout Screener</span></h1>
+    <nav class="app-tabs" role="tablist" aria-label="Workspace">
+      <button id="tab-btn-stock"   type="button" class="app-tab active" role="tab" aria-selected="true"  aria-controls="tab-stock"   data-tab="stock">Stock screener</button>
+      <button id="tab-btn-options" type="button" class="app-tab"        role="tab" aria-selected="false" aria-controls="tab-options" data-tab="options">Options screener</button>
+    </nav>
     <div class="status">
       <span id="status-text">idle</span>
       <span id="cache-status" class="cache-status" title="Disk-cache state for the selected universe. Cold runs hit Yahoo for every ticker and can take minutes."></span>
@@ -19,6 +23,8 @@
       <button id="run-btn" class="primary">Run screen</button>
     </div>
   </header>
+
+  <div id="tab-stock" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-stock">
 
   <button id="filters-toggle" type="button" class="section-toggle" aria-controls="filters-section" aria-expanded="true">
     <span class="chevron">▾</span> Filters
@@ -437,27 +443,6 @@
       </div>
     </section>
 
-    <section class="match-history options-panel">
-      <button id="options-toggle" type="button" class="section-toggle" aria-controls="options-body" aria-expanded="true">
-        <span class="chevron">▾</span> Options recommender <span class="muted">(call / put + specific contract for any ticker — informational only, not financial advice)</span>
-      </button>
-      <div id="options-body" class="history-body">
-        <div class="options-lookup">
-          <label class="muted" for="options-ticker">Analyze ticker:</label>
-          <input id="options-ticker" type="text" placeholder="e.g. BTU" autocomplete="off" />
-          <button id="options-lookup-btn" type="button" title="Run the full options pipeline: pick direction (call / put) from momentum + insider + catalyst + sector signals, pick the best contract (15-60 DTE, ~0.35 delta, liquidity-gated), and surface a BUY / WATCH / PASS verdict with rationale.">Analyze</button>
-          <button id="options-clear-btn" type="button" disabled title="Clear the result panel and reset the input.">Clear</button>
-          <span id="options-status" class="muted"></span>
-        </div>
-        <div id="options-result" class="options-result hidden"></div>
-        <div class="options-history">
-          <div class="options-history-header muted">Recent recommendations <span id="options-history-status"></span></div>
-          <div id="options-history-list"></div>
-        </div>
-        <p class="muted options-disclaimer">⚠ Informational only — not financial advice. Options can expire worthless; size positions accordingly and verify all numbers against your broker before placing a trade.</p>
-      </div>
-    </section>
-
     <section class="match-history alerts-rules-panel">
       <button id="rules-toggle" type="button" class="section-toggle" aria-controls="rules-body" aria-expanded="true">
         <span class="chevron">▾</span> Alert rules <span class="muted">(realtime Telegram alerts, checked every ~15 min in market hours)</span>
@@ -652,6 +637,48 @@
       </footer>
     </form>
   </dialog>
+
+  </div><!-- /#tab-stock -->
+
+  <div id="tab-options" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-options">
+    <section class="options-screener">
+      <div class="options-controls">
+        <div class="options-control">
+          <label class="muted" for="options-ticker">Ticker</label>
+          <input id="options-ticker" type="text" placeholder="e.g. BTU" autocomplete="off" />
+        </div>
+        <div class="options-control">
+          <label class="muted" for="options-dte-min">DTE min</label>
+          <input id="options-dte-min" type="number" min="1" max="365" step="1" value="15" />
+        </div>
+        <div class="options-control">
+          <label class="muted" for="options-dte-max">DTE max</label>
+          <input id="options-dte-max" type="number" min="2" max="365" step="1" value="60" />
+        </div>
+        <div class="options-control options-actions">
+          <button id="options-lookup-btn" type="button" class="primary" title="Run the composite-score pipeline: 5 weighted layers → composite 0-100 → verdict + contract + prose rationale.">Analyze</button>
+          <button id="options-clear-btn" type="button" disabled title="Clear the result panel and reset the input.">Clear</button>
+          <button id="options-reset-dte-btn" type="button" title="Reset DTE range to default 15-60.">Reset DTE</button>
+        </div>
+        <div class="options-control options-status-wrap">
+          <span id="options-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="options-result" class="options-result hidden"></div>
+
+      <section class="match-history options-history-panel">
+        <button id="options-history-toggle" type="button" class="section-toggle" aria-controls="options-history-body" aria-expanded="true">
+          <span class="chevron">▾</span> Recent recommendations <span class="muted" id="options-history-status"></span>
+        </button>
+        <div id="options-history-body" class="history-body">
+          <div id="options-history-list"></div>
+        </div>
+      </section>
+
+      <p class="muted options-disclaimer">⚠ Informational only — not financial advice. Options can expire worthless; size positions accordingly and verify all numbers against your broker before placing a trade. Composite score uses public data only (yfinance, Finnhub insider Form 4); dark pool prints, unusual options flow, and 13F filings require paid data feeds and are not measured.</p>
+    </section>
+  </div><!-- /#tab-options -->
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
