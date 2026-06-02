@@ -1193,8 +1193,9 @@ def evaluate_ticker(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
-    macd_vs_signal_mode: str = "within_pct",
+    macd_within_pct: bool = True,
     macd_vs_signal_pct: float = 5.0,
+    macd_above_signal: bool = False,
     macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
@@ -1364,20 +1365,23 @@ def evaluate_ticker(
             return None
         if macd_require_rising and not (macd_hist_val > macd_hist_prev):
             return None
-    # MACD vs signal:
-    #   within_pct   — |MACD − signal| / max(|signal|, ε) × 100 ≤ X
-    #                  (near-crossover; about to cross either way)
-    #   above_signal — MACD ≥ signal (bullish crossover already in place)
-    # macd_line_rising — independent gate, requires today's MACD line >
-    # yesterday's regardless of the mode above.
+    # MACD vs signal — sub-conditions are independent checkboxes (all
+    # checked must pass, AND-semantics). Mix as needed:
+    #   within X%      — |MACD − signal| / max(|signal|, ε) × 100 ≤ X
+    #                    (close to crossover, either direction)
+    #   ≥ signal       — MACD currently at or above the signal line
+    #   line rising    — MACD line strictly higher than yesterday's
+    # E.g. "within 5%" + "≥ signal" = stock just crossed above and is
+    # still close to the signal line; "≥ signal" + "line rising" =
+    # established bullish with positive slope.
     if apply_macd_vs_signal:
-        if macd_vs_signal_mode == "above_signal":
-            if not (macd_val >= macd_signal_val):
-                return None
-        else:  # within_pct
+        if macd_within_pct:
             denom = abs(macd_signal_val) if abs(macd_signal_val) > 1e-6 else 1e-6
             gap_pct = abs(macd_val - macd_signal_val) / denom * 100.0
             if gap_pct > macd_vs_signal_pct:
+                return None
+        if macd_above_signal:
+            if not (macd_val >= macd_signal_val):
                 return None
         if macd_line_rising:
             if macd_prev_val is None or not (macd_val > macd_prev_val):
@@ -1486,8 +1490,9 @@ def _evaluate_from_snapshot(
     ema_dev_max_pct: float,
     macd_hist_min: float,
     macd_require_rising: bool,
-    macd_vs_signal_mode: str,
+    macd_within_pct: bool,
     macd_vs_signal_pct: float,
+    macd_above_signal: bool,
     macd_line_rising: bool,
     turnover_min_pct: float,
     turnover_max_pct: float,
@@ -1627,13 +1632,13 @@ def _evaluate_from_snapshot(
     if apply_macd_vs_signal:
         if macd_val is None or macd_signal_val is None:
             return None
-        if macd_vs_signal_mode == "above_signal":
-            if not (macd_val >= macd_signal_val):
-                return None
-        else:  # within_pct
+        if macd_within_pct:
             denom = abs(macd_signal_val) if abs(macd_signal_val) > 1e-6 else 1e-6
             gap_pct = abs(macd_val - macd_signal_val) / denom * 100.0
             if gap_pct > macd_vs_signal_pct:
+                return None
+        if macd_above_signal:
+            if not (macd_val >= macd_signal_val):
                 return None
         if macd_line_rising:
             if macd_prev_val is None or not (macd_val > macd_prev_val):
@@ -1741,8 +1746,9 @@ def run_screen(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
-    macd_vs_signal_mode: str = "within_pct",
+    macd_within_pct: bool = True,
     macd_vs_signal_pct: float = 5.0,
+    macd_above_signal: bool = False,
     macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
@@ -1813,8 +1819,9 @@ def run_screen(
                         ema_dev_max_pct=ema_dev_max_pct,
                         macd_hist_min=macd_hist_min,
                         macd_require_rising=macd_require_rising,
-                        macd_vs_signal_mode=macd_vs_signal_mode,
+                        macd_within_pct=macd_within_pct,
                         macd_vs_signal_pct=macd_vs_signal_pct,
+                        macd_above_signal=macd_above_signal,
                         macd_line_rising=macd_line_rising,
                         turnover_min_pct=turnover_min_pct,
                         turnover_max_pct=turnover_max_pct,
@@ -1864,8 +1871,9 @@ def run_screen(
                 ema_dev_max_pct=ema_dev_max_pct,
                 macd_hist_min=macd_hist_min,
                 macd_require_rising=macd_require_rising,
-                macd_vs_signal_mode=macd_vs_signal_mode,
+                macd_within_pct=macd_within_pct,
                 macd_vs_signal_pct=macd_vs_signal_pct,
+                macd_above_signal=macd_above_signal,
                 macd_line_rising=macd_line_rising,
                 turnover_min_pct=turnover_min_pct,
                 turnover_max_pct=turnover_max_pct,
@@ -2008,8 +2016,9 @@ def diagnose_ticker(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
-    macd_vs_signal_mode: str = "within_pct",
+    macd_within_pct: bool = True,
     macd_vs_signal_pct: float = 5.0,
+    macd_above_signal: bool = False,
     macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
@@ -2225,8 +2234,9 @@ def diagnose_ticker(
         {"prev_hist": round(macd_hist_prev, 4) if macd_hist_prev is not None else None,
          "rising": macd_hist_val is not None and macd_hist_prev is not None and macd_hist_val > macd_hist_prev})
 
-    # 7b. MACD vs signal line — mode-driven gate (within X% / at-or-above)
-    # plus an independent "MACD line rising" check.
+    # 7b. MACD vs signal — independent sub-conditions, all checked must
+    # pass (AND-semantics). Same shape as the actual filter so the audit
+    # report tracks what the screener did.
     macd_line_val = _scalar("macd")
     macd_line_prev_val = _scalar("macd", eval_idx - 1)
     macd_sig_val_audit = _scalar("macd_signal")
@@ -2234,21 +2244,23 @@ def diagnose_ticker(
     if macd_line_val is not None and macd_sig_val_audit is not None:
         denom = abs(macd_sig_val_audit) if abs(macd_sig_val_audit) > 1e-6 else 1e-6
         gap_pct_val = abs(macd_line_val - macd_sig_val_audit) / denom * 100.0
-    if macd_vs_signal_mode == "above_signal":
-        mode_ok = (macd_line_val is not None and macd_sig_val_audit is not None
-                   and macd_line_val >= macd_sig_val_audit)
-        mode_desc = "MACD ≥ signal"
-    else:
-        mode_ok = (gap_pct_val is not None and gap_pct_val <= macd_vs_signal_pct)
-        mode_desc = f"|MACD − signal| ≤ {macd_vs_signal_pct}% of |signal|"
+    within_ok = (not macd_within_pct
+                 or (gap_pct_val is not None and gap_pct_val <= macd_vs_signal_pct))
+    above_ok = (not macd_above_signal
+                or (macd_line_val is not None and macd_sig_val_audit is not None
+                    and macd_line_val >= macd_sig_val_audit))
     rising_ok = (not macd_line_rising
                  or (macd_line_val is not None and macd_line_prev_val is not None
                      and macd_line_val > macd_line_prev_val))
-    macd_vs_sig_ok = mode_ok and rising_ok
-    desc = mode_desc + (" + rising" if macd_line_rising else "")
+    macd_vs_sig_ok = within_ok and above_ok and rising_ok
+    parts = []
+    if macd_within_pct: parts.append(f"within {macd_vs_signal_pct}%")
+    if macd_above_signal: parts.append("≥ signal")
+    if macd_line_rising: parts.append("rising")
+    desc = "MACD " + (" + ".join(parts) if parts else "(no condition)")
     obs = round(gap_pct_val, 2) if gap_pct_val is not None else None
     add("macd_vs_signal", desc, obs, apply_macd_vs_signal, macd_vs_sig_ok,
-        [macd_vs_signal_mode, macd_vs_signal_pct, macd_line_rising],
+        [macd_within_pct, macd_vs_signal_pct, macd_above_signal, macd_line_rising],
         {"macd": round(macd_line_val, 4) if macd_line_val is not None else None,
          "signal": round(macd_sig_val_audit, 4) if macd_sig_val_audit is not None else None,
          "macd_prev": round(macd_line_prev_val, 4) if macd_line_prev_val is not None else None,

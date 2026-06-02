@@ -177,7 +177,6 @@ const inputs = {
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
   macd_hist_min: $('#macd_hist_min'),
-  macd_vs_signal_mode: $('#macd_vs_signal_mode'),
   macd_vs_signal_pct: $('#macd_vs_signal_pct'),
   turnover_min_pct: $('#turnover_min_pct'),
   turnover_max_pct: $('#turnover_max_pct'),
@@ -198,6 +197,8 @@ const toggles = {
   apply_macd: $('#apply_macd'),
   macd_require_rising: $('#macd_require_rising'),
   apply_macd_vs_signal: $('#apply_macd_vs_signal'),
+  macd_within_pct: $('#macd_within_pct'),
+  macd_above_signal: $('#macd_above_signal'),
   macd_line_rising: $('#macd_line_rising'),
   apply_turnover: $('#apply_turnover'),
   apply_pct_change: $('#apply_pct_change'),
@@ -222,7 +223,6 @@ const modalInputs = {
   ema_dev_min_pct: $('#cm_ema_dev_min_pct'),
   ema_dev_max_pct: $('#cm_ema_dev_max_pct'),
   macd_hist_min: $('#cm_macd_hist_min'),
-  macd_vs_signal_mode: $('#cm_macd_vs_signal_mode'),
   macd_vs_signal_pct: $('#cm_macd_vs_signal_pct'),
   turnover_min_pct: $('#cm_turnover_min_pct'),
   turnover_max_pct: $('#cm_turnover_max_pct'),
@@ -240,6 +240,8 @@ const modalToggles = {
   apply_macd: $('#cm_apply_macd'),
   macd_require_rising: $('#cm_macd_require_rising'),
   apply_macd_vs_signal: $('#cm_apply_macd_vs_signal'),
+  macd_within_pct: $('#cm_macd_within_pct'),
+  macd_above_signal: $('#cm_macd_above_signal'),
   macd_line_rising: $('#cm_macd_line_rising'),
   apply_turnover: $('#cm_apply_turnover'),
   apply_pct_change: $('#cm_apply_pct_change'),
@@ -1340,14 +1342,15 @@ function escapeHtml(s) {
 
 const HOVER_DELAY_MS = 220;
 const HOVER_W = 900;
-const HOVER_H = 760;
-// Heights for the two oscillator panes. Pane order is Price (pane 0,
-// remainder) → MACD (pane 1) → RSI (pane 2, bottom). RSI gets slightly
-// more room since its 0-100 range needs the vertical real estate to
-// stay legible — that was the issue with the previous layout where RSI
-// got compressed.
-const HOVER_PANE_MACD_H = 150;
-const HOVER_PANE_RSI_H  = 160;
+const HOVER_H = 820;
+// Pane order: Price (0, remainder) → Volume (1) → MACD (2) → RSI (3).
+// Volume gets its own dedicated strip so the price pane doesn't end in
+// a confusing band of overlay bars (previously they bled visually into
+// the MACD pane below). MACD and RSI both get enough vertical room to
+// keep their lines / 30-70 bands legible.
+const HOVER_PANE_VOL_H  = 70;
+const HOVER_PANE_MACD_H = 180;
+const HOVER_PANE_RSI_H  = 180;
 const _chartCache = new Map();
 let _hoverChart = null;
 let _hoverShowTimer = null;
@@ -1435,7 +1438,10 @@ function drawHoverChart(data) {
     autoSize: true,
   });
 
-  // Pane 0 — candles + EMA21 + EMA50 + volume overlay
+  // Pane 0 — candles + EMA21 + EMA50. Volume gets its own dedicated
+  // pane below (pane 1) — keeping it overlaid in the price pane left
+  // a confusing "wall of bars" between the candles and MACD that ate
+  // into the MACD pane's perceived height.
   const candle = _hoverChart.addSeries(LightweightCharts.CandlestickSeries, {
     upColor: '#3fb950', downColor: '#f85149',
     wickUpColor: '#3fb950', wickDownColor: '#f85149',
@@ -1447,38 +1453,37 @@ function drawHoverChart(data) {
   const ema50 = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#ffa657', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
   }, 0);
-  const vol = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
-    priceFormat: { type: 'volume' },
-    priceScaleId: '',
-    color: '#30363d',
-    lastValueVisible: false,
-    priceLineVisible: false,
-  }, 0);
-  vol.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
-
   candle.setData(rows.map((r) => ({
     time: r.time, open: r.open, high: r.high, low: r.low, close: r.close,
   })));
   ema21.setData(rows.filter((r) => r.ema21 != null).map((r) => ({ time: r.time, value: r.ema21 })));
   ema50.setData(rows.filter((r) => r.ema50 != null).map((r) => ({ time: r.time, value: r.ema50 })));
+
+  // Pane 1 — Volume only. Compact strip, bars coloured by day direction.
+  const vol = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
+    priceFormat: { type: 'volume' },
+    color: '#30363d',
+    lastValueVisible: false,
+    priceLineVisible: false,
+  }, 1);
   vol.setData(rows.map((r) => ({
     time: r.time, value: r.volume || 0,
-    color: r.close >= r.open ? 'rgba(63,185,80,0.4)' : 'rgba(248,81,73,0.4)',
+    color: r.close >= r.open ? 'rgba(63,185,80,0.5)' : 'rgba(248,81,73,0.5)',
   })));
 
-  // Pane 1 — MACD(12, 26, 9): line + signal + histogram. The histogram
+  // Pane 2 — MACD(12, 26, 9): line + signal + histogram. The histogram
   // is the diff between the two lines (MACD − signal); positive bars
   // green / negative bars red. Zero line dashed grey so the
   // crossover point is visible at a glance.
   const macdHist = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
     priceLineVisible: false, lastValueVisible: false,
-  }, 1);
+  }, 2);
   const macdLine = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
-  }, 1);
+  }, 2);
   const macdSignal = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-  }, 1);
+  }, 2);
   macdHist.setData(rows.filter((r) => r.macd_hist != null).map((r) => ({
     time: r.time, value: r.macd_hist,
     color: r.macd_hist >= 0 ? 'rgba(63,185,80,0.6)' : 'rgba(248,81,73,0.6)',
@@ -1487,15 +1492,13 @@ function drawHoverChart(data) {
   macdSignal.setData(rows.filter((r) => r.macd_signal != null).map((r) => ({ time: r.time, value: r.macd_signal })));
   macdLine.createPriceLine({ price: 0, color: '#6e7681', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 
-  // Pane 2 — RSI(14) + 9d SMA of RSI. Bottom pane (was middle before);
-  // gets the most height since the 0-100 range needs vertical space to
-  // distinguish 30/70 bands from the line.
+  // Pane 3 — RSI(14) + 9d SMA of RSI.
   const rsi = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
-  }, 2);
+  }, 3);
   const rsiSma = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-  }, 2);
+  }, 3);
   rsi.setData(rows.filter((r) => r.rsi != null).map((r) => ({ time: r.time, value: r.rsi })));
   rsiSma.setData(rows.filter((r) => r.rsi_sma9 != null).map((r) => ({ time: r.time, value: r.rsi_sma9 })));
   rsi.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
@@ -1512,8 +1515,9 @@ function drawHoverChart(data) {
       panes.forEach((p) => {
         try { p.priceScale('right').applyOptions({ minimumWidth: 56 }); } catch (_) {}
       });
-      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(HOVER_PANE_MACD_H);
-      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(HOVER_PANE_RSI_H);
+      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(HOVER_PANE_VOL_H);
+      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(HOVER_PANE_MACD_H);
+      if (panes.length >= 4 && panes[3].setHeight) panes[3].setHeight(HOVER_PANE_RSI_H);
     } catch (_) { /* ignore */ }
     try { _hoverChart.timeScale().fitContent(); } catch (_) {}
     positionPaneLabels();
@@ -1524,25 +1528,23 @@ function drawHoverChart(data) {
 }
 
 // Each pane gets a small label in its top-left corner ("Price · EMA21 ·
-// EMA50 · Volume", "MACD(12, 26, 9)", "RSI(14) · 9d SMA"). Lightweight-
+// EMA50", "Volume", "MACD(12, 26, 9)", "RSI(14) · 9d SMA"). Lightweight-
 // charts has no native title support, and it wipes its container on
 // dispose — so the spans live as siblings of #hover-chart-container
 // (inside #hover-chart) and are positioned relative to the popup
-// wrapper. Pane 0 (Price) sits at the top of the container, pane 1
-// (MACD) at (containerH - macd_h - rsi_h), pane 2 (RSI) at
-// (containerH - rsi_h). The container's offsetTop from the popup gives
-// us the y origin.
+// wrapper. Pane 0 (Price) sits at the top of the container; the
+// remaining pane tops stack from the bottom up using the fixed pane
+// heights. The container's offsetTop gives us the y origin.
 function positionPaneLabels() {
   if (!els.hoverChartContainer) return;
   const containerH = els.hoverChartContainer.clientHeight;
   if (!containerH) return;
-  const containerTop = els.hoverChartContainer.offsetTop;
-  const pane0 = document.getElementById('hover-pane-label-0');
-  const pane1 = document.getElementById('hover-pane-label-1');
-  const pane2 = document.getElementById('hover-pane-label-2');
-  if (pane0) pane0.style.top = (containerTop + 6) + 'px';
-  if (pane1) pane1.style.top = (containerTop + containerH - HOVER_PANE_MACD_H - HOVER_PANE_RSI_H + 4) + 'px';
-  if (pane2) pane2.style.top = (containerTop + containerH - HOVER_PANE_RSI_H + 4) + 'px';
+  const top = els.hoverChartContainer.offsetTop;
+  const labels = [0, 1, 2, 3].map((i) => document.getElementById('hover-pane-label-' + i));
+  if (labels[0]) labels[0].style.top = (top + 6) + 'px';
+  if (labels[1]) labels[1].style.top = (top + containerH - HOVER_PANE_VOL_H - HOVER_PANE_MACD_H - HOVER_PANE_RSI_H + 4) + 'px';
+  if (labels[2]) labels[2].style.top = (top + containerH - HOVER_PANE_MACD_H - HOVER_PANE_RSI_H + 4) + 'px';
+  if (labels[3]) labels[3].style.top = (top + containerH - HOVER_PANE_RSI_H + 4) + 'px';
 }
 
 function onTickerEnter(ev) {
@@ -1847,10 +1849,11 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_ema_dev) out.push(`EMA21 vs EMA50 ${n(p.ema_dev_min_pct)}–${n(p.ema_dev_max_pct)}%`);
   if (p.apply_macd) out.push(`MACD hist ≥ ${n(p.macd_hist_min)}${p.macd_require_rising ? ' & rising' : ''}`);
   if (p.apply_macd_vs_signal) {
-    const mode = p.macd_vs_signal_mode === 'above_signal'
-      ? 'MACD ≥ signal'
-      : `MACD within ${n(p.macd_vs_signal_pct)}% of signal`;
-    out.push(mode + (p.macd_line_rising ? ' + rising' : ''));
+    const parts = [];
+    if (p.macd_within_pct) parts.push(`within ${n(p.macd_vs_signal_pct)}% of signal`);
+    if (p.macd_above_signal) parts.push('≥ signal');
+    if (p.macd_line_rising) parts.push('rising');
+    out.push('MACD ' + (parts.join(' + ') || '(no condition)'));
   }
   if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
   if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
