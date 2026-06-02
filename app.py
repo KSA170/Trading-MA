@@ -958,11 +958,17 @@ def api_options_lookup():
     ticker = (request.args.get("ticker") or "").strip()
     if not ticker:
         return jsonify({"error": "ticker query param required"}), 400
-    rec = options.recommend_for_ticker(ticker)
-    # Persist non-empty recommendations so they show up alongside any
-    # nightly-scanner results in the "recent" view. PASS-with-no-contract
-    # results aren't worth storing.
-    if rec.get("contract") and rec.get("direction"):
+    dte_min_raw = request.args.get("dte_min")
+    dte_max_raw = request.args.get("dte_max")
+    try:
+        dte_min = int(dte_min_raw) if dte_min_raw else options.DEFAULT_DTE_MIN
+        dte_max = int(dte_max_raw) if dte_max_raw else options.DEFAULT_DTE_MAX
+    except (TypeError, ValueError):
+        return jsonify({"error": "dte_min/dte_max must be integers"}), 400
+    rec = options.recommend_for_ticker(ticker, dte_min=dte_min, dte_max=dte_max)
+    if rec.get("composite_score") is not None:
+        # Persist any analyzed ticker (even WATCH/PASS) — useful for
+        # the daily history view; load_recommendations sorts by score.
         options.save_recommendation(rec)
     return jsonify(rec)
 
