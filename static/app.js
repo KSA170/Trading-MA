@@ -122,6 +122,13 @@ const els = {
   optionsHistoryStatus: $('#options-history-status'),
   optionsHistoryToggle: $('#options-history-toggle'),
   optionsHistoryBody: $('#options-history-body'),
+  optionsScanBtn: $('#options-scan-btn'),
+  optionsScanTopN: $('#options-scan-topn'),
+  optionsScanPanel: $('#options-scan-panel'),
+  optionsScanList: $('#options-scan-list'),
+  optionsScanSummary: $('#options-scan-summary'),
+  optionsScanToggle: $('#options-scan-toggle'),
+  optionsScanBody: $('#options-scan-body'),
   tabBtnStock: $('#tab-btn-stock'),
   tabBtnOptions: $('#tab-btn-options'),
   tabStock: $('#tab-stock'),
@@ -3593,6 +3600,117 @@ if (els.optionsHistoryList) {
 }
 wireCollapse(els.optionsHistoryToggle, els.optionsHistoryBody, 'collapse_options_history');
 loadOptionsHistory();
+
+// --- options universe scanner (manual trigger) ---------------------------
+function renderScanCard(rec) {
+  const verdict = rec.verdict || 'PASS';
+  const verdictGlyph = _OPTIONS_VERDICT_GLYPH[verdict] || '⚪';
+  const dirGlyph = _OPTIONS_DIR_GLYPH[rec.direction] || '·';
+  const score = rec.composite_score;
+  const c = rec.contract || {};
+  const contractLine = c.contract_symbol
+    ? `<div class="scan-card-contract">
+         ${escapeHtml(c.expiration || '')}
+         <b>$${fmtNum(c.strike, 2)}</b>
+         ${(rec.direction || '').toUpperCase()} ·
+         Δ ${c.delta != null ? (c.delta >= 0 ? '+' : '') + fmtNum(c.delta, 2) : '—'} ·
+         mid $${fmtNum(c.mid, 2)} ·
+         OI ${c.open_interest != null ? Math.round(c.open_interest).toLocaleString() : '—'}
+       </div>`
+    : `<div class="scan-card-contract muted">${escapeHtml(rec.reason || '')}</div>`;
+  const prose = rec.prose_rationale
+    ? `<div class="scan-card-prose">${escapeHtml(rec.prose_rationale)}</div>`
+    : '';
+  const badges = [];
+  if (rec.conviction && rec.conviction !== 'none')
+    badges.push(`<span class="scan-badge">${escapeHtml(rec.conviction)} conv</span>`);
+  if (rec.post_earnings_override)
+    badges.push('<span class="scan-badge badge-override">post-earn expiry</span>');
+  if (rec.earnings_spans_expiration)
+    badges.push('<span class="scan-badge badge-warn">spans earnings</span>');
+  return `
+    <div class="scan-card verdict-${verdict.toLowerCase()}" data-ticker="${escapeHtml(rec.ticker)}">
+      <div class="scan-card-head">
+        <span class="scan-verdict">${verdictGlyph} <b>${verdict}</b></span>
+        <span class="scan-direction">${dirGlyph} <b>${(rec.direction || '').toUpperCase()}</b></span>
+        <span class="scan-ticker"><b>${escapeHtml(rec.ticker)}</b></span>
+        <span class="muted">· composite <b>${score != null ? Math.round(score) : '—'}</b>/100</span>
+        ${badges.join(' ')}
+      </div>
+      ${contractLine}
+      ${prose}
+    </div>`;
+}
+
+function renderScanResults(result) {
+  if (!els.optionsScanPanel || !els.optionsScanList) return;
+  els.optionsScanPanel.classList.remove('hidden');
+  const digest = (result && result.digest) || [];
+  const all = (result && result.recommendations) || [];
+  const passCount = all.length - digest.length;
+  if (els.optionsScanSummary) {
+    els.optionsScanSummary.textContent = digest.length
+      ? `(${digest.length} BUY/WATCH-high of ${all.length} scanned — ${passCount} other results omitted)`
+      : `(${all.length} scanned, none cleared BUY or high-conviction WATCH)`;
+  }
+  if (!digest.length) {
+    els.optionsScanList.innerHTML = `<div class="muted scan-empty">No setups stacked enough across the 5 layers — sit out, or relax the DTE window and re-scan.</div>`;
+    return;
+  }
+  els.optionsScanList.innerHTML = digest.map(renderScanCard).join('');
+}
+
+async function runOptionsScan() {
+  if (!els.optionsScanBtn) return;
+  const topN = parseInt((els.optionsScanTopN && els.optionsScanTopN.value) || '8', 10);
+  const [dteMin, dteMax] = _readDteRange();
+  const prevTxt = els.optionsScanBtn.textContent;
+  els.optionsScanBtn.disabled = true;
+  els.optionsScanBtn.textContent = `Scanning ${topN}…`;
+  if (els.optionsLookupBtn) els.optionsLookupBtn.disabled = true;
+  if (els.optionsStatus)
+    els.optionsStatus.textContent = `Running composite-score pipeline on top ${topN} candidates — may take 1-3 minutes…`;
+  if (els.optionsScanPanel) els.optionsScanPanel.classList.remove('hidden');
+  if (els.optionsScanList)
+    els.optionsScanList.innerHTML = `<div class="muted scan-running">Pre-scoring the liquid universe, then running the 5-layer pipeline on the top ${topN}. The page will update when the scan completes.</div>`;
+  try {
+    const res = await fetch('/api/options/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ top_n: topN, dte_min: dteMin, dte_max: dteMax }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (els.optionsStatus) els.optionsStatus.textContent = data.error || ('HTTP ' + res.status);
+      if (els.optionsScanList)
+        els.optionsScanList.innerHTML = `<div class="muted">Scan failed: ${escapeHtml(data.error || res.status)}</div>`;
+      return;
+    }
+    renderScanResults(data);
+    if (els.optionsStatus) els.optionsStatus.textContent = '';
+    loadOptionsHistory();
+  } catch (err) {
+    if (els.optionsStatus) els.optionsStatus.textContent = (err && err.message) || 'network error';
+    if (els.optionsScanList)
+      els.optionsScanList.innerHTML = `<div class="muted">Scan failed: ${escapeHtml((err && err.message) || 'network error')}</div>`;
+  } finally {
+    els.optionsScanBtn.disabled = false;
+    els.optionsScanBtn.textContent = prevTxt;
+    if (els.optionsLookupBtn) els.optionsLookupBtn.disabled = false;
+  }
+}
+
+if (els.optionsScanBtn) els.optionsScanBtn.addEventListener('click', runOptionsScan);
+if (els.optionsScanList) {
+  els.optionsScanList.addEventListener('click', (ev) => {
+    const card = ev.target.closest('.scan-card');
+    if (card && card.dataset.ticker && els.optionsTicker) {
+      els.optionsTicker.value = card.dataset.ticker;
+      runOptionsLookup();
+    }
+  });
+}
+wireCollapse(els.optionsScanToggle, els.optionsScanBody, 'collapse_options_scan');
 
 
 // --- bootstrap -------------------------------------------------------------
