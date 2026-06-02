@@ -110,6 +110,15 @@ const els = {
   momentumDiagnoseClearBtn: $('#momentum-diagnose-clear-btn'),
   momentumDiagnoseStatus: $('#momentum-diagnose-status'),
   momentumDiagnoseOut: $('#momentum-diagnose-out'),
+  optionsToggle: $('#options-toggle'),
+  optionsBody: $('#options-body'),
+  optionsTicker: $('#options-ticker'),
+  optionsLookupBtn: $('#options-lookup-btn'),
+  optionsClearBtn: $('#options-clear-btn'),
+  optionsStatus: $('#options-status'),
+  optionsResult: $('#options-result'),
+  optionsHistoryList: $('#options-history-list'),
+  optionsHistoryStatus: $('#options-history-status'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
@@ -3257,6 +3266,196 @@ if (els.ruleType) els.ruleType.addEventListener('change', syncRuleTypeUI);
 syncRuleTypeUI();
 
 wireCollapse(els.setupsToggle, els.setupsBody, 'collapse_setups');
+
+
+// --- options recommender -------------------------------------------------
+// On-demand pipeline: type a ticker, get {direction, contract, verdict,
+// rationale}. Results are persisted server-side and the panel also
+// shows the most recent N recommendations for quick re-reference.
+
+const _OPTIONS_VERDICT_GLYPH = { BUY: '🟢', WATCH: '🟡', PASS: '🔴' };
+const _OPTIONS_DIR_GLYPH     = { call: '📈', put: '📉' };
+
+function renderOptionsResult(rec) {
+  if (!els.optionsResult) return;
+  if (els.optionsClearBtn) els.optionsClearBtn.disabled = false;
+  els.optionsResult.classList.remove('hidden');
+  if (!rec || rec.error) {
+    els.optionsResult.innerHTML = `<p class="muted">${escapeHtml((rec && rec.error) || 'Analysis failed.')}</p>`;
+    return;
+  }
+
+  const hasContract = !!rec.contract;
+  const verdict = rec.verdict || 'PASS';
+  const verdictGlyph = _OPTIONS_VERDICT_GLYPH[verdict] || '⚪';
+  const dirGlyph = _OPTIONS_DIR_GLYPH[rec.direction] || '·';
+  const score = Number.isFinite(rec.score) ? `${rec.score >= 0 ? '+' : ''}${rec.score}` : '?';
+
+  let header = '';
+  if (rec.direction && hasContract) {
+    const c = rec.contract;
+    header = `
+      <div class="options-result-header verdict-${verdict.toLowerCase()}">
+        <span class="options-verdict">${verdictGlyph} <b>${verdict}</b></span>
+        <span class="options-direction">${dirGlyph} <b>${rec.direction.toUpperCase()}</b></span>
+        <span class="options-ticker-name"><b>${escapeHtml(rec.ticker)}</b></span>
+        <span class="muted">· score ${score}</span>
+      </div>
+      <div class="options-contract-card">
+        <div class="options-contract-line">
+          <span class="muted">Contract:</span>
+          <span><b>${escapeHtml(c.contract_symbol || '')}</b></span>
+        </div>
+        <div class="options-contract-grid">
+          <div><span class="muted">Strike</span><span>$${fmtNum(c.strike, 2)}</span></div>
+          <div><span class="muted">Expiration</span><span>${escapeHtml(c.expiration || '')}</span></div>
+          <div><span class="muted">DTE</span><span>${c.dte ?? '—'}d</span></div>
+          <div><span class="muted">Delta</span><span>${c.delta != null ? (c.delta >= 0 ? '+' : '') + fmtNum(c.delta, 3) : '—'}</span></div>
+          <div><span class="muted">Mid</span><span>$${fmtNum(c.mid, 2)}</span></div>
+          <div><span class="muted">IV</span><span>${c.iv != null ? fmtNum(c.iv * 100, 1) + '%' : '—'}</span></div>
+          <div><span class="muted">OI</span><span>${c.open_interest != null ? Math.round(c.open_interest).toLocaleString() : '—'}</span></div>
+        </div>
+        ${rec.earnings_spans_expiration ? '<div class="options-warn">⚠ Contract spans the next earnings date — IV crush risk after the announcement.</div>' : ''}
+      </div>`;
+  } else {
+    header = `
+      <div class="options-result-header verdict-pass">
+        <span class="options-verdict">${verdictGlyph} <b>${verdict}</b></span>
+        <span class="options-ticker-name"><b>${escapeHtml(rec.ticker)}</b></span>
+        <span class="muted">· score ${score}</span>
+      </div>`;
+  }
+
+  const reasonLine = rec.reason
+    ? `<div class="options-reason muted">${escapeHtml(rec.reason)}</div>`
+    : '';
+
+  const ivc = rec.iv_context || {};
+  const ivLine = ivc.regime && ivc.regime !== 'unknown'
+    ? `<div class="options-iv-context muted">
+         IV regime: <b>${escapeHtml(ivc.regime)}</b>
+         · ATM IV ${ivc.atm_iv != null ? fmtNum(ivc.atm_iv * 100, 1) + '%' : '—'}
+         · 20d realized ${ivc.realized_vol_20d != null ? fmtNum(ivc.realized_vol_20d * 100, 1) + '%' : '—'}
+         · ratio ${ivc.ratio != null ? fmtNum(ivc.ratio, 2) : '—'}
+       </div>`
+    : '';
+
+  const earningsLine = rec.earnings_date
+    ? `<div class="options-earnings muted">Next earnings: <b>${escapeHtml(rec.earnings_date)}</b></div>`
+    : '';
+
+  const rationale = Array.isArray(rec.rationale) && rec.rationale.length
+    ? `<div class="options-rationale">
+         <div class="muted">Rationale</div>
+         <ul>${rec.rationale.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
+       </div>`
+    : '';
+
+  const disclaimer = rec.disclaimer
+    ? `<div class="options-disclaimer-inline muted"><i>${escapeHtml(rec.disclaimer)}</i></div>`
+    : '';
+
+  els.optionsResult.innerHTML = header + reasonLine + ivLine + earningsLine + rationale + disclaimer;
+}
+
+function renderOptionsHistory(items) {
+  if (!els.optionsHistoryList) return;
+  items = items || [];
+  if (els.optionsHistoryStatus)
+    els.optionsHistoryStatus.textContent = items.length
+      ? `(${items.length} for ${items[0].as_of || '?'})`
+      : '(none yet — analyze a ticker above)';
+  if (!items.length) {
+    els.optionsHistoryList.innerHTML = '';
+    return;
+  }
+  els.optionsHistoryList.innerHTML = items.map((r) => {
+    const verdict = r.verdict || 'PASS';
+    const glyph = _OPTIONS_VERDICT_GLYPH[verdict] || '⚪';
+    const dir = (r.direction || '').toUpperCase();
+    const dirGlyph = _OPTIONS_DIR_GLYPH[r.direction] || '·';
+    const strikeStr = r.strike != null ? `$${fmtNum(r.strike, 2)}` : '';
+    const midStr = r.mid_price != null ? `mid $${fmtNum(r.mid_price, 2)}` : '';
+    const deltaStr = r.delta != null ? `Δ ${r.delta >= 0 ? '+' : ''}${fmtNum(r.delta, 2)}` : '';
+    return `
+      <div class="options-history-row verdict-${verdict.toLowerCase()}" data-ticker="${escapeHtml(r.ticker)}">
+        <span class="options-history-verdict">${glyph} <b>${verdict}</b></span>
+        <span class="options-history-dir">${dirGlyph} ${dir}</span>
+        <span class="options-history-ticker"><b>${escapeHtml(r.ticker)}</b></span>
+        <span class="muted">${escapeHtml(r.expiration || '')} ${strikeStr}</span>
+        <span class="muted">${deltaStr}</span>
+        <span class="muted">${midStr}</span>
+      </div>`;
+  }).join('');
+}
+
+async function runOptionsLookup() {
+  if (!els.optionsLookupBtn || !els.optionsTicker) return;
+  const ticker = (els.optionsTicker.value || '').trim().toUpperCase();
+  if (!ticker) {
+    if (els.optionsStatus) els.optionsStatus.textContent = 'Enter a ticker first.';
+    return;
+  }
+  const prevTxt = els.optionsLookupBtn.textContent;
+  els.optionsLookupBtn.disabled = true;
+  els.optionsLookupBtn.textContent = 'Analyzing…';
+  if (els.optionsStatus) els.optionsStatus.textContent = '';
+  try {
+    const res = await fetch('/api/options/lookup?ticker=' + encodeURIComponent(ticker), { cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      renderOptionsResult({ error: data.error || ('HTTP ' + res.status), ticker });
+      return;
+    }
+    renderOptionsResult(data);
+    // Refresh the persisted-history list — the lookup may have written
+    // a new row if the recommendation surfaced a contract.
+    loadOptionsHistory();
+  } catch (err) {
+    renderOptionsResult({ error: (err && err.message) || 'network error', ticker });
+  } finally {
+    els.optionsLookupBtn.disabled = false;
+    els.optionsLookupBtn.textContent = prevTxt;
+  }
+}
+
+function clearOptionsResult() {
+  if (els.optionsResult) {
+    els.optionsResult.classList.add('hidden');
+    els.optionsResult.innerHTML = '';
+  }
+  if (els.optionsTicker) els.optionsTicker.value = '';
+  if (els.optionsStatus) els.optionsStatus.textContent = '';
+  if (els.optionsClearBtn) els.optionsClearBtn.disabled = true;
+}
+
+async function loadOptionsHistory() {
+  try {
+    const res = await fetch('/api/options/recommendations', { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderOptionsHistory(data.recommendations || []);
+  } catch (_) { /* silent */ }
+}
+
+if (els.optionsLookupBtn) els.optionsLookupBtn.addEventListener('click', runOptionsLookup);
+if (els.optionsClearBtn) els.optionsClearBtn.addEventListener('click', clearOptionsResult);
+if (els.optionsTicker) {
+  els.optionsTicker.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); runOptionsLookup(); }
+  });
+}
+if (els.optionsHistoryList) {
+  els.optionsHistoryList.addEventListener('click', (ev) => {
+    const row = ev.target.closest('.options-history-row');
+    if (row && row.dataset.ticker && els.optionsTicker) {
+      els.optionsTicker.value = row.dataset.ticker;
+      runOptionsLookup();
+    }
+  });
+}
+wireCollapse(els.optionsToggle, els.optionsBody, 'collapse_options');
+loadOptionsHistory();
 
 
 // --- bootstrap -------------------------------------------------------------
