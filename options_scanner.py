@@ -28,6 +28,8 @@ candidates each run by:
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import date
 from typing import Any
 
@@ -162,7 +164,8 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
                   dte_min: int = 15,
                   dte_max: int = 60,
                   persist: bool = True,
-                  progress_cb: Any = None) -> dict:
+                  progress_cb: Any = None,
+                  should_cancel: Any = None) -> dict:
     """Run the full pipeline on the top N pre-scored candidates.
 
     Returns:
@@ -174,7 +177,9 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
       }
 
     `progress_cb(i, total, ticker)` is called before each ticker if
-    provided — useful for the UI manual-trigger progress indicator."""
+    provided — useful for the UI manual-trigger progress indicator.
+    `should_cancel()` is polled before each ticker; if it returns
+    truthy, the loop exits early and partial results are returned."""
     import options as opt
 
     pre_scored = pre_score_universe()
@@ -184,6 +189,13 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
 
     out_recs: list[dict] = []
     for i, cand in enumerate(pool, start=1):
+        if should_cancel:
+            try:
+                if should_cancel():
+                    log.info("scan_universe: cancelled at %d/%d", i - 1, len(pool))
+                    break
+            except Exception:
+                pass
         ticker = cand["ticker"]
         if progress_cb:
             try:
@@ -282,3 +294,107 @@ def format_digest_for_telegram(scan_result: dict) -> str:
         used_chars += len(block) + 2
 
     return header + "\n" + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Background-job wrappers — mirrors the screener's snapshot/warm pattern.
+# Lets the UI kick off a scan that may run for tens of minutes (Top 100,
+# 200), then poll for progress and a final result without holding an HTTP
+# request open. Cron path (options_cron.py) still calls scan_universe
+# directly and doesn't use these.
+
+_scan_state: dict = {
+    "running": False,
+    "done": 0,
+    "total": 0,
+    "errors": 0,
+    "cancelled": False,
+    "started_at": None,
+    "finished_at": None,
+    "current_ticker": None,
+    "top_n": 0,
+    "dte_min": 0,
+    "dte_max": 0,
+    "last_result": None,    # full scan_universe() return value
+    "last_error": None,
+}
+_scan_lock = threading.Lock()
+_scan_thread: "threading.Thread | None" = None
+
+
+def scan_status() -> dict:
+    with _scan_lock:
+        return dict(_scan_state)
+
+
+def cancel_scan() -> bool:
+    """Ask the running scan to stop. Returns True if a run was in flight."""
+    global _scan_thread
+    alive = _scan_thread is not None and _scan_thread.is_alive()
+    with _scan_lock:
+        if not _scan_state["running"] and not alive:
+            return False
+        _scan_state["cancelled"] = True
+        _scan_state["running"] = False
+        _scan_state["finished_at"] = time.time()
+        return True
+
+
+def start_scan(top_n: int,
+               dte_min: int = 15,
+               dte_max: int = 60,
+               persist: bool = True) -> dict:
+    """Kick off scan_universe in a daemon thread. Returns a status snapshot
+    with `started` = True if a new run kicked off, False if one was
+    already in progress (in which case nothing changes — the caller can
+    still poll scan_status())."""
+    global _scan_thread
+    if _scan_thread is not None and _scan_thread.is_alive():
+        return {"started": False, **scan_status()}
+    with _scan_lock:
+        if _scan_state["running"]:
+            return {"started": False, **scan_status()}
+        _scan_state.update(
+            running=True, done=0, total=int(top_n),
+            errors=0, cancelled=False,
+            started_at=time.time(), finished_at=None,
+            current_ticker=None,
+            top_n=int(top_n), dte_min=int(dte_min), dte_max=int(dte_max),
+            last_result=None, last_error=None,
+        )
+
+    def _progress(i: int, total: int, ticker: str) -> None:
+        with _scan_lock:
+            # `done` is the count finished BEFORE this ticker; the UI
+            # shows "scanning ticker (i of total)" while it works.
+            _scan_state["done"] = max(0, i - 1)
+            _scan_state["total"] = total
+            _scan_state["current_ticker"] = ticker
+
+    def _should_cancel() -> bool:
+        with _scan_lock:
+            return bool(_scan_state["cancelled"])
+
+    def _run() -> None:
+        try:
+            result = scan_universe(
+                top_n=top_n, dte_min=dte_min, dte_max=dte_max,
+                persist=persist,
+                progress_cb=_progress, should_cancel=_should_cancel,
+            )
+            with _scan_lock:
+                _scan_state["last_result"] = result
+                _scan_state["done"] = _scan_state["total"]
+                _scan_state["current_ticker"] = None
+        except Exception as exc:
+            log.warning("options scan failed: %s", exc, exc_info=True)
+            with _scan_lock:
+                _scan_state["last_error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            with _scan_lock:
+                _scan_state["running"] = False
+                _scan_state["finished_at"] = time.time()
+
+    _scan_thread = threading.Thread(target=_run, daemon=True, name="options-scan")
+    _scan_thread.start()
+    return {"started": True, **scan_status()}

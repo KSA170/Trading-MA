@@ -995,10 +995,13 @@ def api_options_recommendations():
 
 @app.route("/api/options/scan", methods=["POST"])
 def api_options_scan():
-    """Manual trigger for the options universe scanner. Synchronous —
-    request returns when the scan finishes (~1-2 min at the default
-    top_n=8). Body JSON (all optional):
-       {"top_n": 8, "dte_min": 15, "dte_max": 60}"""
+    """Kick off an async universe scan. Returns immediately — the UI
+    polls /api/options/scan/status for progress. Body JSON (all
+    optional): {"top_n": 50, "dte_min": 15, "dte_max": 60}
+
+    Cap at 200 — gunicorn's 600s timeout is irrelevant now since the
+    scan runs in a background thread, but the per-ticker work is
+    unchanged so a Top 200 run takes ~40 min wall-clock."""
     import options_scanner
     body = request.get_json(silent=True) or {}
     try:
@@ -1007,12 +1010,27 @@ def api_options_scan():
         dte_max = int(body.get("dte_max", 60))
     except (TypeError, ValueError):
         return jsonify({"error": "top_n / dte_min / dte_max must be integers"}), 400
-    # Safety cap — keep the sync request bounded; nightly cron has no cap.
-    top_n = max(1, min(top_n, 25))
-    result = options_scanner.scan_universe(
+    top_n = max(1, min(top_n, 200))
+    return jsonify(options_scanner.start_scan(
         top_n=top_n, dte_min=dte_min, dte_max=dte_max, persist=True,
-    )
-    return jsonify(result)
+    ))
+
+
+@app.route("/api/options/scan/status")
+def api_options_scan_status():
+    """Poll endpoint: current scan progress + last_result once the run
+    finishes. Safe to call repeatedly while idle."""
+    import options_scanner
+    return jsonify(options_scanner.scan_status())
+
+
+@app.route("/api/options/scan/cancel", methods=["POST"])
+def api_options_scan_cancel():
+    """Cancel the in-progress scan. The worker honors the request
+    before its next ticker; partial results stay in last_result."""
+    import options_scanner
+    cancelled = options_scanner.cancel_scan()
+    return jsonify({"cancelled": cancelled, **options_scanner.scan_status()})
 
 
 @app.route("/api/momentum/alerts/hide", methods=["POST"])
