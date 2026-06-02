@@ -675,13 +675,14 @@
           <button id="options-reset-dte-btn" type="button" title="Reset DTE range to default 15-60.">Reset DTE</button>
         </div>
         <div class="options-control options-scan-actions">
-          <button id="options-scan-btn" type="button" title="Scan the liquid snapshot universe with the composite-score pipeline. Independent of the stock screener — finds long-call AND long-put setups. ~1-2 min for the default top 8.">Scan universe</button>
-          <select id="options-scan-topn" title="How many top pre-scored candidates to run through the full pipeline.">
-            <option value="5">top 5 (~1 min)</option>
-            <option value="8" selected>top 8 (~2 min)</option>
-            <option value="15">top 15 (~3 min)</option>
-            <option value="25">top 25 (~5 min)</option>
+          <button id="options-scan-btn" type="button" title="Scan the liquid snapshot universe with the composite-score pipeline. Independent of the stock screener — finds long-call AND long-put setups. Runs in the background — you can keep using the rest of the app while it works, and progress updates here every couple of seconds.">Scan universe</button>
+          <select id="options-scan-topn" title="How many top pre-scored candidates to run through the full pipeline. Larger N runs in the background; expect ~12s per ticker.">
+            <option value="25" selected>top 25 (~5 min)</option>
+            <option value="50">top 50 (~10 min)</option>
+            <option value="100">top 100 (~20 min)</option>
+            <option value="200">top 200 (~40 min)</option>
           </select>
+          <button id="options-scan-cancel-btn" type="button" class="hidden" title="Abort the running scan. Any results already produced are kept and shown.">Cancel</button>
         </div>
         <div class="options-control options-status-wrap">
           <span id="options-status" class="muted"></span>

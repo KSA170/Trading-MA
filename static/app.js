@@ -123,6 +123,7 @@ const els = {
   optionsHistoryToggle: $('#options-history-toggle'),
   optionsHistoryBody: $('#options-history-body'),
   optionsScanBtn: $('#options-scan-btn'),
+  optionsScanCancelBtn: $('#options-scan-cancel-btn'),
   optionsScanTopN: $('#options-scan-topn'),
   optionsScanPanel: $('#options-scan-panel'),
   optionsScanList: $('#options-scan-list'),
@@ -3704,19 +3705,94 @@ function renderScanResults(result) {
   els.optionsScanList.innerHTML = digest.map(renderScanCard).join('');
 }
 
+// The scan runs server-side in a background thread; the UI kicks it
+// off then polls /api/options/scan/status every few seconds for
+// progress and a final result. Top 200 can run ~40 min, so the page
+// stays usable throughout (you can navigate away and come back; the
+// poll picks up wherever the server is).
+
+const SCAN_POLL_MS = 2500;
+let _scanPollTimer = null;
+let _scanRunPrevBtnTxt = null;
+
+function _setScanRunning(running) {
+  if (els.optionsScanBtn) els.optionsScanBtn.disabled = running;
+  if (els.optionsScanTopN) els.optionsScanTopN.disabled = running;
+  if (els.optionsLookupBtn) els.optionsLookupBtn.disabled = running;
+  if (els.optionsScanCancelBtn) els.optionsScanCancelBtn.classList.toggle('hidden', !running);
+}
+
+function _renderScanProgress(state) {
+  const { done = 0, total = 0, current_ticker, started_at } = state || {};
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const elapsed = started_at ? Math.max(0, Date.now() / 1000 - started_at) : 0;
+  const elapsedTxt = elapsed >= 60
+    ? `${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`
+    : `${Math.floor(elapsed)}s`;
+  // Linear extrapolation of remaining time from the per-ticker rate.
+  let etaTxt = '';
+  if (done > 0 && total > done && elapsed > 0) {
+    const remainingSec = (elapsed / done) * (total - done);
+    etaTxt = remainingSec >= 60
+      ? ` · ~${Math.ceil(remainingSec / 60)}m remaining`
+      : ` · ~${Math.ceil(remainingSec)}s remaining`;
+  }
+  const ticker = current_ticker ? ` · scanning <strong>${escapeHtml(current_ticker)}</strong>` : '';
+  if (els.optionsStatus)
+    els.optionsStatus.innerHTML = `Scanning ${done}/${total} (${pct}%) · elapsed ${elapsedTxt}${etaTxt}`;
+  if (els.optionsScanList)
+    els.optionsScanList.innerHTML =
+      `<div class="muted scan-running">Pre-scoring the liquid universe, then running the 5-layer pipeline${ticker}. The page updates every ${SCAN_POLL_MS / 1000}s.</div>`;
+}
+
+async function _pollScanStatus() {
+  try {
+    const res = await fetch('/api/options/scan/status');
+    const state = await res.json().catch(() => ({}));
+    if (state.running) {
+      _renderScanProgress(state);
+      _scanPollTimer = setTimeout(_pollScanStatus, SCAN_POLL_MS);
+      return;
+    }
+    // Finished. Render whatever the server has — last_result if the
+    // scan completed (or was cancelled mid-flight with partial recs),
+    // last_error if it crashed, or an empty-state message otherwise.
+    _setScanRunning(false);
+    if (els.optionsScanBtn && _scanRunPrevBtnTxt != null) {
+      els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
+    }
+    if (state.last_error) {
+      if (els.optionsStatus) els.optionsStatus.textContent = state.last_error;
+      if (els.optionsScanList)
+        els.optionsScanList.innerHTML = `<div class="muted">Scan failed: ${escapeHtml(state.last_error)}</div>`;
+      return;
+    }
+    if (state.last_result) {
+      renderScanResults(state.last_result);
+      if (els.optionsStatus) {
+        const cancelled = state.cancelled ? ' (cancelled — partial results)' : '';
+        els.optionsStatus.textContent = `Done · ${state.done}/${state.total} tickers${cancelled}`;
+      }
+      loadOptionsHistory();
+    }
+  } catch (err) {
+    _setScanRunning(false);
+    if (els.optionsScanBtn && _scanRunPrevBtnTxt != null) {
+      els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
+    }
+    if (els.optionsStatus) els.optionsStatus.textContent = (err && err.message) || 'network error';
+  }
+}
+
 async function runOptionsScan() {
   if (!els.optionsScanBtn) return;
-  const topN = parseInt((els.optionsScanTopN && els.optionsScanTopN.value) || '8', 10);
+  const topN = parseInt((els.optionsScanTopN && els.optionsScanTopN.value) || '25', 10);
   const [dteMin, dteMax] = _readDteRange();
-  const prevTxt = els.optionsScanBtn.textContent;
-  els.optionsScanBtn.disabled = true;
+  if (_scanRunPrevBtnTxt == null) _scanRunPrevBtnTxt = els.optionsScanBtn.textContent;
+  _setScanRunning(true);
   els.optionsScanBtn.textContent = `Scanning ${topN}…`;
-  if (els.optionsLookupBtn) els.optionsLookupBtn.disabled = true;
-  if (els.optionsStatus)
-    els.optionsStatus.textContent = `Running composite-score pipeline on top ${topN} candidates — may take 1-3 minutes…`;
   if (els.optionsScanPanel) els.optionsScanPanel.classList.remove('hidden');
-  if (els.optionsScanList)
-    els.optionsScanList.innerHTML = `<div class="muted scan-running">Pre-scoring the liquid universe, then running the 5-layer pipeline on the top ${topN}. The page will update when the scan completes.</div>`;
+  if (els.optionsStatus) els.optionsStatus.textContent = 'Starting scan…';
   try {
     const res = await fetch('/api/options/scan', {
       method: 'POST',
@@ -3725,26 +3801,60 @@ async function runOptionsScan() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      _setScanRunning(false);
+      els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
       if (els.optionsStatus) els.optionsStatus.textContent = data.error || ('HTTP ' + res.status);
-      if (els.optionsScanList)
-        els.optionsScanList.innerHTML = `<div class="muted">Scan failed: ${escapeHtml(data.error || res.status)}</div>`;
       return;
     }
-    renderScanResults(data);
-    if (els.optionsStatus) els.optionsStatus.textContent = '';
-    loadOptionsHistory();
+    if (data.started === false && !data.running) {
+      // Nothing actually started AND nothing is running — surface the
+      // raw response so it's debuggable.
+      _setScanRunning(false);
+      els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
+      if (els.optionsStatus) els.optionsStatus.textContent = 'Scan did not start (server idle). Try again.';
+      return;
+    }
+    // started=true OR another scan was already in flight — either
+    // way, poll for progress.
+    if (_scanPollTimer) clearTimeout(_scanPollTimer);
+    _pollScanStatus();
   } catch (err) {
+    _setScanRunning(false);
+    els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
     if (els.optionsStatus) els.optionsStatus.textContent = (err && err.message) || 'network error';
-    if (els.optionsScanList)
-      els.optionsScanList.innerHTML = `<div class="muted">Scan failed: ${escapeHtml((err && err.message) || 'network error')}</div>`;
-  } finally {
-    els.optionsScanBtn.disabled = false;
-    els.optionsScanBtn.textContent = prevTxt;
-    if (els.optionsLookupBtn) els.optionsLookupBtn.disabled = false;
+  }
+}
+
+async function cancelOptionsScan() {
+  if (els.optionsScanCancelBtn) els.optionsScanCancelBtn.disabled = true;
+  try {
+    await fetch('/api/options/scan/cancel', { method: 'POST' });
+    if (els.optionsStatus) els.optionsStatus.textContent = 'Cancelling…';
+  } catch (_) { /* poll will surface the next state */ }
+  finally {
+    if (els.optionsScanCancelBtn) els.optionsScanCancelBtn.disabled = false;
   }
 }
 
 if (els.optionsScanBtn) els.optionsScanBtn.addEventListener('click', runOptionsScan);
+if (els.optionsScanCancelBtn) els.optionsScanCancelBtn.addEventListener('click', cancelOptionsScan);
+
+// On page load, ask the server if a scan is already running (e.g. the
+// user kicked one off and reloaded). If so, jump straight to polling
+// so progress picks up where they left it.
+(async () => {
+  try {
+    const res = await fetch('/api/options/scan/status');
+    const state = await res.json();
+    if (state && state.running) {
+      if (els.optionsScanPanel) els.optionsScanPanel.classList.remove('hidden');
+      _setScanRunning(true);
+      _scanRunPrevBtnTxt = els.optionsScanBtn ? els.optionsScanBtn.textContent : 'Scan universe';
+      if (els.optionsScanBtn) els.optionsScanBtn.textContent = `Scanning ${state.top_n}…`;
+      _pollScanStatus();
+    }
+  } catch (_) { /* idle — ignore */ }
+})();
 if (els.optionsScanList) {
   els.optionsScanList.addEventListener('click', (ev) => {
     const card = ev.target.closest('.scan-card');
