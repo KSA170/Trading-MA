@@ -437,6 +437,27 @@
       </div>
     </section>
 
+    <section class="match-history options-panel">
+      <button id="options-toggle" type="button" class="section-toggle" aria-controls="options-body" aria-expanded="true">
+        <span class="chevron">▾</span> Options recommender <span class="muted">(call / put + specific contract for any ticker — informational only, not financial advice)</span>
+      </button>
+      <div id="options-body" class="history-body">
+        <div class="options-lookup">
+          <label class="muted" for="options-ticker">Analyze ticker:</label>
+          <input id="options-ticker" type="text" placeholder="e.g. BTU" autocomplete="off" />
+          <button id="options-lookup-btn" type="button" title="Run the full options pipeline: pick direction (call / put) from momentum + insider + catalyst + sector signals, pick the best contract (15-60 DTE, ~0.35 delta, liquidity-gated), and surface a BUY / WATCH / PASS verdict with rationale.">Analyze</button>
+          <button id="options-clear-btn" type="button" disabled title="Clear the result panel and reset the input.">Clear</button>
+          <span id="options-status" class="muted"></span>
+        </div>
+        <div id="options-result" class="options-result hidden"></div>
+        <div class="options-history">
+          <div class="options-history-header muted">Recent recommendations <span id="options-history-status"></span></div>
+          <div id="options-history-list"></div>
+        </div>
+        <p class="muted options-disclaimer">⚠ Informational only — not financial advice. Options can expire worthless; size positions accordingly and verify all numbers against your broker before placing a trade.</p>
+      </div>
+    </section>
+
     <section class="match-history alerts-rules-panel">
       <button id="rules-toggle" type="button" class="section-toggle" aria-controls="rules-body" aria-expanded="true">
         <span class="chevron">▾</span> Alert rules <span class="muted">(realtime Telegram alerts, checked every ~15 min in market hours)</span>

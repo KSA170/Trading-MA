@@ -946,6 +946,34 @@ def api_momentum_alerts():
     return jsonify({"alerts": scanner_momentum.alerts_for_date(date)})
 
 
+# --- Options recommender --------------------------------------------------
+# Two endpoints. /lookup runs the full pipeline on-demand for a single
+# ticker (1-3s incl. yfinance round-trips); /recommendations reads the
+# persisted output from the nightly scanner (Phase 2). Lookup also
+# persists its result so subsequent /recommendations calls show it.
+
+@app.route("/api/options/lookup", methods=["GET"])
+def api_options_lookup():
+    import options
+    ticker = (request.args.get("ticker") or "").strip()
+    if not ticker:
+        return jsonify({"error": "ticker query param required"}), 400
+    rec = options.recommend_for_ticker(ticker)
+    # Persist non-empty recommendations so they show up alongside any
+    # nightly-scanner results in the "recent" view. PASS-with-no-contract
+    # results aren't worth storing.
+    if rec.get("contract") and rec.get("direction"):
+        options.save_recommendation(rec)
+    return jsonify(rec)
+
+
+@app.route("/api/options/recommendations", methods=["GET"])
+def api_options_recommendations():
+    import options
+    as_of = (request.args.get("date") or "").strip() or None
+    return jsonify({"recommendations": options.load_recommendations(as_of)})
+
+
 @app.route("/api/momentum/alerts/hide", methods=["POST"])
 def api_momentum_alerts_hide():
     """Soft-delete momentum alerts from the panel. Body:
@@ -997,6 +1025,8 @@ snapshots.init()
 alerts.init_tables()
 picker.init_tables()
 scanner_momentum.init_tables()
+import options  # imported here so init_tables runs after snapshots.init
+options.init_tables()
 screener.start_auto_warm()
 
 
