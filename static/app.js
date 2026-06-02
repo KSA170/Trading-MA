@@ -154,6 +154,8 @@ const inputs = {
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
   macd_hist_min: $('#macd_hist_min'),
+  macd_line_min: $('#macd_line_min'),
+  macd_line_max: $('#macd_line_max'),
   turnover_min_pct: $('#turnover_min_pct'),
   turnover_max_pct: $('#turnover_max_pct'),
   pct_change_min: $('#pct_change_min'),
@@ -172,6 +174,7 @@ const toggles = {
   apply_ema_dev: $('#apply_ema_dev'),
   apply_macd: $('#apply_macd'),
   macd_require_rising: $('#macd_require_rising'),
+  apply_macd_line: $('#apply_macd_line'),
   apply_turnover: $('#apply_turnover'),
   apply_pct_change: $('#apply_pct_change'),
 };
@@ -195,6 +198,8 @@ const modalInputs = {
   ema_dev_min_pct: $('#cm_ema_dev_min_pct'),
   ema_dev_max_pct: $('#cm_ema_dev_max_pct'),
   macd_hist_min: $('#cm_macd_hist_min'),
+  macd_line_min: $('#cm_macd_line_min'),
+  macd_line_max: $('#cm_macd_line_max'),
   turnover_min_pct: $('#cm_turnover_min_pct'),
   turnover_max_pct: $('#cm_turnover_max_pct'),
   pct_change_min: $('#cm_pct_change_min'),
@@ -210,6 +215,7 @@ const modalToggles = {
   apply_ema_dev: $('#cm_apply_ema_dev'),
   apply_macd: $('#cm_apply_macd'),
   macd_require_rising: $('#cm_macd_require_rising'),
+  apply_macd_line: $('#cm_apply_macd_line'),
   apply_turnover: $('#cm_apply_turnover'),
   apply_pct_change: $('#cm_apply_pct_change'),
 };
@@ -496,6 +502,7 @@ function syncDisabledStates() {
     apply_price_dev: 'price_dev',
     apply_ema_dev: 'ema_dev',
     apply_macd: 'macd',
+    apply_macd_line: 'macd_line',
     apply_turnover: 'turnover',
     apply_pct_change: 'pct_change',
   };
@@ -1439,17 +1446,38 @@ function drawHoverChart(data) {
   rsi.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
   rsi.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 
-  // Compress the RSI pane (~25% of plot area). setHeight on the small pane
-  // forces pane 0 to absorb the rest.
+  // Pane 2 — MACD(12, 26, 9): line + signal + histogram. The histogram
+  // is the diff between the two lines (MACD − signal); positive bars
+  // green / negative bars red. Zero line dashed grey so the
+  // crossover point is visible at a glance.
+  const macdHist = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
+    priceLineVisible: false, lastValueVisible: false,
+  }, 2);
+  const macdLine = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
+  }, 2);
+  const macdSignal = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+  }, 2);
+  macdHist.setData(rows.filter((r) => r.macd_hist != null).map((r) => ({
+    time: r.time, value: r.macd_hist,
+    color: r.macd_hist >= 0 ? 'rgba(63,185,80,0.6)' : 'rgba(248,81,73,0.6)',
+  })));
+  macdLine.setData(rows.filter((r) => r.macd != null).map((r) => ({ time: r.time, value: r.macd })));
+  macdSignal.setData(rows.filter((r) => r.macd_signal != null).map((r) => ({ time: r.time, value: r.macd_signal })));
+  macdLine.createPriceLine({ price: 0, color: '#6e7681', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
+
+  // Compress the two oscillator panes (~80px each); the price pane
+  // absorbs the rest. Aligning their right-side scale widths keeps the
+  // time axis straight across all three panes.
   const apply = () => {
     try {
       const panes = _hoverChart.panes() || [];
       panes.forEach((p) => {
         try { p.priceScale('right').applyOptions({ minimumWidth: 56 }); } catch (_) {}
       });
-      if (panes.length >= 2 && panes[1].setHeight) {
-        panes[1].setHeight(80);
-      }
+      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(80);
+      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(80);
     } catch (_) { /* ignore */ }
     try { _hoverChart.timeScale().fitContent(); } catch (_) {}
   };
@@ -1759,6 +1787,7 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_price_dev) out.push(`vs EMA21 ${n(p.price_dev_min_pct)}–${n(p.price_dev_max_pct)}%`);
   if (p.apply_ema_dev) out.push(`EMA21 vs EMA50 ${n(p.ema_dev_min_pct)}–${n(p.ema_dev_max_pct)}%`);
   if (p.apply_macd) out.push(`MACD hist ≥ ${n(p.macd_hist_min)}${p.macd_require_rising ? ' & rising' : ''}`);
+  if (p.apply_macd_line) out.push(`MACD line ${n(p.macd_line_min)}–${n(p.macd_line_max)}`);
   if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
   if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
   if (p.apply_turnover) out.push(`Turnover ${n(p.turnover_min_pct)}–${n(p.turnover_max_pct)}%`);
@@ -2101,6 +2130,7 @@ function syncModalDisabled() {
     apply_price_dev: 'cm_price_dev',
     apply_ema_dev: 'cm_ema_dev',
     apply_macd: 'cm_macd',
+    apply_macd_line: 'cm_macd_line',
     apply_turnover: 'cm_turnover',
     apply_pct_change: 'cm_pct_change',
   };

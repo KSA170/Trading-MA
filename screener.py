@@ -1192,6 +1192,8 @@ def evaluate_ticker(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
+    macd_line_min: float = 0.0,
+    macd_line_max: float = 10.0,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
     pct_change_min: float = 5.0,
@@ -1204,6 +1206,7 @@ def evaluate_ticker(
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
+    apply_macd_line: bool = False,
     apply_turnover: bool = False,
     apply_pct_change: bool = False,
     as_of_offset: int = 0,
@@ -1358,6 +1361,14 @@ def evaluate_ticker(
             return None
         if macd_require_rising and not (macd_hist_val > macd_hist_prev):
             return None
+    # MACD line (EMA12 - EMA26) gated by a min/max band — different from
+    # the histogram filter above: this looks at the raw line value,
+    # which is positive when EMA12 > EMA26 (bullish trend) and stays
+    # near zero in ranging tape. macd_line_min = 0 keeps only stocks
+    # in an established uptrend; raising the floor selects stronger
+    # ones, raising the max excludes runaway extensions.
+    if apply_macd_line and not (macd_line_min <= macd_val <= macd_line_max):
+        return None
 
     # Relative volume: eval-bar volume / mean of the prior rvol_lookback bars
     vol_window_start = eval_idx - rvol_lookback
@@ -1462,6 +1473,8 @@ def _evaluate_from_snapshot(
     ema_dev_max_pct: float,
     macd_hist_min: float,
     macd_require_rising: bool,
+    macd_line_min: float,
+    macd_line_max: float,
     turnover_min_pct: float,
     turnover_max_pct: float,
     pct_change_min: float,
@@ -1474,6 +1487,7 @@ def _evaluate_from_snapshot(
     apply_price_dev: bool,
     apply_ema_dev: bool,
     apply_macd: bool,
+    apply_macd_line: bool,
     apply_turnover: bool,
     apply_pct_change: bool,
 ) -> ScreenHit | None:
@@ -1593,6 +1607,14 @@ def _evaluate_from_snapshot(
             return None
         if macd_require_rising and not (macd_hist_val > macd_hist_prev):
             return None
+    # MACD line (EMA12 - EMA26) gated by a min/max band — different from
+    # the histogram filter above: this looks at the raw line value,
+    # which is positive when EMA12 > EMA26 (bullish trend) and stays
+    # near zero in ranging tape. macd_line_min = 0 keeps only stocks
+    # in an established uptrend; raising the floor selects stronger
+    # ones, raising the max excludes runaway extensions.
+    if apply_macd_line and not (macd_line_min <= macd_val <= macd_line_max):
+        return None
 
     # Relative volume — recompute against the user-specified lookback (the
     # `avg_volume` column in the snapshot is fixed to 10d; we need the
@@ -1696,6 +1718,8 @@ def run_screen(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
+    macd_line_min: float = 0.0,
+    macd_line_max: float = 10.0,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
     pct_change_min: float = 5.0,
@@ -1708,6 +1732,7 @@ def run_screen(
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
+    apply_macd_line: bool = False,
     apply_turnover: bool = False,
     apply_pct_change: bool = False,
     as_of_offset: int = 0,
@@ -1764,6 +1789,8 @@ def run_screen(
                         ema_dev_max_pct=ema_dev_max_pct,
                         macd_hist_min=macd_hist_min,
                         macd_require_rising=macd_require_rising,
+                        macd_line_min=macd_line_min,
+                        macd_line_max=macd_line_max,
                         turnover_min_pct=turnover_min_pct,
                         turnover_max_pct=turnover_max_pct,
                         pct_change_min=pct_change_min,
@@ -1775,6 +1802,7 @@ def run_screen(
                         apply_price_dev=apply_price_dev,
                         apply_ema_dev=apply_ema_dev,
                         apply_macd=apply_macd,
+                        apply_macd_line=apply_macd_line,
                         apply_turnover=apply_turnover,
                         apply_pct_change=apply_pct_change,
                     )
@@ -1811,6 +1839,8 @@ def run_screen(
                 ema_dev_max_pct=ema_dev_max_pct,
                 macd_hist_min=macd_hist_min,
                 macd_require_rising=macd_require_rising,
+                macd_line_min=macd_line_min,
+                macd_line_max=macd_line_max,
                 turnover_min_pct=turnover_min_pct,
                 turnover_max_pct=turnover_max_pct,
                 pct_change_min=pct_change_min,
@@ -1823,6 +1853,7 @@ def run_screen(
                 apply_price_dev=apply_price_dev,
                 apply_ema_dev=apply_ema_dev,
                 apply_macd=apply_macd,
+                apply_macd_line=apply_macd_line,
                 apply_turnover=apply_turnover,
                 apply_pct_change=apply_pct_change,
                 as_of_offset=as_of_offset,
@@ -1871,8 +1902,8 @@ def reference_dates(n: int = 21) -> list[dict]:
 # --- chart payload ---------------------------------------------------------
 
 def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
-    """Daily OHLCV + EMA(21)/EMA(50) + RSI(14)/9d-SMA-of-RSI for the hover
-    chart. No MACD — that pane was dropped from the UI."""
+    """Daily OHLCV + EMA(21)/EMA(50) + RSI(14)/9d-SMA-of-RSI +
+    MACD(12, 26, 9) — line, signal, histogram — for the hover chart."""
     df = _cached_history(ticker, period=period)
     if df is None or df.empty:
         return None
@@ -1882,6 +1913,12 @@ def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
     df["EMA50"] = ema(df["Close"], 50)
     df["RSI"] = rsi_wilder(df["Close"], 14)
     df["RSI_SMA9"] = df["RSI"].rolling(window=9, min_periods=9).mean()
+    # MACD(12, 26, 9) — same recipe used in the snapshot builder / screener.
+    macd_line = ema(df["Close"], 12) - ema(df["Close"], 26)
+    macd_signal = ema(macd_line, 9)
+    df["MACD"] = macd_line
+    df["MACD_SIGNAL"] = macd_signal
+    df["MACD_HIST"] = macd_line - macd_signal
 
     rows = []
     for idx, r in df.iterrows():
@@ -1896,6 +1933,9 @@ def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
             "ema50": _safe(r["EMA50"]),
             "rsi": _safe(r["RSI"]),
             "rsi_sma9": _safe(r["RSI_SMA9"]),
+            "macd": _safe(r["MACD"]),
+            "macd_signal": _safe(r["MACD_SIGNAL"]),
+            "macd_hist": _safe(r["MACD_HIST"]),
         })
     return {
         "ticker": display_symbol(ticker),
@@ -1942,6 +1982,8 @@ def diagnose_ticker(
     ema_dev_max_pct: float = 3.0,
     macd_hist_min: float = 0.0,
     macd_require_rising: bool = True,
+    macd_line_min: float = 0.0,
+    macd_line_max: float = 10.0,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
     pct_change_min: float = 5.0,
@@ -1954,6 +1996,7 @@ def diagnose_ticker(
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd: bool = True,
+    apply_macd_line: bool = False,
     apply_turnover: bool = False,
     apply_pct_change: bool = False,
     as_of_offset: int = 0,
@@ -2154,6 +2197,15 @@ def diagnose_ticker(
         apply_macd, macd_ok, None,
         {"prev_hist": round(macd_hist_prev, 4) if macd_hist_prev is not None else None,
          "rising": macd_hist_val is not None and macd_hist_prev is not None and macd_hist_val > macd_hist_prev})
+
+    # 7b. MACD line (EMA12 - EMA26) range
+    macd_line_val = _scalar("macd")
+    macd_line_ok = (macd_line_val is not None
+                    and macd_line_min <= macd_line_val <= macd_line_max)
+    add("macd_line",
+        f"MACD(12, 26) line ∈ [{macd_line_min}, {macd_line_max}]",
+        round(macd_line_val, 4) if macd_line_val is not None else None,
+        apply_macd_line, macd_line_ok, [macd_line_min, macd_line_max], None)
 
     # 8. Relative volume
     vol_window_start = eval_idx - rvol_lookback
