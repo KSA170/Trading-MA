@@ -177,8 +177,8 @@ const inputs = {
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
   macd_hist_min: $('#macd_hist_min'),
-  macd_dev_pct_min: $('#macd_dev_pct_min'),
-  macd_dev_pct_max: $('#macd_dev_pct_max'),
+  macd_vs_signal_mode: $('#macd_vs_signal_mode'),
+  macd_vs_signal_pct: $('#macd_vs_signal_pct'),
   turnover_min_pct: $('#turnover_min_pct'),
   turnover_max_pct: $('#turnover_max_pct'),
   pct_change_min: $('#pct_change_min'),
@@ -197,7 +197,8 @@ const toggles = {
   apply_ema_dev: $('#apply_ema_dev'),
   apply_macd: $('#apply_macd'),
   macd_require_rising: $('#macd_require_rising'),
-  apply_macd_dev_pct: $('#apply_macd_dev_pct'),
+  apply_macd_vs_signal: $('#apply_macd_vs_signal'),
+  macd_line_rising: $('#macd_line_rising'),
   apply_turnover: $('#apply_turnover'),
   apply_pct_change: $('#apply_pct_change'),
 };
@@ -221,8 +222,8 @@ const modalInputs = {
   ema_dev_min_pct: $('#cm_ema_dev_min_pct'),
   ema_dev_max_pct: $('#cm_ema_dev_max_pct'),
   macd_hist_min: $('#cm_macd_hist_min'),
-  macd_dev_pct_min: $('#cm_macd_dev_pct_min'),
-  macd_dev_pct_max: $('#cm_macd_dev_pct_max'),
+  macd_vs_signal_mode: $('#cm_macd_vs_signal_mode'),
+  macd_vs_signal_pct: $('#cm_macd_vs_signal_pct'),
   turnover_min_pct: $('#cm_turnover_min_pct'),
   turnover_max_pct: $('#cm_turnover_max_pct'),
   pct_change_min: $('#cm_pct_change_min'),
@@ -238,7 +239,8 @@ const modalToggles = {
   apply_ema_dev: $('#cm_apply_ema_dev'),
   apply_macd: $('#cm_apply_macd'),
   macd_require_rising: $('#cm_macd_require_rising'),
-  apply_macd_dev_pct: $('#cm_apply_macd_dev_pct'),
+  apply_macd_vs_signal: $('#cm_apply_macd_vs_signal'),
+  macd_line_rising: $('#cm_macd_line_rising'),
   apply_turnover: $('#cm_apply_turnover'),
   apply_pct_change: $('#cm_apply_pct_change'),
 };
@@ -525,7 +527,7 @@ function syncDisabledStates() {
     apply_price_dev: 'price_dev',
     apply_ema_dev: 'ema_dev',
     apply_macd: 'macd',
-    apply_macd_dev_pct: 'macd_dev_pct',
+    apply_macd_vs_signal: 'macd_vs_signal',
     apply_turnover: 'turnover',
     apply_pct_change: 'pct_change',
   };
@@ -1338,11 +1340,14 @@ function escapeHtml(s) {
 
 const HOVER_DELAY_MS = 220;
 const HOVER_W = 900;
-const HOVER_H = 720;
-// Heights for the two oscillator panes (RSI, MACD) — pane 0 (price+vol)
-// absorbs the remainder of the chart container.
-const HOVER_PANE_RSI_H  = 130;
-const HOVER_PANE_MACD_H = 130;
+const HOVER_H = 760;
+// Heights for the two oscillator panes. Pane order is Price (pane 0,
+// remainder) → MACD (pane 1) → RSI (pane 2, bottom). RSI gets slightly
+// more room since its 0-100 range needs the vertical real estate to
+// stay legible — that was the issue with the previous layout where RSI
+// got compressed.
+const HOVER_PANE_MACD_H = 150;
+const HOVER_PANE_RSI_H  = 160;
 const _chartCache = new Map();
 let _hoverChart = null;
 let _hoverShowTimer = null;
@@ -1461,31 +1466,19 @@ function drawHoverChart(data) {
     color: r.close >= r.open ? 'rgba(63,185,80,0.4)' : 'rgba(248,81,73,0.4)',
   })));
 
-  // Pane 1 — RSI(14) + 9d SMA of RSI
-  const rsi = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
-  }, 1);
-  const rsiSma = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-  }, 1);
-  rsi.setData(rows.filter((r) => r.rsi != null).map((r) => ({ time: r.time, value: r.rsi })));
-  rsiSma.setData(rows.filter((r) => r.rsi_sma9 != null).map((r) => ({ time: r.time, value: r.rsi_sma9 })));
-  rsi.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
-  rsi.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
-
-  // Pane 2 — MACD(12, 26, 9): line + signal + histogram. The histogram
+  // Pane 1 — MACD(12, 26, 9): line + signal + histogram. The histogram
   // is the diff between the two lines (MACD − signal); positive bars
   // green / negative bars red. Zero line dashed grey so the
   // crossover point is visible at a glance.
   const macdHist = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
     priceLineVisible: false, lastValueVisible: false,
-  }, 2);
+  }, 1);
   const macdLine = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
-  }, 2);
+  }, 1);
   const macdSignal = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-  }, 2);
+  }, 1);
   macdHist.setData(rows.filter((r) => r.macd_hist != null).map((r) => ({
     time: r.time, value: r.macd_hist,
     color: r.macd_hist >= 0 ? 'rgba(63,185,80,0.6)' : 'rgba(248,81,73,0.6)',
@@ -1493,6 +1486,20 @@ function drawHoverChart(data) {
   macdLine.setData(rows.filter((r) => r.macd != null).map((r) => ({ time: r.time, value: r.macd })));
   macdSignal.setData(rows.filter((r) => r.macd_signal != null).map((r) => ({ time: r.time, value: r.macd_signal })));
   macdLine.createPriceLine({ price: 0, color: '#6e7681', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
+
+  // Pane 2 — RSI(14) + 9d SMA of RSI. Bottom pane (was middle before);
+  // gets the most height since the 0-100 range needs vertical space to
+  // distinguish 30/70 bands from the line.
+  const rsi = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
+  }, 2);
+  const rsiSma = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+  }, 2);
+  rsi.setData(rows.filter((r) => r.rsi != null).map((r) => ({ time: r.time, value: r.rsi })));
+  rsiSma.setData(rows.filter((r) => r.rsi_sma9 != null).map((r) => ({ time: r.time, value: r.rsi_sma9 })));
+  rsi.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
+  rsi.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 
   // Compress the two oscillator panes; the price pane absorbs the rest.
   // Aligning right-side scale widths keeps the time axis straight across
@@ -1505,8 +1512,8 @@ function drawHoverChart(data) {
       panes.forEach((p) => {
         try { p.priceScale('right').applyOptions({ minimumWidth: 56 }); } catch (_) {}
       });
-      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(HOVER_PANE_RSI_H);
-      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(HOVER_PANE_MACD_H);
+      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(HOVER_PANE_MACD_H);
+      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(HOVER_PANE_RSI_H);
     } catch (_) { /* ignore */ }
     try { _hoverChart.timeScale().fitContent(); } catch (_) {}
     positionPaneLabels();
@@ -1517,14 +1524,14 @@ function drawHoverChart(data) {
 }
 
 // Each pane gets a small label in its top-left corner ("Price · EMA21 ·
-// EMA50 · Volume", "RSI(14) · 9d SMA", "MACD(12, 26, 9)"). Lightweight-
+// EMA50 · Volume", "MACD(12, 26, 9)", "RSI(14) · 9d SMA"). Lightweight-
 // charts has no native title support, and it wipes its container on
 // dispose — so the spans live as siblings of #hover-chart-container
 // (inside #hover-chart) and are positioned relative to the popup
-// wrapper. Heights track HOVER_PANE_RSI_H / HOVER_PANE_MACD_H — pane 0
-// sits at the top of the container, pane 1 at (containerH - rsi -
-// macd), pane 2 at (containerH - macd). The container's offsetTop
-// from the popup gives us the y origin.
+// wrapper. Pane 0 (Price) sits at the top of the container, pane 1
+// (MACD) at (containerH - macd_h - rsi_h), pane 2 (RSI) at
+// (containerH - rsi_h). The container's offsetTop from the popup gives
+// us the y origin.
 function positionPaneLabels() {
   if (!els.hoverChartContainer) return;
   const containerH = els.hoverChartContainer.clientHeight;
@@ -1534,8 +1541,8 @@ function positionPaneLabels() {
   const pane1 = document.getElementById('hover-pane-label-1');
   const pane2 = document.getElementById('hover-pane-label-2');
   if (pane0) pane0.style.top = (containerTop + 6) + 'px';
-  if (pane1) pane1.style.top = (containerTop + containerH - HOVER_PANE_RSI_H - HOVER_PANE_MACD_H + 4) + 'px';
-  if (pane2) pane2.style.top = (containerTop + containerH - HOVER_PANE_MACD_H + 4) + 'px';
+  if (pane1) pane1.style.top = (containerTop + containerH - HOVER_PANE_MACD_H - HOVER_PANE_RSI_H + 4) + 'px';
+  if (pane2) pane2.style.top = (containerTop + containerH - HOVER_PANE_RSI_H + 4) + 'px';
 }
 
 function onTickerEnter(ev) {
@@ -1839,7 +1846,12 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_price_dev) out.push(`vs EMA21 ${n(p.price_dev_min_pct)}–${n(p.price_dev_max_pct)}%`);
   if (p.apply_ema_dev) out.push(`EMA21 vs EMA50 ${n(p.ema_dev_min_pct)}–${n(p.ema_dev_max_pct)}%`);
   if (p.apply_macd) out.push(`MACD hist ≥ ${n(p.macd_hist_min)}${p.macd_require_rising ? ' & rising' : ''}`);
-  if (p.apply_macd_dev_pct) out.push(`MACD %dev ${n(p.macd_dev_pct_min)}%–${n(p.macd_dev_pct_max)}%`);
+  if (p.apply_macd_vs_signal) {
+    const mode = p.macd_vs_signal_mode === 'above_signal'
+      ? 'MACD ≥ signal'
+      : `MACD within ${n(p.macd_vs_signal_pct)}% of signal`;
+    out.push(mode + (p.macd_line_rising ? ' + rising' : ''));
+  }
   if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
   if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
   if (p.apply_turnover) out.push(`Turnover ${n(p.turnover_min_pct)}–${n(p.turnover_max_pct)}%`);
@@ -2182,7 +2194,7 @@ function syncModalDisabled() {
     apply_price_dev: 'cm_price_dev',
     apply_ema_dev: 'cm_ema_dev',
     apply_macd: 'cm_macd',
-    apply_macd_dev_pct: 'cm_macd_dev_pct',
+    apply_macd_vs_signal: 'cm_macd_vs_signal',
     apply_turnover: 'cm_turnover',
     apply_pct_change: 'cm_pct_change',
   };

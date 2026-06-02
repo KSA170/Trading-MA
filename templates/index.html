@@ -155,15 +155,21 @@
       </div>
     </div>
 
-    <div class="filter-group" data-group="macd_dev_pct" title="MACD line % deviation from its 9-day SMA (the signal line). Formula: (MACD − signal) / |signal| × 100. Sign matches the histogram — positive = MACD above signal (bullish divergence), negative = below. Scale-invariant across price levels. Narrow windows like ±5% isolate near-crossover setups; wider asymmetric windows like +30% to +100% isolate strong, established momentum.">
-      <label class="group-toggle"><input type="checkbox" id="apply_macd_dev_pct" /> MACD(12, 26) % deviation from signal</label>
+    <div class="filter-group" data-group="macd_vs_signal" title="MACD line relative to its 9-day SMA (the signal line).&#10;&#10;Condition modes:&#10;  • Within X% of signal — |MACD − signal| / |signal| × 100 ≤ X. Isolates near-crossover setups (about to flip in either direction).&#10;  • MACD at or above signal — MACD ≥ signal. Bullish crossover already in place.&#10;&#10;Optional: 'require MACD line rising' (today's MACD > yesterday's) — slope confirmation, independent of the mode above.">
+      <label class="group-toggle"><input type="checkbox" id="apply_macd_vs_signal" /> MACD vs signal line</label>
       <div class="filter">
-        <label>min %</label>
-        <input id="macd_dev_pct_min" type="number" step="1" value="-50" />
+        <label>condition</label>
+        <select id="macd_vs_signal_mode">
+          <option value="within_pct" selected>Within X% of signal</option>
+          <option value="above_signal">MACD ≥ signal</option>
+        </select>
       </div>
       <div class="filter">
-        <label>max %</label>
-        <input id="macd_dev_pct_max" type="number" step="1" value="50" />
+        <label>X (max gap %)</label>
+        <input id="macd_vs_signal_pct" type="number" step="0.5" min="0" value="5" />
+      </div>
+      <div class="filter inline-toggle">
+        <label class="inline-checkbox"><input type="checkbox" id="macd_line_rising" /> require MACD line rising</label>
       </div>
     </div>
 
@@ -481,8 +487,8 @@
     </div>
     <div id="hover-chart-container" class="hover-chart-container"></div>
     <span id="hover-pane-label-0" class="hover-pane-label">Price · EMA21 · EMA50 · Volume</span>
-    <span id="hover-pane-label-1" class="hover-pane-label">RSI(14) · 9d SMA</span>
-    <span id="hover-pane-label-2" class="hover-pane-label">MACD(12, 26, 9)</span>
+    <span id="hover-pane-label-1" class="hover-pane-label">MACD(12, 26, 9)</span>
+    <span id="hover-pane-label-2" class="hover-pane-label">RSI(14) · 9d SMA</span>
     <div class="hover-chart-legend">
       <span><span class="dot dot-ema21"></span> EMA 21</span>
       <span><span class="dot dot-ema50"></span> EMA 50</span>
@@ -609,10 +615,17 @@
             <div class="filter inline-toggle"><label class="inline-checkbox"><input type="checkbox" id="cm_macd_require_rising" checked /> require rising</label></div>
           </div>
 
-          <div class="filter-group" data-group="cm_macd_dev_pct">
-            <label class="group-toggle"><input type="checkbox" id="cm_apply_macd_dev_pct" /> MACD(12, 26) % deviation from signal</label>
-            <div class="filter"><label>min %</label><input id="cm_macd_dev_pct_min" type="number" step="1" value="-50" /></div>
-            <div class="filter"><label>max %</label><input id="cm_macd_dev_pct_max" type="number" step="1" value="50" /></div>
+          <div class="filter-group" data-group="cm_macd_vs_signal">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_macd_vs_signal" /> MACD vs signal line</label>
+            <div class="filter">
+              <label>condition</label>
+              <select id="cm_macd_vs_signal_mode">
+                <option value="within_pct" selected>Within X% of signal</option>
+                <option value="above_signal">MACD ≥ signal</option>
+              </select>
+            </div>
+            <div class="filter"><label>X (max gap %)</label><input id="cm_macd_vs_signal_pct" type="number" step="0.5" min="0" value="5" /></div>
+            <div class="filter inline-toggle"><label class="inline-checkbox"><input type="checkbox" id="cm_macd_line_rising" /> require MACD line rising</label></div>
           </div>
 
           <div class="filter-group" data-group="cm_rvol">
