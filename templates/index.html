@@ -155,15 +155,15 @@
       </div>
     </div>
 
-    <div class="filter-group" data-group="macd_line" title="MACD(12, 26) line value = EMA12 − EMA26. Positive when the short-term EMA is above the long-term EMA (uptrend); near zero in ranging tape. Off by default since the scale varies with price — enable to narrow the universe to stocks in a clear trend.">
-      <label class="group-toggle"><input type="checkbox" id="apply_macd_line" /> MACD(12, 26) line range</label>
+    <div class="filter-group" data-group="macd_dev_pct" title="MACD line % deviation from its 9-day SMA (the signal line). Formula: (MACD − signal) / |signal| × 100. Sign matches the histogram — positive = MACD above signal (bullish divergence), negative = below. Scale-invariant across price levels. Narrow windows like ±5% isolate near-crossover setups; wider asymmetric windows like +30% to +100% isolate strong, established momentum.">
+      <label class="group-toggle"><input type="checkbox" id="apply_macd_dev_pct" /> MACD(12, 26) % deviation from signal</label>
       <div class="filter">
-        <label>min</label>
-        <input id="macd_line_min" type="number" step="0.05" value="0" />
+        <label>min %</label>
+        <input id="macd_dev_pct_min" type="number" step="1" value="-50" />
       </div>
       <div class="filter">
-        <label>max</label>
-        <input id="macd_line_max" type="number" step="0.05" value="10" />
+        <label>max %</label>
+        <input id="macd_dev_pct_max" type="number" step="1" value="50" />
       </div>
     </div>
 
@@ -480,11 +480,16 @@
       <span id="hover-chart-status" class="muted"></span>
     </div>
     <div id="hover-chart-container" class="hover-chart-container"></div>
+    <span id="hover-pane-label-0" class="hover-pane-label">Price · EMA21 · EMA50 · Volume</span>
+    <span id="hover-pane-label-1" class="hover-pane-label">RSI(14) · 9d SMA</span>
+    <span id="hover-pane-label-2" class="hover-pane-label">MACD(12, 26, 9)</span>
     <div class="hover-chart-legend">
       <span><span class="dot dot-ema21"></span> EMA 21</span>
       <span><span class="dot dot-ema50"></span> EMA 50</span>
       <span><span class="dot dot-rsi"></span> RSI(14)</span>
-      <span><span class="dot dot-rsi9"></span> 9d SMA</span>
+      <span><span class="dot dot-rsi9"></span> RSI 9d SMA</span>
+      <span><span class="dot dot-macd"></span> MACD</span>
+      <span><span class="dot dot-macd-sig"></span> MACD signal (9d SMA)</span>
     </div>
   </div>
 
@@ -604,10 +609,10 @@
             <div class="filter inline-toggle"><label class="inline-checkbox"><input type="checkbox" id="cm_macd_require_rising" checked /> require rising</label></div>
           </div>
 
-          <div class="filter-group" data-group="cm_macd_line">
-            <label class="group-toggle"><input type="checkbox" id="cm_apply_macd_line" /> MACD(12, 26) line range</label>
-            <div class="filter"><label>min</label><input id="cm_macd_line_min" type="number" step="0.05" value="0" /></div>
-            <div class="filter"><label>max</label><input id="cm_macd_line_max" type="number" step="0.05" value="10" /></div>
+          <div class="filter-group" data-group="cm_macd_dev_pct">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_macd_dev_pct" /> MACD(12, 26) % deviation from signal</label>
+            <div class="filter"><label>min %</label><input id="cm_macd_dev_pct_min" type="number" step="1" value="-50" /></div>
+            <div class="filter"><label>max %</label><input id="cm_macd_dev_pct_max" type="number" step="1" value="50" /></div>
           </div>
 
           <div class="filter-group" data-group="cm_rvol">

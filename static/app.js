@@ -177,8 +177,8 @@ const inputs = {
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
   macd_hist_min: $('#macd_hist_min'),
-  macd_line_min: $('#macd_line_min'),
-  macd_line_max: $('#macd_line_max'),
+  macd_dev_pct_min: $('#macd_dev_pct_min'),
+  macd_dev_pct_max: $('#macd_dev_pct_max'),
   turnover_min_pct: $('#turnover_min_pct'),
   turnover_max_pct: $('#turnover_max_pct'),
   pct_change_min: $('#pct_change_min'),
@@ -197,7 +197,7 @@ const toggles = {
   apply_ema_dev: $('#apply_ema_dev'),
   apply_macd: $('#apply_macd'),
   macd_require_rising: $('#macd_require_rising'),
-  apply_macd_line: $('#apply_macd_line'),
+  apply_macd_dev_pct: $('#apply_macd_dev_pct'),
   apply_turnover: $('#apply_turnover'),
   apply_pct_change: $('#apply_pct_change'),
 };
@@ -221,8 +221,8 @@ const modalInputs = {
   ema_dev_min_pct: $('#cm_ema_dev_min_pct'),
   ema_dev_max_pct: $('#cm_ema_dev_max_pct'),
   macd_hist_min: $('#cm_macd_hist_min'),
-  macd_line_min: $('#cm_macd_line_min'),
-  macd_line_max: $('#cm_macd_line_max'),
+  macd_dev_pct_min: $('#cm_macd_dev_pct_min'),
+  macd_dev_pct_max: $('#cm_macd_dev_pct_max'),
   turnover_min_pct: $('#cm_turnover_min_pct'),
   turnover_max_pct: $('#cm_turnover_max_pct'),
   pct_change_min: $('#cm_pct_change_min'),
@@ -238,7 +238,7 @@ const modalToggles = {
   apply_ema_dev: $('#cm_apply_ema_dev'),
   apply_macd: $('#cm_apply_macd'),
   macd_require_rising: $('#cm_macd_require_rising'),
-  apply_macd_line: $('#cm_apply_macd_line'),
+  apply_macd_dev_pct: $('#cm_apply_macd_dev_pct'),
   apply_turnover: $('#cm_apply_turnover'),
   apply_pct_change: $('#cm_apply_pct_change'),
 };
@@ -525,7 +525,7 @@ function syncDisabledStates() {
     apply_price_dev: 'price_dev',
     apply_ema_dev: 'ema_dev',
     apply_macd: 'macd',
-    apply_macd_line: 'macd_line',
+    apply_macd_dev_pct: 'macd_dev_pct',
     apply_turnover: 'turnover',
     apply_pct_change: 'pct_change',
   };
@@ -1337,8 +1337,12 @@ function escapeHtml(s) {
 // instant.
 
 const HOVER_DELAY_MS = 220;
-const HOVER_W = 820;
-const HOVER_H = 520;
+const HOVER_W = 900;
+const HOVER_H = 720;
+// Heights for the two oscillator panes (RSI, MACD) — pane 0 (price+vol)
+// absorbs the remainder of the chart container.
+const HOVER_PANE_RSI_H  = 130;
+const HOVER_PANE_MACD_H = 130;
 const _chartCache = new Map();
 let _hoverChart = null;
 let _hoverShowTimer = null;
@@ -1490,23 +1494,48 @@ function drawHoverChart(data) {
   macdSignal.setData(rows.filter((r) => r.macd_signal != null).map((r) => ({ time: r.time, value: r.macd_signal })));
   macdLine.createPriceLine({ price: 0, color: '#6e7681', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 
-  // Compress the two oscillator panes (~80px each); the price pane
-  // absorbs the rest. Aligning their right-side scale widths keeps the
-  // time axis straight across all three panes.
+  // Compress the two oscillator panes; the price pane absorbs the rest.
+  // Aligning right-side scale widths keeps the time axis straight across
+  // all three panes. Pane labels are absolutely positioned over the
+  // chart container in CSS — their top offsets depend on these heights
+  // so we recompute on each apply().
   const apply = () => {
     try {
       const panes = _hoverChart.panes() || [];
       panes.forEach((p) => {
         try { p.priceScale('right').applyOptions({ minimumWidth: 56 }); } catch (_) {}
       });
-      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(80);
-      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(80);
+      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(HOVER_PANE_RSI_H);
+      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(HOVER_PANE_MACD_H);
     } catch (_) { /* ignore */ }
     try { _hoverChart.timeScale().fitContent(); } catch (_) {}
+    positionPaneLabels();
   };
   apply();
   requestAnimationFrame(apply);
   setTimeout(apply, 80);
+}
+
+// Each pane gets a small label in its top-left corner ("Price · EMA21 ·
+// EMA50 · Volume", "RSI(14) · 9d SMA", "MACD(12, 26, 9)"). Lightweight-
+// charts has no native title support, and it wipes its container on
+// dispose — so the spans live as siblings of #hover-chart-container
+// (inside #hover-chart) and are positioned relative to the popup
+// wrapper. Heights track HOVER_PANE_RSI_H / HOVER_PANE_MACD_H — pane 0
+// sits at the top of the container, pane 1 at (containerH - rsi -
+// macd), pane 2 at (containerH - macd). The container's offsetTop
+// from the popup gives us the y origin.
+function positionPaneLabels() {
+  if (!els.hoverChartContainer) return;
+  const containerH = els.hoverChartContainer.clientHeight;
+  if (!containerH) return;
+  const containerTop = els.hoverChartContainer.offsetTop;
+  const pane0 = document.getElementById('hover-pane-label-0');
+  const pane1 = document.getElementById('hover-pane-label-1');
+  const pane2 = document.getElementById('hover-pane-label-2');
+  if (pane0) pane0.style.top = (containerTop + 6) + 'px';
+  if (pane1) pane1.style.top = (containerTop + containerH - HOVER_PANE_RSI_H - HOVER_PANE_MACD_H + 4) + 'px';
+  if (pane2) pane2.style.top = (containerTop + containerH - HOVER_PANE_MACD_H + 4) + 'px';
 }
 
 function onTickerEnter(ev) {
@@ -1810,7 +1839,7 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_price_dev) out.push(`vs EMA21 ${n(p.price_dev_min_pct)}–${n(p.price_dev_max_pct)}%`);
   if (p.apply_ema_dev) out.push(`EMA21 vs EMA50 ${n(p.ema_dev_min_pct)}–${n(p.ema_dev_max_pct)}%`);
   if (p.apply_macd) out.push(`MACD hist ≥ ${n(p.macd_hist_min)}${p.macd_require_rising ? ' & rising' : ''}`);
-  if (p.apply_macd_line) out.push(`MACD line ${n(p.macd_line_min)}–${n(p.macd_line_max)}`);
+  if (p.apply_macd_dev_pct) out.push(`MACD %dev ${n(p.macd_dev_pct_min)}%–${n(p.macd_dev_pct_max)}%`);
   if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
   if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
   if (p.apply_turnover) out.push(`Turnover ${n(p.turnover_min_pct)}–${n(p.turnover_max_pct)}%`);
@@ -2153,7 +2182,7 @@ function syncModalDisabled() {
     apply_price_dev: 'cm_price_dev',
     apply_ema_dev: 'cm_ema_dev',
     apply_macd: 'cm_macd',
-    apply_macd_line: 'cm_macd_line',
+    apply_macd_dev_pct: 'cm_macd_dev_pct',
     apply_turnover: 'cm_turnover',
     apply_pct_change: 'cm_pct_change',
   };
