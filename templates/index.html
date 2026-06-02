@@ -656,9 +656,18 @@
           <input id="options-dte-max" type="number" min="2" max="365" step="1" value="60" />
         </div>
         <div class="options-control options-actions">
-          <button id="options-lookup-btn" type="button" class="primary" title="Run the composite-score pipeline: 5 weighted layers → composite 0-100 → verdict + contract + prose rationale.">Analyze</button>
+          <button id="options-lookup-btn" type="button" class="primary" title="Run the composite-score pipeline on the ticker above.">Analyze</button>
           <button id="options-clear-btn" type="button" disabled title="Clear the result panel and reset the input.">Clear</button>
           <button id="options-reset-dte-btn" type="button" title="Reset DTE range to default 15-60.">Reset DTE</button>
+        </div>
+        <div class="options-control options-scan-actions">
+          <button id="options-scan-btn" type="button" title="Scan the liquid snapshot universe with the composite-score pipeline. Independent of the stock screener — finds long-call AND long-put setups. ~1-2 min for the default top 8.">Scan universe</button>
+          <select id="options-scan-topn" title="How many top pre-scored candidates to run through the full pipeline.">
+            <option value="5">top 5 (~1 min)</option>
+            <option value="8" selected>top 8 (~2 min)</option>
+            <option value="15">top 15 (~3 min)</option>
+            <option value="25">top 25 (~5 min)</option>
+          </select>
         </div>
         <div class="options-control options-status-wrap">
           <span id="options-status" class="muted"></span>
@@ -666,6 +675,15 @@
       </div>
 
       <div id="options-result" class="options-result hidden"></div>
+
+      <section class="match-history options-scan-panel hidden" id="options-scan-panel">
+        <button id="options-scan-toggle" type="button" class="section-toggle" aria-controls="options-scan-body" aria-expanded="true">
+          <span class="chevron">▾</span> Scan results <span class="muted" id="options-scan-summary"></span>
+        </button>
+        <div id="options-scan-body" class="history-body">
+          <div id="options-scan-list"></div>
+        </div>
+      </section>
 
       <section class="match-history options-history-panel">
         <button id="options-history-toggle" type="button" class="section-toggle" aria-controls="options-history-body" aria-expanded="true">

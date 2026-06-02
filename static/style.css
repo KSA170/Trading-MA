@@ -1781,3 +1781,93 @@ button.hidden { display: none; }
   font-size: 11px;
   background: var(--panel);
 }
+
+/* --- Options universe scanner ----------------------------------------- */
+.options-scan-actions { flex-direction: row; align-items: stretch; gap: 8px; }
+#options-scan-btn {
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+#options-scan-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--panel);
+}
+#options-scan-btn:disabled { opacity: 0.6; cursor: default; }
+#options-scan-topn {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.options-scan-panel { margin-top: 16px; }
+.options-scan-panel.hidden { display: none; }
+.scan-running, .scan-empty {
+  padding: 14px;
+  font-size: 12px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.scan-card {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  cursor: pointer;
+  font-size: 13px;
+}
+.scan-card:hover { border-color: var(--accent); }
+.scan-card.verdict-buy   { border-left: 4px solid var(--green); }
+.scan-card.verdict-watch { border-left: 4px solid var(--yellow); }
+.scan-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+.scan-card.verdict-buy   .scan-card-head .scan-verdict { color: var(--green); }
+.scan-card.verdict-watch .scan-card-head .scan-verdict { color: var(--yellow); }
+.scan-ticker { font-size: 15px; }
+.scan-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-weight: 600;
+}
+.scan-badge.badge-override {
+  background: rgba(210, 169, 34, 0.18);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+.scan-badge.badge-warn {
+  background: rgba(248, 81, 73, 0.12);
+  border-color: var(--red);
+  color: var(--red);
+}
+.scan-card-contract {
+  padding: 4px 0;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.scan-card-prose {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-left: 2px solid var(--accent);
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}

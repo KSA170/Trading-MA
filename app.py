@@ -980,6 +980,28 @@ def api_options_recommendations():
     return jsonify({"recommendations": options.load_recommendations(as_of)})
 
 
+@app.route("/api/options/scan", methods=["POST"])
+def api_options_scan():
+    """Manual trigger for the options universe scanner. Synchronous —
+    request returns when the scan finishes (~1-2 min at the default
+    top_n=8). Body JSON (all optional):
+       {"top_n": 8, "dte_min": 15, "dte_max": 60}"""
+    import options_scanner
+    body = request.get_json(silent=True) or {}
+    try:
+        top_n   = int(body.get("top_n",   options_scanner.DEFAULT_MANUAL_TOP_N))
+        dte_min = int(body.get("dte_min", 15))
+        dte_max = int(body.get("dte_max", 60))
+    except (TypeError, ValueError):
+        return jsonify({"error": "top_n / dte_min / dte_max must be integers"}), 400
+    # Safety cap — keep the sync request bounded; nightly cron has no cap.
+    top_n = max(1, min(top_n, 25))
+    result = options_scanner.scan_universe(
+        top_n=top_n, dte_min=dte_min, dte_max=dte_max, persist=True,
+    )
+    return jsonify(result)
+
+
 @app.route("/api/momentum/alerts/hide", methods=["POST"])
 def api_momentum_alerts_hide():
     """Soft-delete momentum alerts from the panel. Body:

@@ -1,0 +1,53 @@
+name: Nightly options scanner
+
+# Scans the liquid snapshot universe with the composite-score pipeline,
+# writes results to options_recommendations, and sends a Telegram digest
+# of BUY + high-conviction WATCH setups.
+#
+# Cron: 22:30 UTC weekdays — runs after the nightly picker (22:00) so
+# the daily snapshot is fresh. Both DST states land within the same
+# evening review window (~6:30 PM EDT / 5:30 PM EST).
+on:
+  schedule:
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      top_n:
+        description: 'How many top pre-scored candidates to run through the full pipeline'
+        type: string
+        default: '50'
+      dte_min:
+        description: 'DTE window minimum'
+        type: string
+        default: '15'
+      dte_max:
+        description: 'DTE window maximum'
+        type: string
+        default: '60'
+
+concurrency:
+  group: nightly-options-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run options scanner
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPTIONS_TOP_N: ${{ inputs.top_n }}
+          OPTIONS_DTE_MIN: ${{ inputs.dte_min }}
+          OPTIONS_DTE_MAX: ${{ inputs.dte_max }}
+        run: python options_cron.py
