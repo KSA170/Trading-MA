@@ -61,8 +61,9 @@ DEFAULT_PARAMS: dict = {
     "ema_dev_max_pct": 3.0,
     "macd_hist_min": 0.0,
     "macd_require_rising": True,
-    "macd_vs_signal_mode": "within_pct",
+    "macd_within_pct": True,
     "macd_vs_signal_pct": 5.0,
+    "macd_above_signal": False,
     "macd_line_rising": False,
     "turnover_min_pct": 0.5,
     "turnover_max_pct": 100.0,
@@ -97,15 +98,16 @@ def _cache_key(params: dict) -> tuple:
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
     macd = (round(float(params["macd_hist_min"]), 4), bool(params["macd_require_rising"])) if params["apply_macd"] else ("off",)
     macd_vs_sig = (
-        str(params["macd_vs_signal_mode"]),
+        bool(params["macd_within_pct"]),
         round(float(params["macd_vs_signal_pct"]), 4),
+        bool(params["macd_above_signal"]),
         bool(params["macd_line_rising"]),
     ) if params["apply_macd_vs_signal"] else ("off",)
     turnover = (round(float(params["turnover_min_pct"]), 4), round(float(params["turnover_max_pct"]), 4)) if params["apply_turnover"] else ("off",)
     pct_change = (round(float(params["pct_change_min"]), 4),) if params["apply_pct_change"] else ("off",)
     lists = tuple(sorted(params["lists"]))
     as_of = int(params["as_of_offset"])
-    return ("v15", as_of, price, price_dev, ema_dev, macd, macd_vs_sig, turnover, pct_change, high, rsi, rsi_dev, rvol, avg_vol, lists)
+    return ("v16", as_of, price, price_dev, ema_dev, macd, macd_vs_sig, turnover, pct_change, high, rsi, rsi_dev, rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -172,10 +174,9 @@ def _parse_params() -> dict:
         "ema_dev_max_pct": _flt("ema_dev_max_pct", 3),
         "macd_hist_min": _flt("macd_hist_min", 0),
         "macd_require_rising": _parse_bool("macd_require_rising", True),
-        "macd_vs_signal_mode": (request.args.get("macd_vs_signal_mode", "within_pct") or "within_pct").strip().lower()
-                                if (request.args.get("macd_vs_signal_mode", "within_pct") or "within_pct").strip().lower()
-                                in ("within_pct", "above_signal") else "within_pct",
+        "macd_within_pct": _parse_bool("macd_within_pct", True),
         "macd_vs_signal_pct": _flt("macd_vs_signal_pct", 5.0),
+        "macd_above_signal": _parse_bool("macd_above_signal", False),
         "macd_line_rising": _parse_bool("macd_line_rising", False),
         "turnover_min_pct": _flt("turnover_min_pct", 0.5),
         "turnover_max_pct": _flt("turnover_max_pct", 100.0),
@@ -249,7 +250,8 @@ def _api_screen_impl():
         ema_dev_max_pct=params["ema_dev_max_pct"],
         macd_hist_min=params["macd_hist_min"],
         macd_require_rising=params["macd_require_rising"],
-        macd_vs_signal_mode=params["macd_vs_signal_mode"],
+        macd_within_pct=params["macd_within_pct"],
+        macd_above_signal=params["macd_above_signal"],
         macd_vs_signal_pct=params["macd_vs_signal_pct"],
         macd_line_rising=params["macd_line_rising"],
         turnover_min_pct=params["turnover_min_pct"],
@@ -591,7 +593,8 @@ def api_debug(ticker: str):
         ema_dev_max_pct=params["ema_dev_max_pct"],
         macd_hist_min=params["macd_hist_min"],
         macd_require_rising=params["macd_require_rising"],
-        macd_vs_signal_mode=params["macd_vs_signal_mode"],
+        macd_within_pct=params["macd_within_pct"],
+        macd_above_signal=params["macd_above_signal"],
         macd_vs_signal_pct=params["macd_vs_signal_pct"],
         macd_line_rising=params["macd_line_rising"],
         turnover_min_pct=params["turnover_min_pct"],
