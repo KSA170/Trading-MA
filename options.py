@@ -147,6 +147,21 @@ CREATE TABLE IF NOT EXISTS options_iv_history (
     captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (ticker, as_of)
 );
+
+-- Single-row config table for the universe scanner. `id` is always 1
+-- (enforced by the CHECK constraint) — the UI's "Save defaults" upserts
+-- this row, and the cron + manual scan endpoints fall back to it when
+-- a request body doesn't override.
+CREATE TABLE IF NOT EXISTS options_scan_config (
+    id                       INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    price_floor              REAL NOT NULL,
+    volume_floor             BIGINT NOT NULL,
+    min_directional_distance REAL NOT NULL,
+    top_n                    INT NOT NULL,
+    dte_min                  INT NOT NULL,
+    dte_max                  INT NOT NULL,
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
