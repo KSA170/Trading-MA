@@ -33,6 +33,17 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning("env %s=%r is not a float; using default %s", name, raw, default)
+        return default
+
+
 def main() -> int:
     import snapshots
     import options
@@ -45,11 +56,19 @@ def main() -> int:
 
     options.init_tables()
 
-    top_n = _env_int("OPTIONS_TOP_N", options_scanner.DEFAULT_NIGHTLY_TOP_N)
-    dte_min = _env_int("OPTIONS_DTE_MIN", 15)
-    dte_max = _env_int("OPTIONS_DTE_MAX", 60)
+    # Precedence: env var > saved UI settings > hardcoded default.
+    # Lets ops hot-patch via Render env vars without touching the UI,
+    # while the UI's saved settings are the normal source of truth.
+    saved = options_scanner.load_settings()
+    top_n        = _env_int("OPTIONS_TOP_N",            saved["top_n"])
+    dte_min      = _env_int("OPTIONS_DTE_MIN",          saved["dte_min"])
+    dte_max      = _env_int("OPTIONS_DTE_MAX",          saved["dte_max"])
+    price_floor  = _env_float("OPTIONS_PRICE_FLOOR",    saved["price_floor"])
+    volume_floor = _env_float("OPTIONS_VOLUME_FLOOR",   saved["volume_floor"])
+    min_dist     = _env_float("OPTIONS_MIN_DISTANCE",   saved["min_directional_distance"])
 
-    log.info("options scan: top_n=%d dte=%d-%d", top_n, dte_min, dte_max)
+    log.info("options scan: top_n=%d dte=%d-%d price>=%.2f vol>=%d dist>=%.1f",
+             top_n, dte_min, dte_max, price_floor, int(volume_floor), min_dist)
 
     def _progress(i: int, total: int, ticker: str) -> None:
         log.info("[%d/%d] %s", i, total, ticker)
@@ -57,6 +76,8 @@ def main() -> int:
     result = options_scanner.scan_universe(
         top_n=top_n, dte_min=dte_min, dte_max=dte_max,
         persist=True, progress_cb=_progress,
+        price_floor=price_floor, volume_floor=volume_floor,
+        min_directional_distance=min_dist,
     )
 
     log.info(

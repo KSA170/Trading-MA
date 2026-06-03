@@ -684,6 +684,49 @@
           </select>
           <button id="options-scan-cancel-btn" type="button" class="hidden" title="Abort the running scan. Any results already produced are kept and shown.">Cancel</button>
         </div>
+        <div class="options-control options-scan-preview">
+          <span id="options-scan-preview-text" class="muted" title="How many tickers currently pass Gates 1 and 2. Updates every ~5 min or on demand.">Pool preview loading…</span>
+          <button id="options-scan-preview-refresh" type="button" class="refresh-btn" title="Re-run pre-score with current filters to refresh the pool counts">↻</button>
+        </div>
+        <div class="options-control options-scan-advanced-wrap">
+          <button id="options-scan-advanced-toggle" type="button" class="section-toggle" aria-expanded="false" aria-controls="options-scan-advanced-body" title="Tune the liquidity + directional gates the scan uses. Changes apply immediately; click Save to persist them for next session and the nightly alerts.">
+            <span class="chevron">▸</span> Advanced filters
+          </button>
+          <div id="options-scan-advanced-body" class="options-scan-advanced-body hidden">
+            <div class="adv-row">
+              <label for="options-adv-price-floor" title="Gate 1 — minimum stock price. Tighter excludes thin-chain sub-$20 names; looser includes more small-caps with poorer option liquidity.">Price floor</label>
+              <select id="options-adv-price-floor">
+                <option value="10">$10</option>
+                <option value="20" selected>$20 (default)</option>
+                <option value="50">$50</option>
+                <option value="100">$100</option>
+              </select>
+            </div>
+            <div class="adv-row">
+              <label for="options-adv-vol-floor" title="Gate 1 — minimum 20-day average daily volume. Tighter = tighter option spreads; looser = more candidates but wider bid/ask.">Avg volume (20d)</label>
+              <select id="options-adv-vol-floor">
+                <option value="100000">100k</option>
+                <option value="500000" selected>500k (default)</option>
+                <option value="1000000">1M</option>
+                <option value="5000000">5M</option>
+              </select>
+            </div>
+            <div class="adv-row">
+              <label for="options-adv-min-distance" title="Gate 2 — minimum |pre-composite − 50|. Tighter only surfaces strong directional setups; looser includes more marginal names.">Min directional</label>
+              <select id="options-adv-min-distance">
+                <option value="5">5 (loose)</option>
+                <option value="8" selected>8 (default)</option>
+                <option value="12">12 (tight)</option>
+                <option value="15">15 (strict)</option>
+              </select>
+            </div>
+            <div class="adv-row adv-row-actions">
+              <button id="options-adv-save" type="button" title="Persist current filters as the default. The nightly alerts will use these too (unless overridden by an env var).">Save as defaults</button>
+              <button id="options-adv-reset" type="button" title="Revert to the built-in defaults (price $20, volume 500k, min directional 8).">Reset</button>
+              <span id="options-adv-status" class="muted"></span>
+            </div>
+          </div>
+        </div>
         <div class="options-control options-status-wrap">
           <span id="options-status" class="muted"></span>
         </div>

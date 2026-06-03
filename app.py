@@ -1004,15 +1004,25 @@ def api_options_scan():
     unchanged so a Top 200 run takes ~40 min wall-clock."""
     import options_scanner
     body = request.get_json(silent=True) or {}
+    # Fall back to the persisted UI settings for any field the request
+    # body doesn't specify. Lets the user save defaults once and have
+    # subsequent scans honor them without re-sending the full set.
+    saved = options_scanner.load_settings()
     try:
-        top_n   = int(body.get("top_n",   options_scanner.DEFAULT_MANUAL_TOP_N))
-        dte_min = int(body.get("dte_min", 15))
-        dte_max = int(body.get("dte_max", 60))
+        top_n   = int(body.get("top_n",   saved["top_n"]))
+        dte_min = int(body.get("dte_min", saved["dte_min"]))
+        dte_max = int(body.get("dte_max", saved["dte_max"]))
+        price_floor  = float(body.get("price_floor",  saved["price_floor"]))
+        volume_floor = float(body.get("volume_floor", saved["volume_floor"]))
+        min_dist     = float(body.get("min_directional_distance",
+                                       saved["min_directional_distance"]))
     except (TypeError, ValueError):
-        return jsonify({"error": "top_n / dte_min / dte_max must be integers"}), 400
+        return jsonify({"error": "scan params must be numeric"}), 400
     top_n = max(1, min(top_n, 200))
     return jsonify(options_scanner.start_scan(
         top_n=top_n, dte_min=dte_min, dte_max=dte_max, persist=True,
+        price_floor=price_floor, volume_floor=volume_floor,
+        min_directional_distance=min_dist,
     ))
 
 
@@ -1031,6 +1041,46 @@ def api_options_scan_cancel():
     import options_scanner
     cancelled = options_scanner.cancel_scan()
     return jsonify({"cancelled": cancelled, **options_scanner.scan_status()})
+
+
+@app.route("/api/options/scan/preview")
+def api_options_scan_preview():
+    """Run only the pre-score step (Gates 1 + 2) and return count
+    breakdown so the UI can show 'X stocks qualify (Y bull / Z bear)'
+    above the Scan button. Query params override saved settings for
+    a live what-if (?price_floor=10&volume_floor=100000&min_directional_distance=5).
+    `?force=1` bypasses the 5-min cache."""
+    import options_scanner
+    def _flt_param(name: str) -> float | None:
+        raw = request.args.get(name)
+        if raw is None or raw == "":
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+    force = (request.args.get("force") or "").strip() in ("1", "true", "yes")
+    return jsonify(options_scanner.preview_counts(
+        price_floor=_flt_param("price_floor"),
+        volume_floor=_flt_param("volume_floor"),
+        min_directional_distance=_flt_param("min_directional_distance"),
+        force=force,
+    ))
+
+
+@app.route("/api/options/scan/settings", methods=["GET", "PUT"])
+def api_options_scan_settings():
+    """GET — return the saved settings (or defaults if nothing saved).
+    PUT body — same dict shape; upserts the single config row. Returns
+    the post-clamp dict actually written so the UI can echo it back."""
+    import options_scanner
+    if request.method == "GET":
+        return jsonify({
+            "settings": options_scanner.load_settings(),
+            "defaults": dict(options_scanner.DEFAULT_SETTINGS),
+        })
+    body = request.get_json(silent=True) or {}
+    return jsonify({"settings": options_scanner.save_settings(body)})
 
 
 @app.route("/api/momentum/alerts/hide", methods=["POST"])

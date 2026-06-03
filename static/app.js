@@ -127,6 +127,16 @@ const els = {
   optionsScanTopN: $('#options-scan-topn'),
   optionsScanPanel: $('#options-scan-panel'),
   optionsScanList: $('#options-scan-list'),
+  optionsScanPreviewText: $('#options-scan-preview-text'),
+  optionsScanPreviewRefresh: $('#options-scan-preview-refresh'),
+  optionsScanAdvToggle: $('#options-scan-advanced-toggle'),
+  optionsScanAdvBody: $('#options-scan-advanced-body'),
+  optionsAdvPriceFloor: $('#options-adv-price-floor'),
+  optionsAdvVolFloor: $('#options-adv-vol-floor'),
+  optionsAdvMinDistance: $('#options-adv-min-distance'),
+  optionsAdvSave: $('#options-adv-save'),
+  optionsAdvReset: $('#options-adv-reset'),
+  optionsAdvStatus: $('#options-adv-status'),
   optionsScanSummary: $('#options-scan-summary'),
   optionsScanToggle: $('#options-scan-toggle'),
   optionsScanBody: $('#options-scan-body'),
@@ -3797,7 +3807,10 @@ async function runOptionsScan() {
     const res = await fetch('/api/options/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ top_n: topN, dte_min: dteMin, dte_max: dteMax }),
+      body: JSON.stringify({
+        top_n: topN, dte_min: dteMin, dte_max: dteMax,
+        ..._readAdvancedFilters(),
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -3865,6 +3878,182 @@ if (els.optionsScanList) {
   });
 }
 wireCollapse(els.optionsScanToggle, els.optionsScanBody, 'collapse_options_scan');
+
+
+// --- Advanced filters + pool preview --------------------------------------
+
+function _readAdvancedFilters() {
+  // Read current values from the Advanced filter dropdowns. Returns
+  // an object suitable for spreading into the scan POST body.
+  const out = {};
+  if (els.optionsAdvPriceFloor && els.optionsAdvPriceFloor.value)
+    out.price_floor = parseFloat(els.optionsAdvPriceFloor.value);
+  if (els.optionsAdvVolFloor && els.optionsAdvVolFloor.value)
+    out.volume_floor = parseFloat(els.optionsAdvVolFloor.value);
+  if (els.optionsAdvMinDistance && els.optionsAdvMinDistance.value)
+    out.min_directional_distance = parseFloat(els.optionsAdvMinDistance.value);
+  return out;
+}
+
+function _applySettingsToUI(settings) {
+  // Sync the dropdowns + top_n select to the supplied settings dict
+  // (typically the GET /settings response). For each select, pick the
+  // option whose value matches; if none, leave the current selection.
+  if (!settings) return;
+  const pickClosest = (sel, target) => {
+    if (!sel || target == null) return;
+    let best = null, bestDiff = Infinity;
+    for (const opt of sel.options) {
+      const v = parseFloat(opt.value);
+      if (Number.isNaN(v)) continue;
+      const d = Math.abs(v - target);
+      if (d < bestDiff) { best = opt; bestDiff = d; }
+    }
+    if (best) sel.value = best.value;
+  };
+  pickClosest(els.optionsAdvPriceFloor, settings.price_floor);
+  pickClosest(els.optionsAdvVolFloor,   settings.volume_floor);
+  pickClosest(els.optionsAdvMinDistance, settings.min_directional_distance);
+  pickClosest(els.optionsScanTopN,      settings.top_n);
+}
+
+function _renderPreview(data) {
+  if (!els.optionsScanPreviewText) return;
+  if (!data || data.scanned === 0) {
+    els.optionsScanPreviewText.textContent = 'Pool preview unavailable (no snapshot loaded yet).';
+    return;
+  }
+  const topNVal = parseInt((els.optionsScanTopN && els.optionsScanTopN.value) || '25', 10);
+  const pct = data.qualifying > 0
+    ? Math.round((Math.min(topNVal, data.qualifying) / data.qualifying) * 100)
+    : 0;
+  const dateTxt = data.snap_date ? ` (${data.snap_date})` : '';
+  const cached = data.cached ? ' · cached' : '';
+  els.optionsScanPreviewText.innerHTML =
+    `<strong>${data.qualifying}</strong> stocks qualify${dateTxt} ` +
+    `· <strong>${data.call_bias}</strong> bull / <strong>${data.put_bias}</strong> bear ` +
+    `· Top ${topNVal} captures ${pct}%${cached}`;
+}
+
+async function refreshPreview(force = false) {
+  if (!els.optionsScanPreviewText) return;
+  if (els.optionsScanPreviewRefresh) els.optionsScanPreviewRefresh.disabled = true;
+  if (force) els.optionsScanPreviewText.textContent = 'Re-running pre-score…';
+  try {
+    const qs = new URLSearchParams(_readAdvancedFilters());
+    if (force) qs.set('force', '1');
+    const res = await fetch('/api/options/scan/preview?' + qs.toString());
+    const data = await res.json();
+    _renderPreview(data);
+  } catch (err) {
+    els.optionsScanPreviewText.textContent =
+      'Preview failed: ' + ((err && err.message) || 'network error');
+  } finally {
+    if (els.optionsScanPreviewRefresh) els.optionsScanPreviewRefresh.disabled = false;
+  }
+}
+
+async function loadSavedSettings() {
+  try {
+    const res = await fetch('/api/options/scan/settings');
+    const data = await res.json();
+    _applySettingsToUI(data.settings);
+  } catch (_) { /* ignore — defaults already in DOM */ }
+}
+
+async function saveAdvSettings() {
+  if (!els.optionsAdvSave) return;
+  const payload = {
+    ..._readAdvancedFilters(),
+    top_n: parseInt(els.optionsScanTopN.value, 10),
+    ...(_readDteRangePayload()),
+  };
+  els.optionsAdvSave.disabled = true;
+  if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/options/scan/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    _applySettingsToUI(data.settings);
+    if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Saved · alerts will use these';
+    refreshPreview(false);  // gates may have changed → cache key differs; will recompute
+  } catch (err) {
+    if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Save failed';
+  } finally {
+    els.optionsAdvSave.disabled = false;
+    setTimeout(() => {
+      if (els.optionsAdvStatus && els.optionsAdvStatus.textContent.startsWith('Saved'))
+        els.optionsAdvStatus.textContent = '';
+    }, 4000);
+  }
+}
+
+async function resetAdvSettings() {
+  // Send an empty body — the server clamps missing fields to its
+  // DEFAULT_SETTINGS, so this is the canonical "go back to factory"
+  // operation regardless of what the UI currently shows. Whatever the
+  // server returns becomes the new UI state.
+  if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Reverting…';
+  try {
+    const res = await fetch('/api/options/scan/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    _applySettingsToUI(data.settings);
+    if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Reset to defaults';
+    refreshPreview(false);
+  } catch (_) {
+    if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Reset failed';
+  }
+  setTimeout(() => {
+    if (els.optionsAdvStatus && els.optionsAdvStatus.textContent === 'Reset to defaults')
+      els.optionsAdvStatus.textContent = '';
+  }, 4000);
+}
+
+function _readDteRangePayload() {
+  // Same as _readDteRange but as an object so it can be spread into payloads.
+  const [dte_min, dte_max] = _readDteRange();
+  return { dte_min, dte_max };
+}
+
+// Advanced filters collapsible toggle (independent of wireCollapse since it
+// doesn't persist — power-user feature, default collapsed).
+if (els.optionsScanAdvToggle && els.optionsScanAdvBody) {
+  els.optionsScanAdvToggle.addEventListener('click', () => {
+    const isHidden = els.optionsScanAdvBody.classList.toggle('hidden');
+    els.optionsScanAdvToggle.setAttribute('aria-expanded', String(!isHidden));
+    const chev = els.optionsScanAdvToggle.querySelector('.chevron');
+    if (chev) chev.textContent = isHidden ? '▸' : '▾';
+  });
+}
+
+// Wire the Save / Reset buttons and the dropdown change handlers.
+// Changing a dropdown immediately refreshes the preview (so the user
+// sees the impact of relaxing/tightening before committing to Save).
+if (els.optionsAdvSave) els.optionsAdvSave.addEventListener('click', saveAdvSettings);
+if (els.optionsAdvReset) els.optionsAdvReset.addEventListener('click', resetAdvSettings);
+['optionsAdvPriceFloor', 'optionsAdvVolFloor', 'optionsAdvMinDistance', 'optionsScanTopN']
+  .forEach((k) => {
+    const el = els[k];
+    if (el) el.addEventListener('change', () => refreshPreview(false));
+  });
+if (els.optionsScanPreviewRefresh)
+  els.optionsScanPreviewRefresh.addEventListener('click', () => refreshPreview(true));
+
+// On page load: pull saved settings, populate the UI, then fetch the
+// preview. Both calls are cheap (settings is a single DB read, preview
+// is server-side cached). If the scan-running bootstrap below also
+// kicks in, that's fine — they run in parallel.
+(async () => {
+  await loadSavedSettings();
+  refreshPreview(false);
+})();
 
 
 // --- bootstrap -------------------------------------------------------------
