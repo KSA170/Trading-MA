@@ -3709,7 +3709,24 @@ function renderScanResults(result) {
       : `(${all.length} scanned, none cleared BUY or high-conviction WATCH)`;
   }
   if (!digest.length) {
-    els.optionsScanList.innerHTML = `<div class="muted scan-empty">No setups stacked enough across the 5 layers — sit out, or relax the DTE window and re-scan.</div>`;
+    if (all.length) {
+      // Empty digest doesn't mean the scan found nothing — every
+      // ticker that ran the full pipeline produced a composite. Show
+      // the top 10 by |composite − 50| so the user sees what almost
+      // crossed the BUY / high-WATCH thresholds. Helpful for tuning
+      // (e.g. "everything clustered at 60-64 — gates may be too
+      // strict") and for spotting setups that fell just short.
+      const top = all.slice(0, 10);
+      const banner = `<div class="muted scan-empty">
+        No BUY or high-conviction WATCH today.
+        Highest composites scanned (informational — not actionable signals):
+      </div>`;
+      els.optionsScanList.innerHTML = banner + top.map(renderScanCard).join('');
+    } else {
+      els.optionsScanList.innerHTML = `<div class="muted scan-empty">
+        No setups stacked enough across the 5 layers — sit out, or relax the DTE window and re-scan.
+      </div>`;
+    }
     return;
   }
   els.optionsScanList.innerHTML = digest.map(renderScanCard).join('');

@@ -71,11 +71,25 @@ def _build_sector_5d_cache() -> dict[str, float]:
     return out
 
 
-def _pre_compose(price_layer_score: float, sector_layer_score: float) -> float:
+def _pre_compose(price_layer_score: float | None,
+                 sector_layer_score: float | None) -> float | None:
     """Re-normalize the Price (30%) + Sector (10%) layer weights to
-    sum to 1.0 since we're computing a 2-layer pre-composite."""
-    total_w = 0.30 + 0.10   # 0.40
-    return (0.30 * price_layer_score + 0.10 * sector_layer_score) / total_w
+    sum to 1.0 since we're computing a 2-layer pre-composite.
+
+    Either input may be None when the underlying scorer had no data
+    (Price almost always has snapshot data; Sector returns None for
+    tickers with no mapped sector). If both are None → None (ticker
+    is dropped from the pool). If one is None → renormalize over the
+    other alone."""
+    if price_layer_score is None and sector_layer_score is None:
+        return None
+    total_w = 0.0
+    total = 0.0
+    if price_layer_score is not None:
+        total += 0.30 * float(price_layer_score); total_w += 0.30
+    if sector_layer_score is not None:
+        total += 0.10 * float(sector_layer_score); total_w += 0.10
+    return total / total_w
 
 
 def pre_score_universe(snap_date: str | None = None,
@@ -146,6 +160,8 @@ def _pre_score_with_counts(snap_date: str | None = None,
         sector_5d = sector_cache.get(sector_name) if sector_name else None
         sector_layer = opt._score_sector(sector_name, sector_5d, spy_5d)
         pre = _pre_compose(price_layer["score"], sector_layer["score"])
+        if pre is None:   # both Price + Sector lacked data — skip ticker
+            continue
         dist = abs(pre - 50)
         if dist < min_distance:
             continue

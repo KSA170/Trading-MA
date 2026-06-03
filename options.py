@@ -226,7 +226,13 @@ def _to_f(v: Any) -> float | None:
 def _score_price_trajectory(snap_row: dict | None,
                             avg_vol_20: float | None) -> dict:
     """Layer 1 — Price Trajectory (30% of composite).
-    Sub-signals: RSI, MACD, EMA stack, volume spike. All normalized 0-100."""
+    Sub-signals: RSI, MACD, EMA stack, volume spike. All normalized 0-100.
+
+    A sub-signal is *skipped* (not defaulted to 50) when its raw inputs
+    are missing — the composite renormalizes over present sub-signals
+    only, so missing data doesn't drag the layer back to neutral.
+    Genuinely-neutral readings (e.g. RSI 46-55) still score 50 and
+    contribute, since that *is* a real signal."""
     subs: dict[str, float] = {}
     reasons: list[str] = []
 
@@ -240,25 +246,16 @@ def _score_price_trajectory(snap_row: dict | None,
     vol_today = _to_f((snap_row or {}).get("volume"))
 
     # RSI: oversold rebound bullish, overbought = bear exhaustion, midband mild
-    if rsi is None:
-        subs["rsi"] = 50.0
-    elif rsi <= 30:
-        subs["rsi"] = 75.0;  reasons.append(f"RSI {rsi:.0f} oversold (bullish bounce setup)")
-    elif rsi <= 45:
-        subs["rsi"] = 60.0;  reasons.append(f"RSI {rsi:.0f} (mild bull)")
-    elif rsi <= 55:
-        subs["rsi"] = 50.0
-    elif rsi <= 65:
-        subs["rsi"] = 55.0
-    elif rsi <= 75:
-        subs["rsi"] = 35.0;  reasons.append(f"RSI {rsi:.0f} approaching overbought")
-    else:
-        subs["rsi"] = 20.0;  reasons.append(f"RSI {rsi:.0f} overbought")
+    if rsi is not None:
+        if   rsi <= 30: subs["rsi"] = 75.0; reasons.append(f"RSI {rsi:.0f} oversold (bullish bounce setup)")
+        elif rsi <= 45: subs["rsi"] = 60.0; reasons.append(f"RSI {rsi:.0f} (mild bull)")
+        elif rsi <= 55: subs["rsi"] = 50.0
+        elif rsi <= 65: subs["rsi"] = 55.0
+        elif rsi <= 75: subs["rsi"] = 35.0; reasons.append(f"RSI {rsi:.0f} approaching overbought")
+        else:           subs["rsi"] = 20.0; reasons.append(f"RSI {rsi:.0f} overbought")
 
     # MACD: combine line sign + histogram momentum
-    if macd_val is None and macd_hist is None:
-        subs["macd"] = 50.0
-    else:
+    if macd_val is not None or macd_hist is not None:
         m = 50.0
         if macd_val is not None:
             m += 15.0 if macd_val > 0 else -15.0
@@ -272,9 +269,7 @@ def _score_price_trajectory(snap_row: dict | None,
 
     # EMA stack — we have 21/50 from the snapshot (not 200, but the
     # short/medium relationship still captures trend direction).
-    if ema21 is None or ema50 is None or close is None:
-        subs["ma_stack"] = 50.0
-    else:
+    if ema21 is not None and ema50 is not None and close is not None:
         if close > ema21 > ema50:
             subs["ma_stack"] = 85.0; reasons.append("Price > EMA21 > EMA50 (bullish stack)")
         elif close > ema21 and ema21 > ema50:
@@ -289,9 +284,7 @@ def _score_price_trajectory(snap_row: dict | None,
             subs["ma_stack"] = 50.0
 
     # Volume spike — needs today's volume vs 20-day avg
-    if close is None or prior is None or vol_today is None or not avg_vol_20:
-        subs["volume"] = 50.0
-    else:
+    if close is not None and prior is not None and vol_today is not None and avg_vol_20:
         rel = vol_today / avg_vol_20 if avg_vol_20 > 0 else 1.0
         moved_up = close >= prior
         if rel >= 2.0 and moved_up:
@@ -307,8 +300,12 @@ def _score_price_trajectory(snap_row: dict | None,
         else:
             subs["volume"] = 55.0 if moved_up else 45.0
 
-    score = sum(subs.values()) / len(subs)
-    return {"score": round(score, 1), "sub_scores": {k: round(v, 1) for k, v in subs.items()}, "reasons": reasons}
+    score = (sum(subs.values()) / len(subs)) if subs else None
+    return {
+        "score": round(score, 1) if score is not None else None,
+        "sub_scores": {k: round(v, 1) for k, v in subs.items()},
+        "reasons": reasons,
+    }
 
 
 def _score_catalyst(news: list[dict] | None,
@@ -316,13 +313,16 @@ def _score_catalyst(news: list[dict] | None,
                     analyst_recs: dict | None,
                     dte_max: int) -> dict:
     """Layer 2 — Catalyst Events (25%).
-    Sub-signals: earnings timing, analyst upgrades/downgrades."""
+    Sub-signals: earnings timing, analyst upgrades/downgrades, news volume.
+
+    Each sub is *skipped* when its underlying data isn't available — so
+    a stock with no analyst coverage and no recent news doesn't get
+    penalized by neutral defaults; the composite renormalizes over the
+    layers that do have data."""
     subs: dict[str, float] = {}
     reasons: list[str] = []
 
-    # Earnings timing — earnings near = slightly bull tactically (long
-    # premium going in often pays); the *direction* is set by other
-    # layers. We just flag a positive contribution when one is in range.
+    # Earnings timing — earnings near = slightly bull tactically.
     if earnings_date:
         try:
             ed = datetime.strptime(earnings_date, "%Y-%m-%d").date()
@@ -336,40 +336,29 @@ def _score_catalyst(news: list[dict] | None,
             else:
                 subs["earnings_timing"] = 50.0
         except (TypeError, ValueError):
-            subs["earnings_timing"] = 50.0
-    else:
-        subs["earnings_timing"] = 50.0
+            pass   # unparseable date → no data, skip the sub-signal
 
     # Analyst upgrades / downgrades — net actions in last 30 days
     if analyst_recs and "net_30d" in analyst_recs:
         net = int(analyst_recs["net_30d"])
-        if net >= 3:
-            subs["analyst"] = 80.0; reasons.append(f"+{net} net analyst upgrades 30d")
-        elif net >= 1:
-            subs["analyst"] = 65.0; reasons.append(f"+{net} net analyst upgrade(s) 30d")
-        elif net == 0:
-            subs["analyst"] = 50.0
-        elif net >= -2:
-            subs["analyst"] = 35.0; reasons.append(f"{net} net analyst downgrade(s) 30d")
-        else:
-            subs["analyst"] = 20.0; reasons.append(f"{net} net analyst downgrades 30d")
-    else:
-        subs["analyst"] = 50.0
+        if   net >= 3:  subs["analyst"] = 80.0; reasons.append(f"+{net} net analyst upgrades 30d")
+        elif net >= 1:  subs["analyst"] = 65.0; reasons.append(f"+{net} net analyst upgrade(s) 30d")
+        elif net == 0:  subs["analyst"] = 50.0
+        elif net >= -2: subs["analyst"] = 35.0; reasons.append(f"{net} net analyst downgrade(s) 30d")
+        else:           subs["analyst"] = 20.0; reasons.append(f"{net} net analyst downgrades 30d")
 
     # News count — secondary tailwind / not directional on its own
     if news:
         n = len(news)
-        if n >= 3:
-            subs["news_volume"] = 60.0; reasons.append(f"{n} recent catalyst stories")
-        elif n >= 1:
-            subs["news_volume"] = 55.0
-        else:
-            subs["news_volume"] = 50.0
-    else:
-        subs["news_volume"] = 50.0
+        if   n >= 3: subs["news_volume"] = 60.0; reasons.append(f"{n} recent catalyst stories")
+        elif n >= 1: subs["news_volume"] = 55.0
 
-    score = sum(subs.values()) / len(subs)
-    return {"score": round(score, 1), "sub_scores": {k: round(v, 1) for k, v in subs.items()}, "reasons": reasons}
+    score = (sum(subs.values()) / len(subs)) if subs else None
+    return {
+        "score": round(score, 1) if score is not None else None,
+        "sub_scores": {k: round(v, 1) for k, v in subs.items()},
+        "reasons": reasons,
+    }
 
 
 def _score_institutional(insider: dict | None,
@@ -386,7 +375,8 @@ def _score_institutional(insider: dict | None,
     reasons: list[str] = []
     partial = True  # always partial without paid feeds; surfaces in UI
 
-    # Insider Form 4
+    # Insider Form 4 — skip the sub-signal entirely when no recent
+    # filing exists, rather than defaulting to neutral 50.
     if insider:
         code = (insider.get("code") or "").upper()
         recent = _is_recent_insider(insider, max_days=30)
@@ -398,10 +388,7 @@ def _score_institutional(insider: dict | None,
             subs["insider"] = 60.0
         elif code == "S":
             subs["insider"] = 45.0
-        else:
-            subs["insider"] = 50.0
-    else:
-        subs["insider"] = 50.0
+        # else: stale unknown-code filing — no useful signal, skip.
 
     # Analyst summary — sentiment proxy.
     # analyst_summary expected: {'strong_buy': n, 'buy': n, 'hold': n,
@@ -419,18 +406,12 @@ def _score_institutional(insider: dict | None,
             bear = (ss * 1.0 + se * 0.6) / total
             tilt = bull - bear   # -1 (full bear) .. +1 (full bull)
             subs["analyst_summary"] = _clamp(50 + tilt * 40)
-            if tilt > 0.3:
+            if tilt > 0.3 or tilt < -0.3:
                 reasons.append(f"{sb + bu} buy / {se + ss} sell across {total} analysts")
-            elif tilt < -0.3:
-                reasons.append(f"{sb + bu} buy / {se + ss} sell across {total} analysts")
-        else:
-            subs["analyst_summary"] = 50.0
-    else:
-        subs["analyst_summary"] = 50.0
 
-    score = sum(subs.values()) / len(subs)
+    score = (sum(subs.values()) / len(subs)) if subs else None
     return {
-        "score": round(score, 1),
+        "score": round(score, 1) if score is not None else None,
         "sub_scores": {k: round(v, 1) for k, v in subs.items()},
         "reasons": reasons,
         "partial_data": partial,
@@ -439,7 +420,12 @@ def _score_institutional(insider: dict | None,
 
 
 def _score_fundamentals(fund: dict | None) -> dict:
-    """Layer 4 — Fundamentals (15%). Revenue growth YoY + P/E reasonableness."""
+    """Layer 4 — Fundamentals (15%). Revenue growth YoY + P/E reasonableness.
+
+    Skips each sub-signal when its underlying data is unavailable
+    (rather than defaulting to 50). If `fund` is None entirely or
+    contains nothing usable, the layer returns score=None and the
+    composite renormalizes over the remaining layers."""
     subs: dict[str, float] = {}
     reasons: list[str] = []
 
@@ -447,45 +433,45 @@ def _score_fundamentals(fund: dict | None) -> dict:
         rev = fund.get("revenue_growth_yoy")
         if isinstance(rev, (int, float)):
             r = float(rev) * 100  # to percent
-            if   r >= 30: subs["revenue"] = 90.0; reasons.append(f"revenue +{r:.0f}% YoY")
-            elif r >= 15: subs["revenue"] = 75.0; reasons.append(f"revenue +{r:.0f}% YoY")
-            elif r >=  5: subs["revenue"] = 60.0
-            elif r >=  0: subs["revenue"] = 52.0
+            if   r >= 30:  subs["revenue"] = 90.0; reasons.append(f"revenue +{r:.0f}% YoY")
+            elif r >= 15:  subs["revenue"] = 75.0; reasons.append(f"revenue +{r:.0f}% YoY")
+            elif r >=  5:  subs["revenue"] = 60.0
+            elif r >=  0:  subs["revenue"] = 52.0
             elif r >= -10: subs["revenue"] = 40.0
             elif r >= -25: subs["revenue"] = 25.0; reasons.append(f"revenue {r:.0f}% YoY")
-            else:         subs["revenue"] = 15.0; reasons.append(f"revenue {r:.0f}% YoY")
-        else:
-            subs["revenue"] = 50.0
+            else:          subs["revenue"] = 15.0; reasons.append(f"revenue {r:.0f}% YoY")
 
         pe = fund.get("trailing_pe") or fund.get("forward_pe")
         if isinstance(pe, (int, float)) and pe > 0:
             p = float(pe)
-            if   p < 10:  subs["pe"] = 50.0
-            elif p < 25:  subs["pe"] = 62.0
-            elif p < 40:  subs["pe"] = 48.0
-            else:         subs["pe"] = 38.0; reasons.append(f"P/E {p:.0f} elevated")
-        else:
-            subs["pe"] = 50.0   # negative or unknown
-    else:
-        subs["revenue"] = 50.0
-        subs["pe"] = 50.0
+            if   p < 10: subs["pe"] = 50.0
+            elif p < 25: subs["pe"] = 62.0
+            elif p < 40: subs["pe"] = 48.0
+            else:        subs["pe"] = 38.0; reasons.append(f"P/E {p:.0f} elevated")
 
-    score = sum(subs.values()) / len(subs)
-    return {"score": round(score, 1), "sub_scores": {k: round(v, 1) for k, v in subs.items()}, "reasons": reasons}
+    score = (sum(subs.values()) / len(subs)) if subs else None
+    return {
+        "score": round(score, 1) if score is not None else None,
+        "sub_scores": {k: round(v, 1) for k, v in subs.items()},
+        "reasons": reasons,
+    }
 
 
 def _score_sector(sector: str | None,
                   sector_5d: float | None,
                   spy_5d: float | None) -> dict:
-    """Layer 5 — Sector Trend (10%). Sector ETF 5d move minus SPY 5d move."""
+    """Layer 5 — Sector Trend (10%). Sector ETF 5d move minus SPY 5d move.
+
+    Skipped (score=None) when either the sector ETF or SPY 5d-move
+    fetch failed — the composite renormalizes over the remaining
+    layers. SPY almost always resolves, so the common reason for skip
+    is a ticker with no mapped sector."""
     subs: dict[str, float] = {}
     reasons: list[str] = []
 
     etf = _SECTOR_ETFS.get(sector) if sector else None
 
-    if sector_5d is None or spy_5d is None:
-        subs["sector_vs_spy"] = 50.0
-    else:
+    if sector_5d is not None and spy_5d is not None:
         rel = sector_5d - spy_5d   # in percent
         if   rel >=  3: subs["sector_vs_spy"] = 85.0; reasons.append(f"{etf or 'sector'} +{rel:.1f}% vs SPY (strong tailwind)")
         elif rel >=  1: subs["sector_vs_spy"] = 65.0; reasons.append(f"{etf or 'sector'} +{rel:.1f}% vs SPY")
@@ -493,20 +479,48 @@ def _score_sector(sector: str | None,
         elif rel >= -3: subs["sector_vs_spy"] = 35.0; reasons.append(f"{etf or 'sector'} {rel:.1f}% vs SPY")
         else:           subs["sector_vs_spy"] = 15.0; reasons.append(f"{etf or 'sector'} {rel:.1f}% vs SPY (strong headwind)")
 
-    score = sum(subs.values()) / len(subs)
-    return {"score": round(score, 1), "sub_scores": {k: round(v, 1) for k, v in subs.items()},
-            "reasons": reasons, "sector_etf": etf}
+    score = (sum(subs.values()) / len(subs)) if subs else None
+    return {
+        "score": round(score, 1) if score is not None else None,
+        "sub_scores": {k: round(v, 1) for k, v in subs.items()},
+        "reasons": reasons,
+        "sector_etf": etf,
+    }
 
 
 # --- composite scorer -----------------------------------------------------
 
 def _composite(layers: dict) -> dict:
-    """Weighted sum of layer scores. Returns composite 0-100."""
+    """Weighted sum of layer scores, renormalized over layers with data.
+
+    A layer with score=None (i.e. all its sub-signals lacked source
+    data — common for mid/small caps with no analyst coverage or
+    sparse fundamentals) is *excluded* from both the numerator and
+    denominator. So a ticker with strong Price+Sector signals but no
+    Catalyst/Institutional/Fundamentals data is scored as
+    (0.30·price + 0.10·sector) / 0.40 instead of being dragged
+    toward 50 by three neutral defaults.
+
+    `used_weight` is also returned so the UI / digest can warn when
+    a verdict came from very thin layer coverage (e.g. only Price)."""
     total = 0.0
+    used_weight = 0.0
+    contributing: list[str] = []
     for key, w in WEIGHTS.items():
         layer = layers.get(key) or {}
-        total += w * float(layer.get("score") or 50)
-    return {"score": round(total, 1), "weights": WEIGHTS}
+        s = layer.get("score")
+        if s is None:
+            continue
+        total += w * float(s)
+        used_weight += w
+        contributing.append(key)
+    score = total / used_weight if used_weight > 0 else 50.0
+    return {
+        "score": round(score, 1),
+        "weights": WEIGHTS,
+        "used_weight": round(used_weight, 3),
+        "contributing_layers": contributing,
+    }
 
 
 def _verdict(composite_score: float, iv_rich: bool) -> tuple[str, str, str]:
@@ -885,14 +899,19 @@ def _prose_rationale(ticker: str, current_price: float,
         "institutional": "institutional positioning",
         "fundamentals": "fundamentals", "sector": "sector",
     }
-    layer_scores = {k: float(v.get("score") or 50) for k, v in layers.items()}
+    # Layers with score=None had no underlying data — exclude them
+    # from the "strongest layers" callout entirely instead of treating
+    # a missing reading as a neutral 50.
+    layer_scores = {k: float(v.get("score")) for k, v in layers.items()
+                    if v.get("score") is not None}
     if direction == "call":
         top = sorted(layer_scores.items(), key=lambda x: -x[1])[:2]
         case_word = "bull case"
     else:
         top = sorted(layer_scores.items(), key=lambda x: x[1])[:2]
         case_word = "bear case"
-    top_phrase = " and ".join(f"{layer_names[k]} ({v:.0f})" for k, v in top)
+    top_phrase = (" and ".join(f"{layer_names[k]} ({v:.0f})" for k, v in top)
+                  if top else "the available layers")
 
     # IV commentary
     iv_phrase = ""
