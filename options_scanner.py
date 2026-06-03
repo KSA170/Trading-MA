@@ -216,7 +216,7 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
         out_recs.append(rec)
         if persist:
             try:
-                opt.save_recommendation(rec)
+                opt.save_recommendation_with_iv(rec)
             except Exception as exc:
                 log.warning("save_recommendation(%s) failed: %s", ticker, exc)
 

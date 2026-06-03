@@ -1138,6 +1138,45 @@ def save_recommendation(rec: dict) -> bool:
         return False
 
 
+def record_iv(ticker: str, as_of: str, atm_iv: float | None) -> bool:
+    """Append today's ATM IV reading to the rolling per-ticker history.
+    Idempotent on (ticker, as_of) — same-day reruns of the scan overwrite
+    instead of duplicating. Returns False on no-op (DB disabled or atm_iv
+    missing) without logging, True on a successful upsert.
+
+    Builds the per-ticker baseline IV rank / IV percentile signals will
+    eventually read. ~60 trading days of writes gets us to a usable
+    distribution; until then it's just accumulating quietly."""
+    if atm_iv is None:
+        return False
+    import snapshots
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO options_iv_history (ticker, as_of, atm_iv) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (ticker, as_of) DO UPDATE SET "
+                "atm_iv = EXCLUDED.atm_iv, captured_at = now()",
+                (ticker, as_of, float(atm_iv)),
+            )
+        return True
+    except Exception as exc:
+        log.warning("options.record_iv(%s) failed: %s", ticker, exc)
+        return False
+
+
+def save_recommendation_with_iv(rec: dict) -> bool:
+    """Persist the recommendation AND the ATM IV reading. The two writes
+    are independent — one failing does not skip the other. Returns the
+    recommendation write's success bit (the IV write is best-effort)."""
+    rec_ok = save_recommendation(rec)
+    iv_ctx = rec.get("iv_context") or {}
+    record_iv(rec.get("ticker"), rec.get("as_of"), iv_ctx.get("atm_iv"))
+    return rec_ok
+
+
 def _layer_scores_compact(layers: dict) -> dict:
     out = {}
     for k, v in (layers or {}).items():
