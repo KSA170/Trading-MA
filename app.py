@@ -67,6 +67,8 @@ DEFAULT_PARAMS: dict = {
     "macd_line_rising": False,
     "turnover_min_pct": 0.5,
     "turnover_max_pct": 100.0,
+    "market_cap_min_m": 0.0,
+    "market_cap_max_m": 10_000_000.0,   # $10T = effectively no ceiling
     "pct_change_min": 5.0,
     "apply_high": True,
     "apply_rsi": True,
@@ -79,6 +81,7 @@ DEFAULT_PARAMS: dict = {
     "apply_macd": True,
     "apply_macd_vs_signal": False,
     "apply_turnover": False,
+    "apply_market_cap": False,
     "apply_pct_change": False,
     "as_of_offset": 0,
     "lists": tuple(sorted(_VALID_LISTS)),
@@ -104,10 +107,11 @@ def _cache_key(params: dict) -> tuple:
         bool(params["macd_line_rising"]),
     ) if params["apply_macd_vs_signal"] else ("off",)
     turnover = (round(float(params["turnover_min_pct"]), 4), round(float(params["turnover_max_pct"]), 4)) if params["apply_turnover"] else ("off",)
+    market_cap = (round(float(params["market_cap_min_m"]), 2), round(float(params["market_cap_max_m"]), 2)) if params["apply_market_cap"] else ("off",)
     pct_change = (round(float(params["pct_change_min"]), 4),) if params["apply_pct_change"] else ("off",)
     lists = tuple(sorted(params["lists"]))
     as_of = int(params["as_of_offset"])
-    return ("v16", as_of, price, price_dev, ema_dev, macd, macd_vs_sig, turnover, pct_change, high, rsi, rsi_dev, rvol, avg_vol, lists)
+    return ("v17", as_of, price, price_dev, ema_dev, macd, macd_vs_sig, turnover, market_cap, pct_change, high, rsi, rsi_dev, rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -180,6 +184,8 @@ def _parse_params() -> dict:
         "macd_line_rising": _parse_bool("macd_line_rising", False),
         "turnover_min_pct": _flt("turnover_min_pct", 0.5),
         "turnover_max_pct": _flt("turnover_max_pct", 100.0),
+        "market_cap_min_m": _flt("market_cap_min_m", 0),
+        "market_cap_max_m": _flt("market_cap_max_m", 10_000_000),
         "pct_change_min": _flt("pct_change_min", 5.0),
         "apply_high": _parse_bool("apply_high", True),
         "apply_rsi": _parse_bool("apply_rsi", True),
@@ -192,6 +198,7 @@ def _parse_params() -> dict:
         "apply_macd": _parse_bool("apply_macd", True),
         "apply_macd_vs_signal": _parse_bool("apply_macd_vs_signal", False),
         "apply_turnover": _parse_bool("apply_turnover", False),
+        "apply_market_cap": _parse_bool("apply_market_cap", False),
         "apply_pct_change": _parse_bool("apply_pct_change", False),
         "as_of_offset": as_of_offset,
         "lists": tuple(wanted),
@@ -256,6 +263,8 @@ def _api_screen_impl():
         macd_line_rising=params["macd_line_rising"],
         turnover_min_pct=params["turnover_min_pct"],
         turnover_max_pct=params["turnover_max_pct"],
+        market_cap_min_m=params["market_cap_min_m"],
+        market_cap_max_m=params["market_cap_max_m"],
         pct_change_min=params["pct_change_min"],
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
@@ -268,6 +277,7 @@ def _api_screen_impl():
         apply_macd=params["apply_macd"],
         apply_macd_vs_signal=params["apply_macd_vs_signal"],
         apply_turnover=params["apply_turnover"],
+        apply_market_cap=params["apply_market_cap"],
         apply_pct_change=params["apply_pct_change"],
         as_of_offset=params["as_of_offset"],
         lists=list(params["lists"]),
@@ -599,6 +609,8 @@ def api_debug(ticker: str):
         macd_line_rising=params["macd_line_rising"],
         turnover_min_pct=params["turnover_min_pct"],
         turnover_max_pct=params["turnover_max_pct"],
+        market_cap_min_m=params["market_cap_min_m"],
+        market_cap_max_m=params["market_cap_max_m"],
         pct_change_min=params["pct_change_min"],
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
@@ -611,6 +623,7 @@ def api_debug(ticker: str):
         apply_macd=params["apply_macd"],
         apply_macd_vs_signal=params["apply_macd_vs_signal"],
         apply_turnover=params["apply_turnover"],
+        apply_market_cap=params["apply_market_cap"],
         apply_pct_change=params["apply_pct_change"],
         as_of_offset=params["as_of_offset"],
     )

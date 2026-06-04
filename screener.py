@@ -1199,6 +1199,8 @@ def evaluate_ticker(
     macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
+    market_cap_min_m: float = 0.0,
+    market_cap_max_m: float = 10_000_000.0,   # $10T default ceiling = effectively off
     pct_change_min: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
@@ -1211,6 +1213,7 @@ def evaluate_ticker(
     apply_macd: bool = True,
     apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
+    apply_market_cap: bool = False,
     apply_pct_change: bool = False,
     as_of_offset: int = 0,
 ) -> ScreenHit | None:
@@ -1219,7 +1222,8 @@ def evaluate_ticker(
     if as_of_offset > MAX_AS_OF_OFFSET:
         as_of_offset = MAX_AS_OF_OFFSET
 
-    df = _cached_history(ticker, period="6mo", need_shares=apply_turnover)
+    df = _cached_history(ticker, period="6mo",
+                         need_shares=apply_turnover or apply_market_cap)
     needed = max(
         high_lookback + 2, rsi_period + 5, rvol_lookback + 2,
         ema_period + 2, ema_long_period + 2,
@@ -1416,6 +1420,13 @@ def evaluate_ticker(
         if not (turnover_min_pct <= turnover_pct <= turnover_max_pct):
             return None
     market_cap = (shares_val * prev_close) if shares_val else None
+    # Market cap filter — input is in millions of dollars for nicer UX
+    # (e.g. 2000 = $2B mid-cap floor, 200000 = $200B mega-cap ceiling).
+    if apply_market_cap:
+        if market_cap is None:
+            return None
+        if not (market_cap_min_m * 1_000_000 <= market_cap <= market_cap_max_m * 1_000_000):
+            return None
 
     pct_change = (prev_close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
@@ -1496,6 +1507,8 @@ def _evaluate_from_snapshot(
     macd_line_rising: bool,
     turnover_min_pct: float,
     turnover_max_pct: float,
+    market_cap_min_m: float,
+    market_cap_max_m: float,
     pct_change_min: float,
     apply_high: bool,
     apply_rsi: bool,
@@ -1508,6 +1521,7 @@ def _evaluate_from_snapshot(
     apply_macd: bool,
     apply_macd_vs_signal: bool,
     apply_turnover: bool,
+    apply_market_cap: bool,
     apply_pct_change: bool,
 ) -> ScreenHit | None:
     """Apply every filter against a single snapshot row + its trailing bars.
@@ -1676,6 +1690,11 @@ def _evaluate_from_snapshot(
         if not (turnover_min_pct <= turnover_pct <= turnover_max_pct):
             return None
     market_cap = (shares_val * close) if shares_val else None
+    if apply_market_cap:
+        if market_cap is None:
+            return None
+        if not (market_cap_min_m * 1_000_000 <= market_cap <= market_cap_max_m * 1_000_000):
+            return None
 
     pct_change = (close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
@@ -1752,6 +1771,8 @@ def run_screen(
     macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
+    market_cap_min_m: float = 0.0,
+    market_cap_max_m: float = 10_000_000.0,
     pct_change_min: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
@@ -1764,6 +1785,7 @@ def run_screen(
     apply_macd: bool = True,
     apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
+    apply_market_cap: bool = False,
     apply_pct_change: bool = False,
     as_of_offset: int = 0,
     lists: list[str] | None = None,
@@ -1825,6 +1847,8 @@ def run_screen(
                         macd_line_rising=macd_line_rising,
                         turnover_min_pct=turnover_min_pct,
                         turnover_max_pct=turnover_max_pct,
+                        market_cap_min_m=market_cap_min_m,
+                        market_cap_max_m=market_cap_max_m,
                         pct_change_min=pct_change_min,
                         apply_high=apply_high, apply_rsi=apply_rsi,
                         apply_rsi_dev=apply_rsi_dev,
@@ -1836,6 +1860,7 @@ def run_screen(
                         apply_macd=apply_macd,
                         apply_macd_vs_signal=apply_macd_vs_signal,
                         apply_turnover=apply_turnover,
+                        apply_market_cap=apply_market_cap,
                         apply_pct_change=apply_pct_change,
                     )
                 except Exception as exc:
@@ -1877,6 +1902,8 @@ def run_screen(
                 macd_line_rising=macd_line_rising,
                 turnover_min_pct=turnover_min_pct,
                 turnover_max_pct=turnover_max_pct,
+                market_cap_min_m=market_cap_min_m,
+                market_cap_max_m=market_cap_max_m,
                 pct_change_min=pct_change_min,
                 apply_high=apply_high,
                 apply_rsi=apply_rsi,
@@ -1889,6 +1916,7 @@ def run_screen(
                 apply_macd=apply_macd,
                 apply_macd_vs_signal=apply_macd_vs_signal,
                 apply_turnover=apply_turnover,
+                apply_market_cap=apply_market_cap,
                 apply_pct_change=apply_pct_change,
                 as_of_offset=as_of_offset,
             )
@@ -2022,6 +2050,8 @@ def diagnose_ticker(
     macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
+    market_cap_min_m: float = 0.0,
+    market_cap_max_m: float = 10_000_000.0,
     pct_change_min: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
@@ -2034,6 +2064,7 @@ def diagnose_ticker(
     apply_macd: bool = True,
     apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
+    apply_market_cap: bool = False,
     apply_pct_change: bool = False,
     as_of_offset: int = 0,
 ) -> dict:
@@ -2301,6 +2332,16 @@ def diagnose_ticker(
         apply_turnover, turnover_ok, [turnover_min_pct, turnover_max_pct],
         {"shares": round(shares_val, 0) if shares_val else None,
          "market_cap": round(market_cap, 0) if market_cap else None})
+
+    # 11. Market cap in millions of dollars
+    mc_m = (market_cap / 1_000_000) if market_cap is not None else None
+    market_cap_ok = (mc_m is not None and
+                     market_cap_min_m <= mc_m <= market_cap_max_m)
+    add("market_cap",
+        f"Market cap ∈ [${market_cap_min_m:,.0f}M, ${market_cap_max_m:,.0f}M]",
+        round(mc_m, 1) if mc_m is not None else None,
+        apply_market_cap, market_cap_ok,
+        [market_cap_min_m, market_cap_max_m])
 
     out["all_pass"] = all(c["pass"] for c in out["checks"])
     return out

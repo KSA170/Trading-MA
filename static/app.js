@@ -191,6 +191,8 @@ const inputs = {
   macd_vs_signal_pct: $('#macd_vs_signal_pct'),
   turnover_min_pct: $('#turnover_min_pct'),
   turnover_max_pct: $('#turnover_max_pct'),
+  market_cap_min_m: $('#market_cap_min_m'),
+  market_cap_max_m: $('#market_cap_max_m'),
   pct_change_min: $('#pct_change_min'),
 };
 
@@ -212,6 +214,7 @@ const toggles = {
   macd_above_signal: $('#macd_above_signal'),
   macd_line_rising: $('#macd_line_rising'),
   apply_turnover: $('#apply_turnover'),
+  apply_market_cap: $('#apply_market_cap'),
   apply_pct_change: $('#apply_pct_change'),
 };
 
@@ -237,6 +240,8 @@ const modalInputs = {
   macd_vs_signal_pct: $('#cm_macd_vs_signal_pct'),
   turnover_min_pct: $('#cm_turnover_min_pct'),
   turnover_max_pct: $('#cm_turnover_max_pct'),
+  market_cap_min_m: $('#cm_market_cap_min_m'),
+  market_cap_max_m: $('#cm_market_cap_max_m'),
   pct_change_min: $('#cm_pct_change_min'),
 };
 const modalToggles = {
@@ -255,6 +260,7 @@ const modalToggles = {
   macd_above_signal: $('#cm_macd_above_signal'),
   macd_line_rising: $('#cm_macd_line_rising'),
   apply_turnover: $('#cm_apply_turnover'),
+  apply_market_cap: $('#cm_apply_market_cap'),
   apply_pct_change: $('#cm_apply_pct_change'),
 };
 
@@ -542,6 +548,7 @@ function syncDisabledStates() {
     apply_macd: 'macd',
     apply_macd_vs_signal: 'macd_vs_signal',
     apply_turnover: 'turnover',
+    apply_market_cap: 'market_cap',
     apply_pct_change: 'pct_change',
   };
   for (const [toggleId, groupKey] of Object.entries(map)) {
@@ -1869,6 +1876,7 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
   if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
   if (p.apply_turnover) out.push(`Turnover ${n(p.turnover_min_pct)}–${n(p.turnover_max_pct)}%`);
+  if (p.apply_market_cap) out.push(`Mcap $${n(p.market_cap_min_m)}M–$${n(p.market_cap_max_m)}M`);
   if (p.apply_pct_change) out.push(`Latest % change ≥ ${n(p.pct_change_min)}%`);
   return out;
 }
@@ -2210,6 +2218,7 @@ function syncModalDisabled() {
     apply_macd: 'cm_macd',
     apply_macd_vs_signal: 'cm_macd_vs_signal',
     apply_turnover: 'cm_turnover',
+    apply_market_cap: 'cm_market_cap',
     apply_pct_change: 'cm_pct_change',
   };
   for (const [toggleKey, groupKey] of Object.entries(map)) {
