@@ -3837,11 +3837,17 @@ async function runOptionsScan() {
       return;
     }
     if (data.started === false && !data.running) {
-      // Nothing actually started AND nothing is running — surface the
-      // raw response so it's debuggable.
+      // Server refused but state is also "not running". With the
+      // zombie-thread recovery in start_scan, this should only happen
+      // in genuinely unexpected cases — surface the response so it's
+      // debuggable rather than silently retrying.
       _setScanRunning(false);
       els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
-      if (els.optionsStatus) els.optionsStatus.textContent = 'Scan did not start (server idle). Try again.';
+      if (els.optionsStatus) {
+        els.optionsStatus.textContent = data.thread_alive
+          ? 'Previous scan still finishing — try again in a few seconds.'
+          : 'Scan did not start (server refused). Check the server log.';
+      }
       return;
     }
     // started=true OR another scan was already in flight — either

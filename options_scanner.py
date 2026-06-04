@@ -391,8 +391,13 @@ _scan_thread: "threading.Thread | None" = None
 
 
 def scan_status() -> dict:
+    # `thread_alive` distinguishes "truly idle" from "a previous thread
+    # is still draining" — e.g. yfinance can hang for a long time after
+    # cancel before the worker exits. The UI uses this to show a more
+    # accurate message than "server idle".
+    alive = _scan_thread is not None and _scan_thread.is_alive()
     with _scan_lock:
-        return dict(_scan_state)
+        return {**_scan_state, "thread_alive": alive}
 
 
 def cancel_scan() -> bool:
@@ -422,7 +427,20 @@ def start_scan(top_n: int,
     still poll scan_status())."""
     global _scan_thread
     if _scan_thread is not None and _scan_thread.is_alive():
-        return {"started": False, **scan_status()}
+        # Zombie-thread recovery: if running is already False (cancel
+        # was honored on the state side but the worker is still
+        # draining — typically a yfinance call hanging without a
+        # timeout), orphan the old thread and start fresh. The old
+        # thread is daemon=True; it will exit when its current
+        # network call returns and won't affect anything in the
+        # meantime. Without this, the user gets stuck with "Scan did
+        # not start (server idle)" until the process restarts.
+        with _scan_lock:
+            still_running = bool(_scan_state["running"])
+        if still_running:
+            return {"started": False, **scan_status()}
+        log.warning("orphaning zombie scan thread (cancelled but still alive)")
+        _scan_thread = None
     with _scan_lock:
         if _scan_state["running"]:
             return {"started": False, **scan_status()}
