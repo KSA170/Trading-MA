@@ -378,6 +378,11 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
             log.info("scan [%d/%d] %s done in %.1fs (composite=%s)",
                      i, len(pool), ticker, time.time() - t0,
                      rec.get("composite_score"))
+            # Chain fetch failed inside recommend_for_ticker — bump the
+            # rate-limit counter so the UI banner appears, without
+            # losing the partial composite result for visibility.
+            if rec.get("chain_fetch_status") == "rate_limited":
+                _bump_rate_limit_counter_if(None, hit=True)
             if rec.get("composite_score") is None:
                 # Hit an early gate (no chain, below floor, etc.) — skip.
                 continue

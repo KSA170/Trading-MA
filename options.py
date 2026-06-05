@@ -549,24 +549,55 @@ def _verdict(composite_score: float, iv_rich: bool) -> tuple[str, str, str]:
 
 # --- option chain fetch + IV ---------------------------------------------
 
+class _ChainFetchError(Exception):
+    """Raised by _fetch_chains_in_window when the chain fetch failed
+    for reasons unrelated to the ticker being non-optionable. Lets
+    recommend_for_ticker distinguish 'ticker has no chain in range'
+    (PASS, expected) from 'Yahoo throttled the fetch' (surface to UI,
+    bump rate-limit counter). `rate_limited=True` when the error
+    message looks like a 429 / throttle."""
+    def __init__(self, msg: str, rate_limited: bool = False) -> None:
+        super().__init__(msg)
+        self.rate_limited = rate_limited
+
+
+def _looks_rate_limited(exc_msg: str) -> bool:
+    m = exc_msg.lower()
+    return ("too many" in m or "rate limit" in m or "429" in m
+            or "throttl" in m)
+
+
 def _fetch_chains_in_window(ticker: str,
                             dte_min: int,
                             dte_max: int) -> list[dict]:
     """Pull every chain inside [dte_min, dte_max]. Returns list of
-    {expiration, dte, calls, puts}."""
+    {expiration, dte, calls, puts}.
+
+    Raises _ChainFetchError when the fetch fails (vs. ticker has no
+    chains in range, which returns []). The two cases were
+    indistinguishable before — every yfinance failure surfaced to the
+    UI as 'no liquid option chain available... or ticker isn't
+    optionable', misleading users into thinking liquid optionable
+    names (C, BAC, etc.) had no chains."""
     try:
         import yfinance as yf
     except Exception as exc:
-        log.warning("yfinance import failed: %s", exc)
-        return []
+        raise _ChainFetchError(f"yfinance import failed: {exc}")
     try:
         yft = yf.Ticker(ticker)
         expirations = list(yft.options or ())
     except Exception as exc:
+        msg = str(exc)
         log.warning("options chain lookup failed for %s: %s", ticker, exc)
-        return []
+        raise _ChainFetchError(
+            f"chain lookup failed: {exc}",
+            rate_limited=_looks_rate_limited(msg),
+        )
     today = date.today()
     out: list[dict] = []
+    in_window_total = 0
+    in_window_failed = 0
+    last_err_msg = ""
     for exp_str in expirations:
         try:
             exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
@@ -575,13 +606,24 @@ def _fetch_chains_in_window(ticker: str,
         dte = (exp - today).days
         if not (dte_min <= dte <= dte_max):
             continue
+        in_window_total += 1
         try:
             ch = yft.option_chain(exp_str)
         except Exception as exc:
             log.warning("option_chain(%s, %s) failed: %s", ticker, exp_str, exc)
+            in_window_failed += 1
+            last_err_msg = str(exc)
             continue
         out.append({"expiration": exp_str, "dte": dte,
                     "calls": ch.calls, "puts": ch.puts})
+    # If at least one expiration was in our DTE window but EVERY single
+    # per-chain fetch failed, treat that as a fetch error (likely
+    # throttled) rather than as "no chains available".
+    if not out and in_window_total > 0 and in_window_failed == in_window_total:
+        raise _ChainFetchError(
+            f"all {in_window_failed} chain fetch(es) failed in DTE window — last error: {last_err_msg}",
+            rate_limited=_looks_rate_limited(last_err_msg),
+        )
     return out
 
 
@@ -1053,12 +1095,29 @@ def recommend_for_ticker(ticker: str,
         )
 
     # Option chain + IV context
-    chains = _fetch_chains_in_window(ticker, dte_min, dte_max)
+    try:
+        chains = _fetch_chains_in_window(ticker, dte_min, dte_max)
+    except _ChainFetchError as exc:
+        # Chain fetch threw — distinguish rate-limit (UI shows banner,
+        # try again later) from generic failure (likely intermittent).
+        if exc.rate_limited:
+            out["reason"] = (
+                f"chain fetch rate-limited by Yahoo — try again in a few minutes "
+                f"({dte_min}-{dte_max} DTE window)"
+            )
+            out["chain_fetch_status"] = "rate_limited"
+        else:
+            out["reason"] = (
+                f"chain fetch failed ({dte_min}-{dte_max} DTE): {exc}"
+            )
+            out["chain_fetch_status"] = "error"
+        return out
     if not chains:
         out["reason"] = (
-            f"no liquid option chain available in {dte_min}-{dte_max} DTE "
-            f"(yfinance returned nothing or ticker isn't optionable)"
+            f"ticker has no listed expirations in {dte_min}-{dte_max} DTE "
+            f"(may not be optionable, or no contracts in that window)"
         )
+        out["chain_fetch_status"] = "no_chain"
         return out
     atm_iv = _atm_iv(chains, current_price)
     iv_ctx = _iv_regime(atm_iv, realized_vol)
