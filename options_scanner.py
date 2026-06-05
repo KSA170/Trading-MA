@@ -284,37 +284,68 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
              len(pool), len(pre_scored), "HIT" if was_cached else "MISS")
 
     out_recs: list[dict] = []
-    for i, cand in enumerate(pool, start=1):
-        if should_cancel:
+    # Per-ticker hard cap (seconds). recommend_for_ticker makes ~10-15
+    # yfinance + Finnhub calls per ticker, with no built-in timeout. A
+    # single hung call (Yahoo throttling, DNS hiccup, etc.) could stall
+    # the entire scan for tens of minutes without this. Wrap each call
+    # in a single-worker pool; if it doesn't return within the cap,
+    # log + skip. The underlying thread keeps running (it's daemon),
+    # but we no longer block on it.
+    import concurrent.futures as _cf
+    _PER_TICKER_TIMEOUT_SEC = 60.0
+    _ticker_pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="opt-rec")
+
+    try:
+        for i, cand in enumerate(pool, start=1):
+            if should_cancel:
+                try:
+                    if should_cancel():
+                        log.info("scan_universe: cancelled at %d/%d", i - 1, len(pool))
+                        break
+                except Exception:
+                    pass
+            ticker = cand["ticker"]
+            if progress_cb:
+                try:
+                    progress_cb(i, len(pool), ticker)
+                except Exception:
+                    pass
+            t0 = time.time()
+            log.info("scan [%d/%d] %s starting", i, len(pool), ticker)
             try:
-                if should_cancel():
-                    log.info("scan_universe: cancelled at %d/%d", i - 1, len(pool))
-                    break
-            except Exception:
-                pass
-        ticker = cand["ticker"]
-        if progress_cb:
-            try:
-                progress_cb(i, len(pool), ticker)
-            except Exception:
-                pass
-        try:
-            rec = opt.recommend_for_ticker(ticker, dte_min=dte_min, dte_max=dte_max)
-        except Exception as exc:
-            log.warning("recommend_for_ticker(%s) failed: %s", ticker, exc)
-            continue
-        if rec.get("composite_score") is None:
-            # Hit an early gate (no chain, below floor, etc.) — skip.
-            continue
-        # Tag with the pre-score for transparency in the digest.
-        rec["pre_composite"] = cand["pre_composite"]
-        rec["pre_direction_bias"] = cand["direction_bias"]
-        out_recs.append(rec)
-        if persist:
-            try:
-                opt.save_recommendation_with_iv(rec)
+                fut = _ticker_pool.submit(
+                    opt.recommend_for_ticker,
+                    ticker, dte_min=dte_min, dte_max=dte_max,
+                )
+                rec = fut.result(timeout=_PER_TICKER_TIMEOUT_SEC)
+            except _cf.TimeoutError:
+                log.warning("scan [%d/%d] %s TIMED OUT after %.0fs — skipping",
+                            i, len(pool), ticker, _PER_TICKER_TIMEOUT_SEC)
+                continue
             except Exception as exc:
-                log.warning("save_recommendation(%s) failed: %s", ticker, exc)
+                log.warning("scan [%d/%d] %s failed: %s", i, len(pool), ticker, exc)
+                continue
+            log.info("scan [%d/%d] %s done in %.1fs (composite=%s)",
+                     i, len(pool), ticker, time.time() - t0,
+                     rec.get("composite_score"))
+            if rec.get("composite_score") is None:
+                # Hit an early gate (no chain, below floor, etc.) — skip.
+                continue
+            # Tag with the pre-score for transparency in the digest.
+            rec["pre_composite"] = cand["pre_composite"]
+            rec["pre_direction_bias"] = cand["direction_bias"]
+            out_recs.append(rec)
+            if persist:
+                try:
+                    opt.save_recommendation_with_iv(rec)
+                except Exception as exc:
+                    log.warning("save_recommendation(%s) failed: %s", ticker, exc)
+    finally:
+        # wait=False so a still-hanging in-flight ticker doesn't block
+        # the worker from returning. The orphaned thread is daemon — it
+        # will exit on its own when the underlying call eventually
+        # returns or the process restarts.
+        _ticker_pool.shutdown(wait=False)
 
     # Sort by |composite - 50| descending so the digest leads with the
     # strongest directional setups first.
