@@ -3759,7 +3759,8 @@ function _setScanRunning(running) {
 }
 
 function _renderScanProgress(state) {
-  const { done = 0, total = 0, current_ticker, started_at, phase } = state || {};
+  const { done = 0, total = 0, current_ticker, started_at, phase,
+          rate_limited_count = 0 } = state || {};
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const elapsed = started_at ? Math.max(0, Date.now() / 1000 - started_at) : 0;
   const elapsedTxt = elapsed >= 60
@@ -3772,10 +3773,6 @@ function _renderScanProgress(state) {
       ? ` · ~${Math.ceil(remainingSec / 60)}m remaining`
       : ` · ~${Math.ceil(remainingSec)}s remaining`;
   }
-  // Distinguish the preflight phase (pre-scoring universe — happens
-  // before the first per-ticker progress callback fires) from the
-  // per-ticker scanning phase. Without this the status line showed
-  // "Scanning 0/N" for the entire preflight, which looked hung.
   const isPreflight = phase === 'preflight' || (!current_ticker && done === 0);
   let statusLine, listMsg;
   if (isPreflight) {
@@ -3785,6 +3782,13 @@ function _renderScanProgress(state) {
     statusLine = `Scanning ${done}/${total} (${pct}%) · elapsed ${elapsedTxt}${etaTxt}`;
     const ticker = current_ticker ? ` <strong>${escapeHtml(current_ticker)}</strong>` : '';
     listMsg = `Running the 5-layer pipeline on${ticker}. Page updates every ${SCAN_POLL_MS / 1000}s.`;
+  }
+  // Show a prominent banner when Yahoo is throttling us — surfaces the
+  // root cause when the scan would otherwise look mysteriously slow
+  // (each rate-limited ticker either times out at 60s or fails fast,
+  // both of which produce no useful recommendation).
+  if (rate_limited_count > 0) {
+    listMsg = `<div class="scan-ratelimit-banner"><strong>⚠️ Yahoo Finance is rate-limiting us</strong> — ${rate_limited_count} ticker${rate_limited_count === 1 ? '' : 's'} affected so far. The scan will continue but most tickers will be skipped. Try again in 5-10 minutes, or run after market close when traffic is lower.</div>` + listMsg;
   }
   if (els.optionsStatus) els.optionsStatus.innerHTML = statusLine;
   if (els.optionsScanList)
