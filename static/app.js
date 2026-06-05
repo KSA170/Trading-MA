@@ -3759,13 +3759,12 @@ function _setScanRunning(running) {
 }
 
 function _renderScanProgress(state) {
-  const { done = 0, total = 0, current_ticker, started_at } = state || {};
+  const { done = 0, total = 0, current_ticker, started_at, phase } = state || {};
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const elapsed = started_at ? Math.max(0, Date.now() / 1000 - started_at) : 0;
   const elapsedTxt = elapsed >= 60
     ? `${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`
     : `${Math.floor(elapsed)}s`;
-  // Linear extrapolation of remaining time from the per-ticker rate.
   let etaTxt = '';
   if (done > 0 && total > done && elapsed > 0) {
     const remainingSec = (elapsed / done) * (total - done);
@@ -3773,12 +3772,23 @@ function _renderScanProgress(state) {
       ? ` · ~${Math.ceil(remainingSec / 60)}m remaining`
       : ` · ~${Math.ceil(remainingSec)}s remaining`;
   }
-  const ticker = current_ticker ? ` · scanning <strong>${escapeHtml(current_ticker)}</strong>` : '';
-  if (els.optionsStatus)
-    els.optionsStatus.innerHTML = `Scanning ${done}/${total} (${pct}%) · elapsed ${elapsedTxt}${etaTxt}`;
+  // Distinguish the preflight phase (pre-scoring universe — happens
+  // before the first per-ticker progress callback fires) from the
+  // per-ticker scanning phase. Without this the status line showed
+  // "Scanning 0/N" for the entire preflight, which looked hung.
+  const isPreflight = phase === 'preflight' || (!current_ticker && done === 0);
+  let statusLine, listMsg;
+  if (isPreflight) {
+    statusLine = `Pre-scoring universe · elapsed ${elapsedTxt}`;
+    listMsg = `Pre-scoring the liquid snapshot universe. The per-ticker pipeline starts once this finishes (usually a few seconds; can take longer if Yahoo is throttling). Page updates every ${SCAN_POLL_MS / 1000}s.`;
+  } else {
+    statusLine = `Scanning ${done}/${total} (${pct}%) · elapsed ${elapsedTxt}${etaTxt}`;
+    const ticker = current_ticker ? ` <strong>${escapeHtml(current_ticker)}</strong>` : '';
+    listMsg = `Running the 5-layer pipeline on${ticker}. Page updates every ${SCAN_POLL_MS / 1000}s.`;
+  }
+  if (els.optionsStatus) els.optionsStatus.innerHTML = statusLine;
   if (els.optionsScanList)
-    els.optionsScanList.innerHTML =
-      `<div class="muted scan-running">Pre-scoring the liquid universe, then running the 5-layer pipeline${ticker}. The page updates every ${SCAN_POLL_MS / 1000}s.</div>`;
+    els.optionsScanList.innerHTML = `<div class="muted scan-running">${listMsg}</div>`;
 }
 
 async function _pollScanStatus() {
@@ -3906,6 +3916,18 @@ if (els.optionsScanList) {
     if (card && card.dataset.ticker && els.optionsTicker) {
       els.optionsTicker.value = card.dataset.ticker;
       runOptionsLookup();
+      // The result panel renders ABOVE the scan list and is tall (prose,
+      // layer breakdown, IV context). Without this scroll the scan list
+      // gets pushed below the fold and the user thinks the other cards
+      // disappeared. Scroll the result into view so the click visibly
+      // does something — the scan list stays mounted, just scroll back
+      // down to see it.
+      if (els.optionsResult) {
+        // Wait a tick so the panel has rendered and has a height.
+        setTimeout(() => els.optionsResult.scrollIntoView({
+          behavior: 'smooth', block: 'start',
+        }), 50);
+      }
     }
   });
 }
