@@ -54,17 +54,46 @@ DIGEST_WATCH_CALL_MIN   = 70
 DIGEST_WATCH_PUT_MAX    = 30
 
 
+def _bump_rate_limit_counter_if(exc: BaseException | None, hit: bool) -> None:
+    """Bump scan_state.rate_limited_count when a per-ticker failure
+    looks like a Yahoo 429. The UI uses this counter to show a clear
+    'Yahoo is rate-limiting' banner so the user knows the scan isn't
+    silently broken. Defined at module level so scan_universe can call
+    it without circular-import gymnastics."""
+    if not hit:
+        return
+    try:
+        with _scan_lock:
+            _scan_state["rate_limited_count"] = (
+                _scan_state.get("rate_limited_count", 0) + 1
+            )
+    except NameError:
+        # _scan_lock isn't defined yet during import — happens only if
+        # scan_universe is called before start_scan has initialised the
+        # background-job state. Safe to no-op; the cron path doesn't
+        # need the counter (it logs directly).
+        pass
+
+
 def _build_sector_5d_cache() -> dict[str, float]:
     """Fetch sector ETF + SPY 5-day moves once per scan, in parallel.
     Returns {etf_symbol: pct, "SPY": pct, sector_name: pct} so lookups
     by either sector name or ETF symbol work.
 
-    Was sequential before — 13 yfinance calls of ~1-3s each meant the
-    cache build could take 30-40s on a slow day, with no progress
-    visible to the UI. Parallelized with a small pool, so wall-clock
-    is now ~max-single-fetch (~3s typical, maybe 10s if Yahoo is
-    throttling). Each fetch also gets a 15s hard cap via future
-    timeout so a single hung call can't stall the whole pre-score."""
+    Hard 10-second overall budget — if Yahoo is throttling and the
+    fetches don't finish in time, we abandon whatever's still in
+    flight and continue with an empty cache. The pre-score's sector
+    layer then returns None for affected tickers and the renormalized
+    composite uses Price alone. Better than blocking the entire scan
+    on stuck yfinance retries.
+
+    Previous bug: `as_completed(futures, timeout=None)` waited
+    indefinitely for the next future, and a per-future
+    `fut.result(timeout=15)` is a no-op since as_completed only yields
+    futures that have ALREADY completed. So if every fetch was stuck
+    in yfinance's internal retry loop on a 429, the whole pre-score
+    hung. Replaced with `cf.wait(timeout=10)` which has true overall
+    semantics."""
     import concurrent.futures as cf
     import options as opt
     t0 = time.time()
@@ -72,7 +101,6 @@ def _build_sector_5d_cache() -> dict[str, float]:
     for sector_name, etf in opt._SECTOR_ETFS.items():
         targets.append((sector_name, etf))
 
-    out: dict[str, float] = {}
     def _one(symbol: str) -> tuple[str, float | None]:
         s0 = time.time()
         try:
@@ -83,15 +111,19 @@ def _build_sector_5d_cache() -> dict[str, float]:
         log.debug("ETF %s fetched in %.1fs -> %s", symbol, time.time() - s0, v)
         return (symbol, v)
 
-    with cf.ThreadPoolExecutor(max_workers=8, thread_name_prefix="etf-fetch") as pool:
+    OVERALL_TIMEOUT = 10.0
+    out: dict[str, float] = {}
+    pool = cf.ThreadPoolExecutor(max_workers=8, thread_name_prefix="etf-fetch")
+    try:
         futures = {pool.submit(_one, etf): (sector_name, etf)
                    for sector_name, etf in targets}
-        for fut in cf.as_completed(futures, timeout=None):
+        done, not_done = cf.wait(futures, timeout=OVERALL_TIMEOUT)
+        for fut in done:
             sector_name, etf = futures[fut]
             try:
-                _, v = fut.result(timeout=15)
-            except cf.TimeoutError:
-                log.warning("ETF %s fetch timed out (15s)", etf)
+                _, v = fut.result()
+            except Exception as exc:
+                log.warning("ETF %s result raised: %s", etf, exc)
                 v = None
             if v is None:
                 continue
@@ -100,8 +132,19 @@ def _build_sector_5d_cache() -> dict[str, float]:
             else:
                 out[etf] = v
                 out[sector_name] = v
+        if not_done:
+            abandoned = [futures[f][1] for f in not_done]
+            log.warning("abandoned %d ETF fetches after %.0fs budget: %s",
+                        len(not_done), OVERALL_TIMEOUT, abandoned)
+    finally:
+        # wait=False — orphaned daemon threads will exit when their
+        # in-flight yfinance call returns. Without this, we'd block
+        # on exiting the with-block until the slowest fetch finished.
+        pool.shutdown(wait=False)
     log.info("sector ETF cache built in %.1fs (%d/%d resolved)",
-             time.time() - t0, len(out), len(targets) + len(opt._SECTOR_ETFS))
+             time.time() - t0,
+             len([k for k in out if not k.startswith(" ")]),
+             len(opt._SECTOR_ETFS) + 1)
     return out
 
 
@@ -284,37 +327,74 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
              len(pool), len(pre_scored), "HIT" if was_cached else "MISS")
 
     out_recs: list[dict] = []
-    for i, cand in enumerate(pool, start=1):
-        if should_cancel:
+    # Per-ticker hard cap (seconds). recommend_for_ticker makes ~10-15
+    # yfinance + Finnhub calls per ticker with no built-in timeout — a
+    # single hung call could stall the whole scan. Wrap each call in a
+    # single-worker pool; if it doesn't return within the cap, log +
+    # skip. Orphaned daemon thread will exit when the underlying call
+    # eventually returns or the process restarts.
+    import concurrent.futures as _cf
+    _PER_TICKER_TIMEOUT_SEC = 60.0
+    _ticker_pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="opt-rec")
+
+    def _looks_rate_limited(exc: BaseException) -> bool:
+        m = str(exc).lower()
+        return ("too many" in m or "rate limit" in m or "429" in m
+                or "throttl" in m)
+
+    try:
+        for i, cand in enumerate(pool, start=1):
+            if should_cancel:
+                try:
+                    if should_cancel():
+                        log.info("scan_universe: cancelled at %d/%d", i - 1, len(pool))
+                        break
+                except Exception:
+                    pass
+            ticker = cand["ticker"]
+            if progress_cb:
+                try:
+                    progress_cb(i, len(pool), ticker)
+                except Exception:
+                    pass
+            t0 = time.time()
+            log.info("scan [%d/%d] %s starting", i, len(pool), ticker)
             try:
-                if should_cancel():
-                    log.info("scan_universe: cancelled at %d/%d", i - 1, len(pool))
-                    break
-            except Exception:
-                pass
-        ticker = cand["ticker"]
-        if progress_cb:
-            try:
-                progress_cb(i, len(pool), ticker)
-            except Exception:
-                pass
-        try:
-            rec = opt.recommend_for_ticker(ticker, dte_min=dte_min, dte_max=dte_max)
-        except Exception as exc:
-            log.warning("recommend_for_ticker(%s) failed: %s", ticker, exc)
-            continue
-        if rec.get("composite_score") is None:
-            # Hit an early gate (no chain, below floor, etc.) — skip.
-            continue
-        # Tag with the pre-score for transparency in the digest.
-        rec["pre_composite"] = cand["pre_composite"]
-        rec["pre_direction_bias"] = cand["direction_bias"]
-        out_recs.append(rec)
-        if persist:
-            try:
-                opt.save_recommendation_with_iv(rec)
+                fut = _ticker_pool.submit(
+                    opt.recommend_for_ticker,
+                    ticker, dte_min=dte_min, dte_max=dte_max,
+                )
+                rec = fut.result(timeout=_PER_TICKER_TIMEOUT_SEC)
+            except _cf.TimeoutError:
+                log.warning("scan [%d/%d] %s TIMED OUT after %.0fs — skipping",
+                            i, len(pool), ticker, _PER_TICKER_TIMEOUT_SEC)
+                _bump_rate_limit_counter_if(None, hit=False)
+                continue
             except Exception as exc:
-                log.warning("save_recommendation(%s) failed: %s", ticker, exc)
+                log.warning("scan [%d/%d] %s failed: %s", i, len(pool), ticker, exc)
+                if _looks_rate_limited(exc):
+                    _bump_rate_limit_counter_if(exc, hit=True)
+                continue
+            log.info("scan [%d/%d] %s done in %.1fs (composite=%s)",
+                     i, len(pool), ticker, time.time() - t0,
+                     rec.get("composite_score"))
+            if rec.get("composite_score") is None:
+                # Hit an early gate (no chain, below floor, etc.) — skip.
+                continue
+            # Tag with the pre-score for transparency in the digest.
+            rec["pre_composite"] = cand["pre_composite"]
+            rec["pre_direction_bias"] = cand["direction_bias"]
+            out_recs.append(rec)
+            if persist:
+                try:
+                    opt.save_recommendation_with_iv(rec)
+                except Exception as exc:
+                    log.warning("save_recommendation(%s) failed: %s", ticker, exc)
+    finally:
+        # wait=False so a still-hanging in-flight ticker doesn't block
+        # the worker from returning. The orphaned daemon thread will
+        # exit when the underlying call eventually returns.
+        _ticker_pool.shutdown(wait=False)
 
     # Sort by |composite - 50| descending so the digest leads with the
     # strongest directional setups first.
@@ -424,6 +504,11 @@ _scan_state: dict = {
     # accurately — "Pre-scoring universe…" vs "Scanning AAPL (5/100)"
     # instead of always "Scanning 0/N" before the first ticker.
     "phase": "idle",
+    # Count of per-ticker failures whose exception message looks like a
+    # Yahoo Finance 429 / rate limit. The UI shows a visible banner
+    # when this is > 0 so the user knows the scan is being throttled
+    # rather than silently failing every ticker.
+    "rate_limited_count": 0,
 }
 _scan_lock = threading.Lock()
 _scan_thread: "threading.Thread | None" = None
@@ -492,6 +577,7 @@ def start_scan(top_n: int,
             top_n=int(top_n), dte_min=int(dte_min), dte_max=int(dte_max),
             last_result=None, last_error=None,
             phase="preflight",
+            rate_limited_count=0,
         )
 
     def _progress(i: int, total: int, ticker: str) -> None:

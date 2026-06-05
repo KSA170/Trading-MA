@@ -1855,6 +1855,17 @@ button.hidden { display: none; }
 }
 .options-scan-panel { margin-top: 16px; }
 .options-scan-panel.hidden { display: none; }
+.scan-ratelimit-banner {
+  display: block;
+  background: rgba(255, 152, 0, 0.12);
+  border: 1px solid rgba(255, 152, 0, 0.5);
+  color: #ff9800;
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  text-align: left;
+}
 .scan-running, .scan-empty {
   padding: 14px;
   font-size: 12px;
