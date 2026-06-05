@@ -55,19 +55,53 @@ DIGEST_WATCH_PUT_MAX    = 30
 
 
 def _build_sector_5d_cache() -> dict[str, float]:
-    """Fetch sector ETF + SPY 5-day moves once per scan. Returns
-    {etf_symbol: pct, "SPY": pct, sector_name: pct} so lookups by
-    either sector name or ETF symbol work."""
+    """Fetch sector ETF + SPY 5-day moves once per scan, in parallel.
+    Returns {etf_symbol: pct, "SPY": pct, sector_name: pct} so lookups
+    by either sector name or ETF symbol work.
+
+    Was sequential before — 13 yfinance calls of ~1-3s each meant the
+    cache build could take 30-40s on a slow day, with no progress
+    visible to the UI. Parallelized with a small pool, so wall-clock
+    is now ~max-single-fetch (~3s typical, maybe 10s if Yahoo is
+    throttling). Each fetch also gets a 15s hard cap via future
+    timeout so a single hung call can't stall the whole pre-score."""
+    import concurrent.futures as cf
     import options as opt
-    out: dict[str, float] = {}
-    spy = opt._fetch_etf_5d_move("SPY")
-    if spy is not None:
-        out["SPY"] = spy
+    t0 = time.time()
+    targets: list[tuple[str | None, str]] = [(None, "SPY")]
     for sector_name, etf in opt._SECTOR_ETFS.items():
-        v = opt._fetch_etf_5d_move(etf)
-        if v is not None:
-            out[etf] = v
-            out[sector_name] = v
+        targets.append((sector_name, etf))
+
+    out: dict[str, float] = {}
+    def _one(symbol: str) -> tuple[str, float | None]:
+        s0 = time.time()
+        try:
+            v = opt._fetch_etf_5d_move(symbol)
+        except Exception as exc:
+            log.warning("ETF fetch %s raised: %s", symbol, exc)
+            v = None
+        log.debug("ETF %s fetched in %.1fs -> %s", symbol, time.time() - s0, v)
+        return (symbol, v)
+
+    with cf.ThreadPoolExecutor(max_workers=8, thread_name_prefix="etf-fetch") as pool:
+        futures = {pool.submit(_one, etf): (sector_name, etf)
+                   for sector_name, etf in targets}
+        for fut in cf.as_completed(futures, timeout=None):
+            sector_name, etf = futures[fut]
+            try:
+                _, v = fut.result(timeout=15)
+            except cf.TimeoutError:
+                log.warning("ETF %s fetch timed out (15s)", etf)
+                v = None
+            if v is None:
+                continue
+            if sector_name is None:   # the SPY entry
+                out["SPY"] = v
+            else:
+                out[etf] = v
+                out[sector_name] = v
+    log.info("sector ETF cache built in %.1fs (%d/%d resolved)",
+             time.time() - t0, len(out), len(targets) + len(opt._SECTOR_ETFS))
     return out
 
 
@@ -240,14 +274,14 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
     truthy, the loop exits early and partial results are returned."""
     import options as opt
 
-    pre_result = _pre_score_with_counts(
+    pre_result, was_cached = _pre_score_cached(
         price_floor=price_floor, vol_floor=volume_floor,
         min_distance=min_directional_distance,
     )
     pre_scored = pre_result["pre_scored"]
     pool = pre_scored[: max(1, int(top_n))]
-    log.info("scan_universe: top %d of %d pre-scored candidates",
-             len(pool), len(pre_scored))
+    log.info("scan_universe: top %d of %d pre-scored candidates (cache %s)",
+             len(pool), len(pre_scored), "HIT" if was_cached else "MISS")
 
     out_recs: list[dict] = []
     for i, cand in enumerate(pool, start=1):
@@ -385,6 +419,11 @@ _scan_state: dict = {
     "dte_max": 0,
     "last_result": None,    # full scan_universe() return value
     "last_error": None,
+    # "idle" | "preflight" (running pre-score) | "scanning" (per-ticker
+    # full pipeline) | "done". Lets the UI label the elapsed counter
+    # accurately — "Pre-scoring universe…" vs "Scanning AAPL (5/100)"
+    # instead of always "Scanning 0/N" before the first ticker.
+    "phase": "idle",
 }
 _scan_lock = threading.Lock()
 _scan_thread: "threading.Thread | None" = None
@@ -410,6 +449,7 @@ def cancel_scan() -> bool:
         _scan_state["cancelled"] = True
         _scan_state["running"] = False
         _scan_state["finished_at"] = time.time()
+        _scan_state["phase"] = "done"
         return True
 
 
@@ -451,10 +491,14 @@ def start_scan(top_n: int,
             current_ticker=None,
             top_n=int(top_n), dte_min=int(dte_min), dte_max=int(dte_max),
             last_result=None, last_error=None,
+            phase="preflight",
         )
 
     def _progress(i: int, total: int, ticker: str) -> None:
         with _scan_lock:
+            # First progress callback marks the transition from preflight
+            # (pre-scoring universe) to scanning (full per-ticker pipeline).
+            _scan_state["phase"] = "scanning"
             # `done` is the count finished BEFORE this ticker; the UI
             # shows "scanning ticker (i of total)" while it works.
             _scan_state["done"] = max(0, i - 1)
@@ -486,10 +530,71 @@ def start_scan(top_n: int,
             with _scan_lock:
                 _scan_state["running"] = False
                 _scan_state["finished_at"] = time.time()
+                _scan_state["phase"] = "done"
 
     _scan_thread = threading.Thread(target=_run, daemon=True, name="options-scan")
     _scan_thread.start()
     return {"started": True, **scan_status()}
+
+
+# ---------------------------------------------------------------------------
+# Pre-score cache — shared between the preview endpoint and scan_universe.
+# The full _pre_score_with_counts() result (including the per-ticker
+# pre_scored list) is cached for 5 min keyed on (snap_date, gates), so:
+#   - clicking "Refresh preview" then "Scan Universe" within the same 5m
+#     reuses one pre-score (skips ~13 sector-ETF yfinance calls)
+#   - flipping between scan sizes (Top 25 vs Top 50) doesn't re-pre-score
+#
+# Was preview-only before; scan_universe re-ran _pre_score_with_counts
+# from scratch even when the preview had just populated the cache.
+
+_PRE_SCORE_TTL_SEC = 5 * 60
+_pre_score_cache: dict = {"key": None, "expires": 0.0, "result": None}
+_pre_score_lock = threading.Lock()
+
+
+def invalidate_preview_cache() -> None:
+    """Drop the cached pre-score. Called on settings change so the next
+    preview / scan recomputes against the new gates."""
+    with _pre_score_lock:
+        _pre_score_cache["key"] = None
+        _pre_score_cache["expires"] = 0.0
+        _pre_score_cache["result"] = None
+
+
+def _pre_score_cached(price_floor: float,
+                      vol_floor: float,
+                      min_distance: float,
+                      force: bool = False) -> tuple[dict, bool]:
+    """Return (full _pre_score_with_counts result, was_cached). Reuses the
+    in-memory cache when the gates and snap_date match; bypasses on
+    force=True. Cache key includes the snap_date so a new daily snapshot
+    landing during the TTL doesn't serve stale counts."""
+    import snapshots
+    snap_date = None
+    if snapshots.enabled():
+        dates = snapshots.available_dates(1)
+        if dates:
+            snap_date = dates[0]
+    key = (snap_date, round(price_floor, 3), int(vol_floor), round(min_distance, 3))
+
+    now = time.time()
+    if not force:
+        with _pre_score_lock:
+            if (_pre_score_cache["key"] == key
+                    and _pre_score_cache["expires"] > now
+                    and _pre_score_cache["result"] is not None):
+                return _pre_score_cache["result"], True
+
+    result = _pre_score_with_counts(
+        snap_date=snap_date, price_floor=price_floor,
+        vol_floor=vol_floor, min_distance=min_distance,
+    )
+    with _pre_score_lock:
+        _pre_score_cache["key"] = key
+        _pre_score_cache["expires"] = now + _PRE_SCORE_TTL_SEC
+        _pre_score_cache["result"] = result
+    return result, False
 
 
 # ---------------------------------------------------------------------------
@@ -607,22 +712,8 @@ def save_settings(raw: dict) -> dict:
 
 
 # --- Preview-counts endpoint -----------------------------------------------
-# pre_score_universe iterates ~8k snapshot rows + makes ~13 yfinance calls
-# for the sector ETF cache. Costs ~2-4 seconds. We cache the result for
-# 5 minutes keyed on (snap_date, gate values) so the UI panel + repeated
-# refreshes don't hammer it.
-
-_PREVIEW_TTL_SEC = 5 * 60
-_preview_cache: dict = {"key": None, "expires": 0.0, "data": None}
-_preview_lock = threading.Lock()
-
-
-def invalidate_preview_cache() -> None:
-    with _preview_lock:
-        _preview_cache["key"] = None
-        _preview_cache["expires"] = 0.0
-        _preview_cache["data"] = None
-
+# Uses the shared _pre_score_cached() helper above so the next scan_universe
+# call within the cache TTL reuses the same pre-scored list.
 
 def preview_counts(price_floor: float | None = None,
                    volume_floor: float | None = None,
@@ -630,37 +721,18 @@ def preview_counts(price_floor: float | None = None,
                    force: bool = False) -> dict:
     """Run pre_score_universe with the given gates and return JUST the
     counts (not the per-ticker pre_scored list, which is large). 5-min
-    cached. Pass force=True to bypass the cache."""
-    import snapshots
+    cached via the shared `_pre_score_cached` helper; pass force=True
+    to bypass."""
     settings = load_settings()
     pf = settings["price_floor"] if price_floor is None else float(price_floor)
     vf = settings["volume_floor"] if volume_floor is None else float(volume_floor)
     md = (settings["min_directional_distance"]
           if min_directional_distance is None else float(min_directional_distance))
 
-    snap_date = None
-    if snapshots.enabled():
-        dates = snapshots.available_dates(1)
-        if dates:
-            snap_date = dates[0]
-    key = (snap_date, round(pf, 3), int(vf), round(md, 3))
-
-    now = time.time()
-    if not force:
-        with _preview_lock:
-            if (_preview_cache["key"] == key
-                    and _preview_cache["expires"] > now
-                    and _preview_cache["data"] is not None):
-                return {**_preview_cache["data"], "cached": True}
-
-    result = _pre_score_with_counts(
-        snap_date=snap_date, price_floor=pf, vol_floor=vf, min_distance=md,
-    )
-    # Top of pre-scored list — useful preview for the UI ("strongest
-    # bull / strongest bear right now"), without sending the full list.
+    result, was_cached = _pre_score_cached(pf, vf, md, force=force)
     top_bull = [r for r in result["pre_scored"] if r["direction_bias"] == "call"][:5]
     top_bear = [r for r in result["pre_scored"] if r["direction_bias"] == "put"][:5]
-    data = {
+    return {
         "snap_date": result["snap_date"],
         "scanned": result["scanned"],
         "liquid": result["liquid"],
@@ -673,10 +745,6 @@ def preview_counts(price_floor: float | None = None,
                      for r in top_bear],
         "gates": {"price_floor": pf, "volume_floor": int(vf),
                   "min_directional_distance": md},
-        "computed_at": now,
+        "computed_at": time.time(),
+        "cached": was_cached,
     }
-    with _preview_lock:
-        _preview_cache["key"] = key
-        _preview_cache["expires"] = now + _PREVIEW_TTL_SEC
-        _preview_cache["data"] = data
-    return {**data, "cached": False}
