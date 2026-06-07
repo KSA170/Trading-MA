@@ -1855,6 +1855,55 @@ button.hidden { display: none; }
 }
 .options-scan-panel { margin-top: 16px; }
 .options-scan-panel.hidden { display: none; }
+/* Recent recommendations panel — date picker + view filter + pin */
+.options-history-controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 8px 4px 12px;
+}
+.oh-control { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+.oh-control select { padding: 3px 6px; }
+.oh-radio { cursor: pointer; }
+.options-history-controls .refresh-btn {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-muted); border-radius: 4px;
+  padding: 2px 8px; cursor: pointer; font-size: 13px;
+  margin-left: auto;
+}
+.options-history-controls .refresh-btn:hover:not(:disabled) {
+  color: var(--text); border-color: var(--accent);
+}
+
+.options-history-row { position: relative; }
+.options-history-row .pin-btn {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-muted); border-radius: 4px;
+  padding: 2px 8px; cursor: pointer; font-size: 13px;
+  margin-left: auto;
+}
+.options-history-row .pin-btn:hover { color: var(--text); border-color: var(--accent); }
+.options-history-row .pin-btn.pinned {
+  background: rgba(255, 196, 0, 0.15);
+  border-color: rgba(255, 196, 0, 0.6);
+  color: #ffc400;
+}
+.options-history-row .pinned-meta {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.options-history-row .pin-note {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+}
+
 .scan-ratelimit-banner {
   display: block;
   background: rgba(255, 152, 0, 0.12);

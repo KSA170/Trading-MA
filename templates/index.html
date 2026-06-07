@@ -766,6 +766,21 @@
           <span class="chevron">▾</span> Recent recommendations <span class="muted" id="options-history-status"></span>
         </button>
         <div id="options-history-body" class="history-body">
+          <div class="options-history-controls">
+            <label class="oh-control" title="Pick which scan's results to view. Pinned recs are kept even if the underlying scan ages out — toggle '📌 Pinned only' to see just your bookmarked picks.">
+              Date:
+              <select id="options-history-date"></select>
+            </label>
+            <label class="oh-control oh-radio">
+              <input type="radio" name="options-history-view" value="all" checked />
+              All
+            </label>
+            <label class="oh-control oh-radio" title="Show only recommendations you've pinned. Pinned items survive across days even when the source scan is overwritten.">
+              <input type="radio" name="options-history-view" value="pinned" />
+              📌 Pinned only
+            </label>
+            <button id="options-history-refresh" type="button" class="refresh-btn" title="Reload from server.">↻</button>
+          </div>
           <div id="options-history-list"></div>
         </div>
       </section>

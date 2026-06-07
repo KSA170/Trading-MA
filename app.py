@@ -1006,6 +1006,47 @@ def api_options_recommendations():
     return jsonify({"recommendations": options.load_recommendations(as_of)})
 
 
+@app.route("/api/options/recommendation_dates", methods=["GET"])
+def api_options_recommendation_dates():
+    """Distinct as_of dates with recs, most recent first. Powers the
+    date picker on the Recent recommendations panel."""
+    import options
+    return jsonify({"dates": options.available_rec_dates(limit=60)})
+
+
+@app.route("/api/options/pinned", methods=["GET", "POST"])
+def api_options_pinned():
+    """GET → list every pinned rec (full snapshot each), newest first.
+    POST body {ticker, as_of, note?} → snapshot the live rec into the
+    pin store. Re-pinning the same (ticker, as_of) updates the note."""
+    import options
+    if request.method == "GET":
+        return jsonify({"pinned": options.load_pinned()})
+    body = request.get_json(silent=True) or {}
+    ticker = (body.get("ticker") or "").strip().upper()
+    as_of  = (body.get("as_of")  or "").strip()
+    note   = body.get("note") or ""
+    if not ticker or not as_of:
+        return jsonify({"error": "ticker and as_of are required"}), 400
+    pin = options.pin_rec(ticker, as_of, note)
+    if pin is None:
+        return jsonify({"error": f"no recommendation found for {ticker} on {as_of}"}), 404
+    return jsonify({"pin": pin})
+
+
+@app.route("/api/options/pinned/<int:pin_id>", methods=["PATCH", "DELETE"])
+def api_options_pinned_item(pin_id: int):
+    """PATCH body {note} → update the note. DELETE → unpin."""
+    import options
+    if request.method == "DELETE":
+        ok = options.unpin(pin_id)
+        return jsonify({"deleted": ok}), (200 if ok else 404)
+    body = request.get_json(silent=True) or {}
+    note = body.get("note") or ""
+    ok = options.update_pinned_note(pin_id, note)
+    return jsonify({"updated": ok}), (200 if ok else 404)
+
+
 @app.route("/api/options/scan", methods=["POST"])
 def api_options_scan():
     """Kick off an async universe scan. Returns immediately — the UI
