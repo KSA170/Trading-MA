@@ -162,6 +162,24 @@ CREATE TABLE IF NOT EXISTS options_scan_config (
     dte_max                  INT NOT NULL,
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- User-pinned recommendations for later review. `snapshot` freezes
+-- the full rec dict at pin time so it survives even if the
+-- underlying options_recommendations row gets overwritten by a
+-- re-scan on the same day. UNIQUE(ticker, as_of) — re-pinning the
+-- same date+ticker updates the existing pin's note + snapshot
+-- rather than creating duplicates.
+CREATE TABLE IF NOT EXISTS options_pinned_recs (
+    id          BIGSERIAL PRIMARY KEY,
+    ticker      TEXT NOT NULL,
+    as_of       DATE NOT NULL,
+    snapshot    JSONB NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    pinned_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (ticker, as_of)
+);
+CREATE INDEX IF NOT EXISTS options_pinned_recs_pinned_at_idx
+    ON options_pinned_recs (pinned_at DESC);
 """
 
 
@@ -1338,6 +1356,138 @@ def load_recommendations(as_of: str | None = None) -> list[dict]:
             "post_earnings_override": bool(r[19]) if r[19] is not None else False,
         })
     return out
+
+
+def available_rec_dates(limit: int = 30) -> list[str]:
+    """Distinct as_of dates that have at least one rec, most recent
+    first. Powers the date picker on the Recent recommendations
+    panel."""
+    import snapshots
+    if not snapshots.enabled():
+        return []
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT as_of FROM options_recommendations "
+                "GROUP BY as_of ORDER BY as_of DESC LIMIT %s",
+                (int(limit),),
+            )
+            rows = cur.fetchall()
+        return [r[0].isoformat() for r in rows if r[0]]
+    except Exception as exc:
+        log.warning("options.available_rec_dates failed: %s", exc)
+        return []
+
+
+# --- pinned recommendations -----------------------------------------------
+# User-bookmarked recs for later review. Snapshot-on-pin so the saved
+# copy survives even if the underlying options_recommendations row is
+# overwritten by a re-scan on the same day.
+
+def pin_rec(ticker: str, as_of: str, note: str = "") -> dict | None:
+    """Pin a rec. Looks up the live row from options_recommendations,
+    snapshots its full dict into options_pinned_recs, and returns the
+    new pin (or the updated existing one). Returns None if the source
+    rec doesn't exist or DB is disabled."""
+    import snapshots
+    if not snapshots.enabled():
+        log.warning("pin_rec: DB disabled, can't persist")
+        return None
+    # Look up the live rec for this (ticker, as_of) — same loader the
+    # UI uses, filtered by as_of.
+    recs = load_recommendations(as_of=as_of)
+    rec = next((r for r in recs if (r.get("ticker") or "").upper() == ticker.upper()), None)
+    if rec is None:
+        log.warning("pin_rec: no rec found for %s on %s", ticker, as_of)
+        return None
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO options_pinned_recs (ticker, as_of, snapshot, note) "
+                "VALUES (%s, %s, %s::jsonb, %s) "
+                "ON CONFLICT (ticker, as_of) DO UPDATE SET "
+                "  snapshot = EXCLUDED.snapshot, "
+                "  note = EXCLUDED.note, "
+                "  pinned_at = now() "
+                "RETURNING id, pinned_at",
+                (ticker.upper(), as_of, json.dumps(rec), (note or "").strip()),
+            )
+            row = cur.fetchone()
+        return {
+            "id": int(row[0]),
+            "ticker": ticker.upper(),
+            "as_of": as_of,
+            "snapshot": rec,
+            "note": (note or "").strip(),
+            "pinned_at": row[1].isoformat() if row[1] else None,
+        }
+    except Exception as exc:
+        log.warning("pin_rec(%s, %s) failed: %s", ticker, as_of, exc)
+        return None
+
+
+def load_pinned() -> list[dict]:
+    """Return every pin, most recently pinned first. Each entry has
+    the full frozen snapshot under `snapshot` so the UI can render it
+    even if the source rec has aged out."""
+    import snapshots
+    if not snapshots.enabled():
+        return []
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, ticker, as_of, snapshot, note, pinned_at "
+                "FROM options_pinned_recs "
+                "ORDER BY pinned_at DESC"
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        log.warning("load_pinned failed: %s", exc)
+        return []
+    out: list[dict] = []
+    for r in rows:
+        snap = r[3]
+        if isinstance(snap, str):
+            try: snap = json.loads(snap)
+            except Exception: snap = {}
+        out.append({
+            "id": int(r[0]),
+            "ticker": r[1],
+            "as_of": r[2].isoformat() if r[2] else None,
+            "snapshot": snap,
+            "note": r[4] or "",
+            "pinned_at": r[5].isoformat() if r[5] else None,
+        })
+    return out
+
+
+def update_pinned_note(pin_id: int, note: str) -> bool:
+    import snapshots
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE options_pinned_recs SET note = %s WHERE id = %s",
+                ((note or "").strip(), int(pin_id)),
+            )
+            return cur.rowcount > 0
+    except Exception as exc:
+        log.warning("update_pinned_note(%d) failed: %s", pin_id, exc)
+        return False
+
+
+def unpin(pin_id: int) -> bool:
+    import snapshots
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM options_pinned_recs WHERE id = %s", (int(pin_id),))
+            return cur.rowcount > 0
+    except Exception as exc:
+        log.warning("unpin(%d) failed: %s", pin_id, exc)
+        return False
 
 
 # --- helpers --------------------------------------------------------------

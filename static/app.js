@@ -122,6 +122,8 @@ const els = {
   optionsHistoryStatus: $('#options-history-status'),
   optionsHistoryToggle: $('#options-history-toggle'),
   optionsHistoryBody: $('#options-history-body'),
+  optionsHistoryDate: $('#options-history-date'),
+  optionsHistoryRefresh: $('#options-history-refresh'),
   optionsScanBtn: $('#options-scan-btn'),
   optionsScanCancelBtn: $('#options-scan-cancel-btn'),
   optionsScanTopN: $('#options-scan-topn'),
@@ -3504,35 +3506,81 @@ function renderOptionsResult(rec) {
     header + compositeBar + prose + contractCard + layerBreakdown + ivLine + earningsLine + reasons + partialNote + disclaimer;
 }
 
-function renderOptionsHistory(items) {
+// Pinned recs index keyed by `${ticker}|${as_of}` so the row renderer
+// can decorate pinned entries with the filled button + note input. Also
+// stores the pin id, needed for PATCH/DELETE. Rebuilt on every poll of
+// /api/options/pinned.
+const _pinnedIndex = new Map();
+
+// Currently-selected view ("all" | "pinned") for the history panel.
+// Driven by the radio buttons; persisted to localStorage so it survives
+// reloads.
+const _OH_VIEW_KEY = 'options_history_view';
+let _ohView = (() => {
+  try { return localStorage.getItem(_OH_VIEW_KEY) || 'all'; }
+  catch (_) { return 'all'; }
+})();
+
+function _ohPinKey(ticker, as_of) {
+  return `${(ticker || '').toUpperCase()}|${as_of || ''}`;
+}
+
+function _renderOptionsHistoryRow(r, opts) {
+  opts = opts || {};
+  const verdict = r.verdict || 'PASS';
+  const glyph = _OPTIONS_VERDICT_GLYPH[verdict] || '⚪';
+  const dir = (r.direction || '').toUpperCase();
+  const dirGlyph = _OPTIONS_DIR_GLYPH[r.direction] || '·';
+  const strikeStr = r.strike != null ? `$${fmtNum(r.strike, 2)}` : '';
+  const midStr = r.mid_price != null ? `mid $${fmtNum(r.mid_price, 2)}` : '';
+  const compositeStr = r.composite_score != null
+    ? `composite ${Math.round(r.composite_score)}` : '';
+  const ticker = r.ticker || '';
+  const as_of = r.as_of || '';
+  const pinKey = _ohPinKey(ticker, as_of);
+  const pin = _pinnedIndex.get(pinKey);
+  const isPinned = !!pin;
+  // Always include the date alongside the rec — when viewing pinned-only
+  // (which spans dates), the date is the main thing telling rows apart.
+  const dateStr = as_of ? `<span class="muted">${escapeHtml(as_of)}</span>` : '';
+  const pinBtn = `<button type="button" class="pin-btn ${isPinned ? 'pinned' : ''}" data-action="pin" data-ticker="${escapeHtml(ticker)}" data-as-of="${escapeHtml(as_of)}" data-pin-id="${pin ? pin.id : ''}" title="${isPinned ? 'Unpin this recommendation' : 'Pin so it stays accessible across days'}">📌${isPinned ? ' Pinned' : ' Pin'}</button>`;
+  const pinnedMeta = isPinned && pin && pin.pinned_at
+    ? `<span class="pinned-meta">📌 pinned ${escapeHtml(pin.pinned_at.slice(0, 16).replace('T', ' '))}</span>`
+    : '';
+  const noteInput = isPinned
+    ? `<input type="text" class="pin-note" data-action="note" data-pin-id="${pin.id}" placeholder="Add a note…" value="${escapeHtml(pin.note || '')}" />`
+    : '';
+  return `
+    <div class="options-history-row verdict-${verdict.toLowerCase()}" data-ticker="${escapeHtml(ticker)}" data-as-of="${escapeHtml(as_of)}">
+      <span class="options-history-verdict">${glyph} <b>${verdict}</b></span>
+      <span class="options-history-dir">${dirGlyph} ${dir}</span>
+      <span class="options-history-ticker"><b>${escapeHtml(ticker)}</b></span>
+      ${dateStr}
+      <span class="muted">${escapeHtml(r.expiration || '')} ${strikeStr}</span>
+      <span class="muted">${midStr}</span>
+      <span class="muted">${compositeStr}</span>
+      ${pinBtn}
+      ${pinnedMeta}
+      ${noteInput}
+    </div>`;
+}
+
+function renderOptionsHistory(items, opts) {
   if (!els.optionsHistoryList) return;
   items = items || [];
-  if (els.optionsHistoryStatus)
+  opts = opts || {};
+  const view = opts.view || _ohView;
+  const dateLabel = opts.dateLabel || (items.length ? items[0].as_of : '?');
+  if (els.optionsHistoryStatus) {
     els.optionsHistoryStatus.textContent = items.length
-      ? `(${items.length} for ${items[0].as_of || '?'})`
-      : '(none yet — analyze a ticker above)';
-  if (!items.length) {
-    els.optionsHistoryList.innerHTML = '';
-    return;
+      ? (view === 'pinned'
+          ? `(${items.length} pinned)`
+          : `(${items.length} for ${dateLabel})`)
+      : (view === 'pinned'
+          ? '(no pinned recs yet — click 📌 on any row to keep it here)'
+          : '(none yet — run a scan or analyze a ticker)');
   }
-  els.optionsHistoryList.innerHTML = items.map((r) => {
-    const verdict = r.verdict || 'PASS';
-    const glyph = _OPTIONS_VERDICT_GLYPH[verdict] || '⚪';
-    const dir = (r.direction || '').toUpperCase();
-    const dirGlyph = _OPTIONS_DIR_GLYPH[r.direction] || '·';
-    const strikeStr = r.strike != null ? `$${fmtNum(r.strike, 2)}` : '';
-    const midStr = r.mid_price != null ? `mid $${fmtNum(r.mid_price, 2)}` : '';
-    const compositeStr = r.composite_score != null ? `composite ${Math.round(r.composite_score)}` : '';
-    return `
-      <div class="options-history-row verdict-${verdict.toLowerCase()}" data-ticker="${escapeHtml(r.ticker)}">
-        <span class="options-history-verdict">${glyph} <b>${verdict}</b></span>
-        <span class="options-history-dir">${dirGlyph} ${dir}</span>
-        <span class="options-history-ticker"><b>${escapeHtml(r.ticker)}</b></span>
-        <span class="muted">${escapeHtml(r.expiration || '')} ${strikeStr}</span>
-        <span class="muted">${midStr}</span>
-        <span class="muted">${compositeStr}</span>
-      </div>`;
-  }).join('');
+  els.optionsHistoryList.innerHTML = items.map((r) => _renderOptionsHistoryRow(r)).join('');
 }
 
 function _readDteRange() {
@@ -3588,12 +3636,76 @@ function resetDteRange() {
   if (els.optionsDteMax) els.optionsDteMax.value = '60';
 }
 
-async function loadOptionsHistory() {
+async function _fetchPinned() {
+  // Refreshes _pinnedIndex from the server. Always called before
+  // rendering so pin button state + note values stay in sync.
   try {
-    const res = await fetch('/api/options/recommendations', { cache: 'no-store' });
+    const res = await fetch('/api/options/pinned', { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
-    renderOptionsHistory(data.recommendations || []);
+    _pinnedIndex.clear();
+    for (const pin of data.pinned || []) {
+      // Each pin's full snapshot is also a complete rec dict — index
+      // by (ticker, as_of) so we can decorate matching rows in the
+      // by-date view AND list them in the pinned-only view.
+      _pinnedIndex.set(_ohPinKey(pin.ticker, pin.as_of), pin);
+    }
+  } catch (_) { /* silent */ }
+}
+
+async function _fetchDates() {
+  try {
+    const res = await fetch('/api/options/recommendation_dates', { cache: 'no-store' });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.dates || [];
+  } catch (_) { return []; }
+}
+
+function _populateDatePicker(dates, selectedDate) {
+  if (!els.optionsHistoryDate) return;
+  const prev = selectedDate || els.optionsHistoryDate.value;
+  els.optionsHistoryDate.innerHTML = dates.map(
+    (d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`
+  ).join('') || `<option value="">(no dates)</option>`;
+  // Restore selection if still present; else fall back to most recent.
+  if (prev && dates.indexOf(prev) >= 0) {
+    els.optionsHistoryDate.value = prev;
+  } else if (dates.length) {
+    els.optionsHistoryDate.value = dates[0];
+  }
+}
+
+async function loadOptionsHistory(opts) {
+  // Two-mode loader. View "all": pull recs for the selected date and
+  // render with the pinned overlay. View "pinned": render directly
+  // from _pinnedIndex (no date fetch — pins span dates).
+  opts = opts || {};
+  await _fetchPinned();   // always — so pin decorations stay fresh
+  if (_ohView === 'pinned') {
+    // List the frozen snapshots in pinned_at-desc order (server already
+    // returns them that way). Show the date column so cross-date pins
+    // are easy to tell apart.
+    const items = Array.from(_pinnedIndex.values())
+      .sort((a, b) => (b.pinned_at || '').localeCompare(a.pinned_at || ''))
+      .map((pin) => ({ ...pin.snapshot, as_of: pin.as_of, ticker: pin.ticker }));
+    renderOptionsHistory(items, { view: 'pinned' });
+    return;
+  }
+  // View "all": refresh date list (cheap), pick a date, fetch its recs.
+  const dates = await _fetchDates();
+  _populateDatePicker(dates, opts.selectDate);
+  const picked = (els.optionsHistoryDate && els.optionsHistoryDate.value) || '';
+  if (!picked) {
+    renderOptionsHistory([], { view: 'all', dateLabel: '?' });
+    return;
+  }
+  try {
+    const res = await fetch(`/api/options/recommendations?date=${encodeURIComponent(picked)}`,
+                            { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderOptionsHistory(data.recommendations || [], { view: 'all', dateLabel: picked });
   } catch (_) { /* silent */ }
 }
 
@@ -3653,15 +3765,92 @@ if (els.optionsDteMax) {
     if (ev.key === 'Enter') { ev.preventDefault(); runOptionsLookup(); }
   });
 }
+async function _togglePin(ticker, as_of, currentPinId) {
+  if (currentPinId) {
+    // Unpin
+    try {
+      await fetch(`/api/options/pinned/${currentPinId}`, { method: 'DELETE' });
+    } catch (_) { /* silent */ }
+  } else {
+    // Pin (snapshot the rec server-side)
+    try {
+      await fetch('/api/options/pinned', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker, as_of }),
+      });
+    } catch (_) { /* silent */ }
+  }
+  await loadOptionsHistory();   // refresh both index + render
+}
+
+// Debounce note updates so we PATCH once after the user stops typing.
+const _noteDebounces = new Map();
+function _savePinNote(pinId, note) {
+  clearTimeout(_noteDebounces.get(pinId));
+  _noteDebounces.set(pinId, setTimeout(async () => {
+    try {
+      await fetch(`/api/options/pinned/${pinId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note }),
+      });
+      // Refresh the index so a subsequent re-render keeps the value.
+      // No re-render needed — the input the user is typing in stays as-is.
+      await _fetchPinned();
+    } catch (_) { /* silent */ }
+  }, 600));
+}
+
 if (els.optionsHistoryList) {
   els.optionsHistoryList.addEventListener('click', (ev) => {
+    // Pin/unpin button — handle before the row-click → analyze path.
+    const pinBtn = ev.target.closest('button[data-action="pin"]');
+    if (pinBtn) {
+      ev.stopPropagation();
+      const id = pinBtn.dataset.pinId ? parseInt(pinBtn.dataset.pinId, 10) : null;
+      _togglePin(pinBtn.dataset.ticker, pinBtn.dataset.asOf, id);
+      return;
+    }
+    // Clicking the note input shouldn't trigger the row-level analyze.
+    if (ev.target.closest('input.pin-note')) return;
     const row = ev.target.closest('.options-history-row');
     if (row && row.dataset.ticker && els.optionsTicker) {
       els.optionsTicker.value = row.dataset.ticker;
       runOptionsLookup();
     }
   });
+  // Debounced note PATCH on input.
+  els.optionsHistoryList.addEventListener('input', (ev) => {
+    const inp = ev.target.closest('input.pin-note');
+    if (!inp) return;
+    const id = parseInt(inp.dataset.pinId, 10);
+    if (Number.isFinite(id)) _savePinNote(id, inp.value);
+  });
 }
+
+if (els.optionsHistoryDate) {
+  els.optionsHistoryDate.addEventListener('change', () => loadOptionsHistory());
+}
+if (els.optionsHistoryRefresh) {
+  els.optionsHistoryRefresh.addEventListener('click', () => loadOptionsHistory());
+}
+document.querySelectorAll('input[name="options-history-view"]').forEach((r) => {
+  // Initialise from persisted state.
+  if (r.value === _ohView) r.checked = true;
+  r.addEventListener('change', () => {
+    if (!r.checked) return;
+    _ohView = r.value;
+    try { localStorage.setItem(_OH_VIEW_KEY, _ohView); } catch (_) {}
+    // Date picker is only relevant in "all" view.
+    if (els.optionsHistoryDate) els.optionsHistoryDate.disabled = (_ohView === 'pinned');
+    loadOptionsHistory();
+  });
+});
+if (els.optionsHistoryDate) {
+  els.optionsHistoryDate.disabled = (_ohView === 'pinned');
+}
+
 wireCollapse(els.optionsHistoryToggle, els.optionsHistoryBody, 'collapse_options_history');
 loadOptionsHistory();
 
