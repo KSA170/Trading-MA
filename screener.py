@@ -2219,23 +2219,17 @@ def reference_dates(n: int = 21) -> list[dict]:
 # --- chart payload ---------------------------------------------------------
 
 def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
-    """Daily OHLCV + EMA(21)/EMA(50) + RSI(14)/9d-SMA-of-RSI +
-    MACD(12, 26, 9) — line, signal, histogram — for the hover chart."""
+    """Daily OHLCV + SMA(10/20/30/40) + RSI(14)/9d-SMA-of-RSI for the
+    hover chart. Indicators are read from the enriched cache columns
+    (see `_enrich`) so they match what the screener computed."""
     df = _cached_history(ticker, period=period)
     if df is None or df.empty:
         return None
 
-    df = df.copy()
-    df["EMA21"] = ema(df["Close"], 21)
-    df["EMA50"] = ema(df["Close"], 50)
-    df["RSI"] = rsi_wilder(df["Close"], 14)
-    df["RSI_SMA9"] = df["RSI"].rolling(window=9, min_periods=9).mean()
-    # MACD(12, 26, 9) — same recipe used in the snapshot builder / screener.
-    macd_line = ema(df["Close"], 12) - ema(df["Close"], 26)
-    macd_signal = ema(macd_line, 9)
-    df["MACD"] = macd_line
-    df["MACD_SIGNAL"] = macd_signal
-    df["MACD_HIST"] = macd_line - macd_signal
+    # Belt-and-suspenders: if the cache predates the SMA10/20/30/40 fields
+    # for any reason, enrich on demand so the chart still has lines to draw.
+    if "sma10" not in df.columns:
+        df = _enrich(df.copy())
 
     rows = []
     for idx, r in df.iterrows():
@@ -2246,13 +2240,12 @@ def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
             "low": _safe(r["Low"]),
             "close": _safe(r["Close"]),
             "volume": _safe(r["Volume"]),
-            "ema21": _safe(r["EMA21"]),
-            "ema50": _safe(r["EMA50"]),
-            "rsi": _safe(r["RSI"]),
-            "rsi_sma9": _safe(r["RSI_SMA9"]),
-            "macd": _safe(r["MACD"]),
-            "macd_signal": _safe(r["MACD_SIGNAL"]),
-            "macd_hist": _safe(r["MACD_HIST"]),
+            "sma10": _safe(r.get("sma10")),
+            "sma20": _safe(r.get("sma20")),
+            "sma30": _safe(r.get("sma30")),
+            "sma40": _safe(r.get("sma40")),
+            "rsi": _safe(r.get("rsi14")),
+            "rsi_sma9": _safe(r.get("rsi_sma9")),
         })
     return {
         "ticker": display_symbol(ticker),

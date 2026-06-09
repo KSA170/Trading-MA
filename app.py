@@ -2,7 +2,7 @@
 Flask web app exposing:
   GET   /                    -> single page UI
   GET   /api/screen          -> run screener (cached for the trading session)
-  GET   /api/chart/<tkr>     -> daily OHLCV + EMA21/50 + RSI(14)/9d-SMA
+  GET   /api/chart/<tkr>     -> daily OHLCV + SMA(10/20/30/40) + RSI(14)/9d-SMA
   GET   /api/lists           -> available list keys / labels
   GET   /api/dates           -> last N trading-day dates for the date picker
   POST  /api/export/xlsx     -> download selected rows as an Excel workbook
