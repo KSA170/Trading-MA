@@ -196,6 +196,12 @@ const inputs = {
   market_cap_min_m: $('#market_cap_min_m'),
   market_cap_max_m: $('#market_cap_max_m'),
   pct_change_min: $('#pct_change_min'),
+  sma_cross_lookback: $('#sma_cross_lookback'),
+  sma_slope_turn_lookback: $('#sma_slope_turn_lookback'),
+  sma_slope_window: $('#sma_slope_window'),
+  sma_min_slope_pct: $('#sma_min_slope_pct'),
+  sma_long_flat_max_pct: $('#sma_long_flat_max_pct'),
+  sma_volume_mult: $('#sma_volume_mult'),
 };
 
 const refreshUniverseBtn = $('#refresh-universe-btn');
@@ -218,6 +224,9 @@ const toggles = {
   apply_turnover: $('#apply_turnover'),
   apply_market_cap: $('#apply_market_cap'),
   apply_pct_change: $('#apply_pct_change'),
+  apply_sma_revival: $('#apply_sma_revival'),
+  sma_require_long_flat: $('#sma_require_long_flat'),
+  sma_require_volume: $('#sma_require_volume'),
 };
 
 // Parallel inputs/toggles for the screener-rule criteria modal — same keys
@@ -552,6 +561,7 @@ function syncDisabledStates() {
     apply_turnover: 'turnover',
     apply_market_cap: 'market_cap',
     apply_pct_change: 'pct_change',
+    apply_sma_revival: 'sma_revival',
   };
   for (const [toggleId, groupKey] of Object.entries(map)) {
     const t = toggles[toggleId];
@@ -799,6 +809,18 @@ const COLUMN_DEFS = [
   { key: 'macd_hist', label: 'MACD hist', type: 'num',
     title: 'MACD histogram: the MACD line (EMA12 - EMA26) minus its 9-day signal line. Positive and rising signals strengthening upward momentum.',
     render: (r) => `<td class="num ${r.macd_hist >= 0 ? 'pos' : 'neg'}">${fmtNum(r.macd_hist, 4)}</td>` },
+  { key: 'sma10', label: 'SMA(10)', type: 'num',
+    title: '10-day simple moving average of close.',
+    render: (r) => `<td class="num">${r.sma10 == null ? '—' : fmtNum(r.sma10)}</td>` },
+  { key: 'sma10_slope_pct', label: '10-SMA slope', type: 'num',
+    title: '10-SMA slope as %/day, measured over the slope-window bars. Positive and rising means the trend is turning up.',
+    render: (r) => `<td class="num ${r.sma10_slope_pct == null ? '' : (r.sma10_slope_pct >= 0 ? 'pos' : 'neg')}">${r.sma10_slope_pct == null ? '—' : ((r.sma10_slope_pct >= 0 ? '+' : '') + fmtNum(r.sma10_slope_pct, 3) + '%/d')}</td>` },
+  { key: 'cross_days_ago', label: 'Cross↑', type: 'num',
+    title: 'Days since the close crossed above the 10-SMA from below. 0 = today, 1 = yesterday. Empty = no cross within the lookback window.',
+    render: (r) => `<td class="num">${r.cross_days_ago == null ? '—' : (r.cross_days_ago === 0 ? 'today' : r.cross_days_ago + 'd ago')}</td>` },
+  { key: 'slope_turn_days_ago', label: 'Turn↑', type: 'num',
+    title: 'Days since the 10-SMA slope crossed from ≤ 0 to > 0 — the inflection where the downtrend ended. Empty = no inflection in the lookback window.',
+    render: (r) => `<td class="num">${r.slope_turn_days_ago == null ? '—' : (r.slope_turn_days_ago === 0 ? 'today' : r.slope_turn_days_ago + 'd ago')}</td>` },
   { key: 'rel_volume', label: 'RVol', type: 'num',
     title: "Relative volume: the day's volume divided by the average volume of the prior N days. Above 1× means the stock traded busier than usual.",
     render: (r) => `<td class="num">${fmtNum(r.rel_volume)}×</td>` },

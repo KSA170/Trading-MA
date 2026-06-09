@@ -170,6 +170,40 @@
       </div>
     </div>
 
+    <div class="filter-group" data-group="sma_revival" title="Catches the early-stage bullish setup where the 10-day SMA has flattened and starts to slope up while price crosses above it from below. Two required signals:&#10;  • 10-SMA slope turned from ≤ 0 to > 0 within the last N bars&#10;  • Close crossed above 10-SMA from below within the last N bars&#10;The min-slope value gates today's slope so flat-line noise doesn't fire. Optional sub-toggles further restrict to early-stage (20-SMA still flat) or to crosses confirmed by above-average volume.">
+      <label class="group-toggle"><input type="checkbox" id="apply_sma_revival" /> SMA Revival (10-SMA turn-up + cross)</label>
+      <div class="filter">
+        <label title="How many bars back to search for the close-crosses-above-10-SMA event. Lower = stricter (only very fresh crosses).">cross lookback (bars)</label>
+        <input id="sma_cross_lookback" type="number" min="1" max="20" value="3" />
+      </div>
+      <div class="filter">
+        <label title="How many bars back to search for the 10-SMA slope turning from ≤ 0 to > 0. Slope typically inflects within a few bars of the cross.">slope-turn lookback (bars)</label>
+        <input id="sma_slope_turn_lookback" type="number" min="1" max="20" value="5" />
+      </div>
+      <div class="filter">
+        <label title="Number of bars over which to measure 10-SMA slope: slope = (SMA[t] - SMA[t-window]) / SMA[t-window] / window × 100. Larger window = smoother but more lagging.">slope window (bars)</label>
+        <input id="sma_slope_window" type="number" min="2" max="10" value="3" />
+      </div>
+      <div class="filter">
+        <label title="Today's 10-SMA slope must exceed this many %/day. Filters out flat-line noise where the SMA wiggles around zero.">min slope (%/day)</label>
+        <input id="sma_min_slope_pct" type="number" step="0.01" min="0" value="0.10" />
+      </div>
+      <div class="filter inline-toggle">
+        <label class="inline-checkbox" title="Catch the inflection early — fires only when SMA20 is still ≤ the max-slope value below (i.e. the longer trend hasn't turned up yet). Off by default."><input type="checkbox" id="sma_require_long_flat" /> early-stage (20-SMA still flat)</label>
+      </div>
+      <div class="filter">
+        <label title="Max %/day slope for the 20-SMA to count as 'still flat'. Lower = stricter. Only used when the early-stage toggle is on.">20-SMA max slope (%/day)</label>
+        <input id="sma_long_flat_max_pct" type="number" step="0.05" min="0" value="0.30" />
+      </div>
+      <div class="filter inline-toggle">
+        <label class="inline-checkbox" title="Require the cross-up bar's volume to be at least N× its 20-day average. Filters out low-conviction crosses on quiet days. Off by default."><input type="checkbox" id="sma_require_volume" /> confirm cross with volume</label>
+      </div>
+      <div class="filter">
+        <label title="Multiplier for the volume confirmation: cross-bar volume ≥ N × 20-day average. Only used when the volume toggle is on.">volume multiplier</label>
+        <input id="sma_volume_mult" type="number" step="0.1" min="1" value="1.2" />
+      </div>
+    </div>
+
     <div class="filter-group" data-group="rvol">
       <label class="group-toggle"><input type="checkbox" id="apply_rvol" checked /> Relative volume</label>
       <div class="filter">
