@@ -59,8 +59,6 @@ DEFAULT_PARAMS: dict = {
     "price_dev_max_pct": 4.0,
     "ema_dev_min_pct": -3.0,
     "ema_dev_max_pct": 3.0,
-    "macd_hist_min": 0.0,
-    "macd_require_rising": True,
     "macd_within_pct": True,
     "macd_vs_signal_pct": 5.0,
     "macd_above_signal": False,
@@ -78,7 +76,6 @@ DEFAULT_PARAMS: dict = {
     "apply_price": True,
     "apply_price_dev": True,
     "apply_ema_dev": True,
-    "apply_macd": True,
     "apply_macd_vs_signal": False,
     "apply_turnover": False,
     "apply_market_cap": False,
@@ -109,7 +106,6 @@ def _cache_key(params: dict) -> tuple:
     price = (round(float(params["price_min"]), 4), round(float(params["price_max"]), 4)) if params["apply_price"] else ("off",)
     price_dev = (round(float(params["price_dev_min_pct"]), 3), round(float(params["price_dev_max_pct"]), 3)) if params["apply_price_dev"] else ("off",)
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
-    macd = (round(float(params["macd_hist_min"]), 4), bool(params["macd_require_rising"])) if params["apply_macd"] else ("off",)
     macd_vs_sig = (
         bool(params["macd_within_pct"]),
         round(float(params["macd_vs_signal_pct"]), 4),
@@ -119,9 +115,19 @@ def _cache_key(params: dict) -> tuple:
     turnover = (round(float(params["turnover_min_pct"]), 4), round(float(params["turnover_max_pct"]), 4)) if params["apply_turnover"] else ("off",)
     market_cap = (round(float(params["market_cap_min_m"]), 2), round(float(params["market_cap_max_m"]), 2)) if params["apply_market_cap"] else ("off",)
     pct_change = (round(float(params["pct_change_min"]), 4),) if params["apply_pct_change"] else ("off",)
+    sma_rev = (
+        int(params["sma_cross_lookback"]),
+        int(params["sma_slope_turn_lookback"]),
+        int(params["sma_slope_window"]),
+        round(float(params["sma_min_slope_pct"]), 4),
+        bool(params["sma_require_long_flat"]),
+        round(float(params["sma_long_flat_max_pct"]), 4),
+        bool(params["sma_require_volume"]),
+        round(float(params["sma_volume_mult"]), 4),
+    ) if params["apply_sma_revival"] else ("off",)
     lists = tuple(sorted(params["lists"]))
     as_of = int(params["as_of_offset"])
-    return ("v17", as_of, price, price_dev, ema_dev, macd, macd_vs_sig, turnover, market_cap, pct_change, high, rsi, rsi_dev, rvol, avg_vol, lists)
+    return ("v18", as_of, price, price_dev, ema_dev, macd_vs_sig, turnover, market_cap, pct_change, sma_rev, high, rsi, rsi_dev, rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -186,8 +192,6 @@ def _parse_params() -> dict:
         "price_dev_max_pct": _flt("price_dev_max_pct", 4),
         "ema_dev_min_pct": _flt("ema_dev_min_pct", -3),
         "ema_dev_max_pct": _flt("ema_dev_max_pct", 3),
-        "macd_hist_min": _flt("macd_hist_min", 0),
-        "macd_require_rising": _parse_bool("macd_require_rising", True),
         "macd_within_pct": _parse_bool("macd_within_pct", True),
         "macd_vs_signal_pct": _flt("macd_vs_signal_pct", 5.0),
         "macd_above_signal": _parse_bool("macd_above_signal", False),
@@ -205,7 +209,6 @@ def _parse_params() -> dict:
         "apply_price": _parse_bool("apply_price", True),
         "apply_price_dev": _parse_bool("apply_price_dev", True),
         "apply_ema_dev": _parse_bool("apply_ema_dev", True),
-        "apply_macd": _parse_bool("apply_macd", True),
         "apply_macd_vs_signal": _parse_bool("apply_macd_vs_signal", False),
         "apply_turnover": _parse_bool("apply_turnover", False),
         "apply_market_cap": _parse_bool("apply_market_cap", False),
@@ -275,8 +278,6 @@ def _api_screen_impl():
         price_dev_max_pct=params["price_dev_max_pct"],
         ema_dev_min_pct=params["ema_dev_min_pct"],
         ema_dev_max_pct=params["ema_dev_max_pct"],
-        macd_hist_min=params["macd_hist_min"],
-        macd_require_rising=params["macd_require_rising"],
         macd_within_pct=params["macd_within_pct"],
         macd_above_signal=params["macd_above_signal"],
         macd_vs_signal_pct=params["macd_vs_signal_pct"],
@@ -294,7 +295,6 @@ def _api_screen_impl():
         apply_price=params["apply_price"],
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
-        apply_macd=params["apply_macd"],
         apply_macd_vs_signal=params["apply_macd_vs_signal"],
         apply_turnover=params["apply_turnover"],
         apply_market_cap=params["apply_market_cap"],
@@ -630,8 +630,6 @@ def api_debug(ticker: str):
         price_dev_max_pct=params["price_dev_max_pct"],
         ema_dev_min_pct=params["ema_dev_min_pct"],
         ema_dev_max_pct=params["ema_dev_max_pct"],
-        macd_hist_min=params["macd_hist_min"],
-        macd_require_rising=params["macd_require_rising"],
         macd_within_pct=params["macd_within_pct"],
         macd_above_signal=params["macd_above_signal"],
         macd_vs_signal_pct=params["macd_vs_signal_pct"],
@@ -649,7 +647,6 @@ def api_debug(ticker: str):
         apply_price=params["apply_price"],
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
-        apply_macd=params["apply_macd"],
         apply_macd_vs_signal=params["apply_macd_vs_signal"],
         apply_turnover=params["apply_turnover"],
         apply_market_cap=params["apply_market_cap"],

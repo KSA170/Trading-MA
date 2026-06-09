@@ -31,220 +31,225 @@
   </button>
 
   <section class="filters" id="filters-section">
-    <div class="filter-group scope">
-      <label class="group-label">
-        Exchanges
-        <button id="refresh-universe-btn" type="button" class="refresh-btn" title="Re-fetch the US symbol directory from nasdaqtrader.com">↻</button>
-      </label>
-      <div class="filter exchange-dd">
-        <button id="exchange-dd-btn" type="button" class="dd-btn">All exchanges</button>
-        <div id="exchange-dd-menu" class="dd-menu hidden">
-          <label class="list-option list-all"><input type="checkbox" id="list_all" checked /> Select all</label>
-          <label class="list-option"><input type="checkbox" data-list-key="nyse" checked /> NYSE (incl. NYSE American)</label>
-          <label class="list-option"><input type="checkbox" data-list-key="nasdaq" checked /> NASDAQ</label>
-          <label class="list-option"><input type="checkbox" data-list-key="tsx" checked /> TSX</label>
-          <label class="list-option"><input type="checkbox" data-list-key="tsxv" checked /> TSX Venture</label>
+    <div class="filter-section">
+      <div class="filter-section-header">Universe &amp; price</div>
+      <div class="filter-section-grid">
+        <div class="filter-group scope">
+          <label class="group-label">
+            Exchanges
+            <button id="refresh-universe-btn" type="button" class="refresh-btn" title="Re-fetch the US symbol directory from nasdaqtrader.com">↻</button>
+          </label>
+          <div class="filter exchange-dd">
+            <button id="exchange-dd-btn" type="button" class="dd-btn">All exchanges</button>
+            <div id="exchange-dd-menu" class="dd-menu hidden">
+              <label class="list-option list-all"><input type="checkbox" id="list_all" checked /> Select all</label>
+              <label class="list-option"><input type="checkbox" data-list-key="nyse" checked /> NYSE (incl. NYSE American)</label>
+              <label class="list-option"><input type="checkbox" data-list-key="nasdaq" checked /> NASDAQ</label>
+              <label class="list-option"><input type="checkbox" data-list-key="tsx" checked /> TSX</label>
+              <label class="list-option"><input type="checkbox" data-list-key="tsxv" checked /> TSX Venture</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="filter-group scope">
+          <label class="group-label">As-of close</label>
+          <div class="filter">
+            <select id="as_of_offset">
+              <option value="0">Latest</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="filter-group" data-group="price">
+          <label class="group-toggle"><input type="checkbox" id="apply_price" checked /> Price range</label>
+          <div class="filter">
+            <label>min ($)</label>
+            <input id="price_min" type="number" step="0.5" min="0" value="1" />
+          </div>
+          <div class="filter">
+            <label>max ($)</label>
+            <input id="price_max" type="number" step="1" min="0" value="1000" />
+          </div>
+        </div>
+
+        <div class="filter-group" data-group="pct_change">
+          <label class="group-toggle" title="Filter the universe to tickers whose latest bar gained at least this much vs. the prior trading day's close. Day-over-day — same number as the '% chg' column in the results table. Threshold ≥ 0 implicitly requires a green day.">
+            <input type="checkbox" id="apply_pct_change" /> Latest bar % gain
+          </label>
+          <div class="filter">
+            <label>min (%)</label>
+            <input id="pct_change_min" type="number" step="0.5" min="0" value="5" />
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="filter-group scope">
-      <label class="group-label">As-of close</label>
-      <div class="filter">
-        <select id="as_of_offset">
-          <option value="0">Latest</option>
-        </select>
+    <div class="filter-section">
+      <div class="filter-section-header">Trend</div>
+      <div class="filter-section-grid">
+        <div class="filter-group" data-group="high">
+          <label class="group-toggle"><input type="checkbox" id="apply_high" checked /> Price streak</label>
+          <div class="filter">
+            <label>Streak length (days)</label>
+            <input id="high_lookback" type="number" min="2" max="60" value="2" />
+          </div>
+          <div class="filter">
+            <label>Mode</label>
+            <select id="streak_mode">
+              <option value="high">Higher highs (high &gt; prior high)</option>
+              <option value="close">Higher closes (close &gt; prior close)</option>
+              <option value="green">Green bodies (close &gt; open)</option>
+              <option value="close_green">Higher closes &amp; green bodies (both)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="filter-group" data-group="price_dev">
+          <label class="group-toggle"><input type="checkbox" id="apply_price_dev" checked /> Price dev vs EMA(21)</label>
+          <div class="filter">
+            <label>min (%)</label>
+            <input id="price_dev_min_pct" type="number" step="0.5" value="-1" />
+          </div>
+          <div class="filter">
+            <label>max (%)</label>
+            <input id="price_dev_max_pct" type="number" step="0.5" value="4" />
+          </div>
+        </div>
+
+        <div class="filter-group" data-group="ema_dev">
+          <label class="group-toggle"><input type="checkbox" id="apply_ema_dev" checked /> EMA(21) dev vs EMA(50)</label>
+          <div class="filter">
+            <label>min (%)</label>
+            <input id="ema_dev_min_pct" type="number" step="0.5" value="-3" />
+          </div>
+          <div class="filter">
+            <label>max (%)</label>
+            <input id="ema_dev_max_pct" type="number" step="0.5" value="3" />
+          </div>
+        </div>
+
+        <div class="filter-group wide" data-group="sma_revival" title="Catches the early-stage bullish setup where the 10-day SMA has flattened and starts to slope up while price crosses above it from below. Two required signals:&#10;  • 10-SMA slope turned from ≤ 0 to > 0 within the last N bars&#10;  • Close crossed above 10-SMA from below within the last N bars&#10;The min-slope value gates today's slope so flat-line noise doesn't fire. Optional sub-toggles further restrict to early-stage (20-SMA still flat) or to crosses confirmed by above-average volume.">
+          <label class="group-toggle"><input type="checkbox" id="apply_sma_revival" /> SMA Revival (10-SMA turn-up + cross)</label>
+          <div class="filter-grid-inner">
+            <div class="filter">
+              <label title="How many bars back to search for the close-crosses-above-10-SMA event. Lower = stricter (only very fresh crosses).">cross lookback (bars)</label>
+              <input id="sma_cross_lookback" type="number" min="1" max="20" value="3" />
+            </div>
+            <div class="filter">
+              <label title="How many bars back to search for the 10-SMA slope turning from ≤ 0 to > 0. Slope typically inflects within a few bars of the cross.">slope-turn lookback (bars)</label>
+              <input id="sma_slope_turn_lookback" type="number" min="1" max="20" value="5" />
+            </div>
+            <div class="filter">
+              <label title="Number of bars over which to measure 10-SMA slope: slope = (SMA[t] - SMA[t-window]) / SMA[t-window] / window × 100. Larger window = smoother but more lagging.">slope window (bars)</label>
+              <input id="sma_slope_window" type="number" min="2" max="10" value="3" />
+            </div>
+            <div class="filter">
+              <label title="Today's 10-SMA slope must exceed this many %/day. Filters out flat-line noise where the SMA wiggles around zero.">min slope (%/day)</label>
+              <input id="sma_min_slope_pct" type="number" step="0.01" min="0" value="0.10" />
+            </div>
+            <div class="filter sub-gate">
+              <label class="inline-checkbox" title="Catch the inflection early — fires only when SMA20 is still ≤ the max-slope value below (i.e. the longer trend hasn't turned up yet). Off by default."><input type="checkbox" id="sma_require_long_flat" /> early-stage (20-SMA still flat)</label>
+              <input id="sma_long_flat_max_pct" type="number" step="0.05" min="0" value="0.30" title="Max %/day slope for the 20-SMA to count as 'still flat'. Lower = stricter. Only used when the early-stage toggle is on." />
+            </div>
+            <div class="filter sub-gate">
+              <label class="inline-checkbox" title="Require the cross-up bar's volume to be at least N× its 20-day average. Filters out low-conviction crosses on quiet days. Off by default."><input type="checkbox" id="sma_require_volume" /> confirm cross with volume</label>
+              <input id="sma_volume_mult" type="number" step="0.1" min="1" value="1.2" title="Cross-bar volume ≥ N × 20-day average. Only used when the volume toggle is on." />
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="filter-group" data-group="price">
-      <label class="group-toggle"><input type="checkbox" id="apply_price" checked /> Price range</label>
-      <div class="filter">
-        <label>min ($)</label>
-        <input id="price_min" type="number" step="0.5" min="0" value="1" />
-      </div>
-      <div class="filter">
-        <label>max ($)</label>
-        <input id="price_max" type="number" step="1" min="0" value="1000" />
+    <div class="filter-section">
+      <div class="filter-section-header">Momentum</div>
+      <div class="filter-section-grid">
+        <div class="filter-group" data-group="rsi">
+          <label class="group-toggle"><input type="checkbox" id="apply_rsi" checked /> RSI(14) band</label>
+          <div class="filter">
+            <label>min</label>
+            <input id="rsi_min" type="number" step="0.1" min="0" max="100" value="45" />
+          </div>
+          <div class="filter">
+            <label>max</label>
+            <input id="rsi_max" type="number" step="0.1" min="0" max="100" value="65" />
+          </div>
+        </div>
+
+        <div class="filter-group" data-group="rsi_dev">
+          <label class="group-toggle"><input type="checkbox" id="apply_rsi_dev" checked /> RSI(14) dev vs 9d SMA</label>
+          <div class="filter">
+            <label>min (%)</label>
+            <input id="rsi_dev_min_pct" type="number" step="0.5" value="0" />
+          </div>
+          <div class="filter">
+            <label>max (%)</label>
+            <input id="rsi_dev_max_pct" type="number" step="0.5" value="10" />
+          </div>
+        </div>
+
+        <div class="filter-group" data-group="macd_vs_signal" title="MACD line relative to its 9-day SMA (the signal line). Sub-conditions are independent checkboxes — every box you tick must hold for a stock to pass.&#10;&#10;Examples:&#10;  • 'within X%' alone   → near-crossover (either direction)&#10;  • 'MACD ≥ signal' alone → bullish crossover already in place&#10;  • both together       → just crossed above and still close to signal&#10;  • + 'line rising'     → slope confirmation on top of position">
+          <label class="group-toggle"><input type="checkbox" id="apply_macd_vs_signal" /> MACD vs signal line</label>
+          <div class="filter inline-toggle">
+            <label class="inline-checkbox"><input type="checkbox" id="macd_within_pct" checked /> within</label>
+            <input id="macd_vs_signal_pct" type="number" step="0.5" min="0" value="5" style="width: 4em;" />
+            <span class="muted">% of signal</span>
+          </div>
+          <div class="filter inline-toggle">
+            <label class="inline-checkbox"><input type="checkbox" id="macd_above_signal" /> MACD ≥ signal (at or above)</label>
+          </div>
+          <div class="filter inline-toggle">
+            <label class="inline-checkbox"><input type="checkbox" id="macd_line_rising" /> MACD line rising</label>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="filter-group" data-group="pct_change">
-      <label class="group-toggle" title="Filter the universe to tickers whose latest bar gained at least this much vs. the prior trading day's close. Day-over-day — same number as the '% chg' column in the results table. Threshold ≥ 0 implicitly requires a green day.">
-        <input type="checkbox" id="apply_pct_change" /> Latest bar % gain
-      </label>
-      <div class="filter">
-        <label>min (%)</label>
-        <input id="pct_change_min" type="number" step="0.5" min="0" value="5" />
-      </div>
-    </div>
+    <div class="filter-section">
+      <div class="filter-section-header">Volume &amp; size</div>
+      <div class="filter-section-grid">
+        <div class="filter-group" data-group="rvol">
+          <label class="group-toggle"><input type="checkbox" id="apply_rvol" checked /> Relative volume</label>
+          <div class="filter">
+            <label>lookback (days)</label>
+            <input id="rvol_lookback" type="number" min="2" max="60" value="10" />
+          </div>
+          <div class="filter">
+            <label>min (×)</label>
+            <input id="rvol_min" type="number" step="0.05" min="0" value="1.2" />
+          </div>
+        </div>
 
-    <div class="filter-group" data-group="high">
-      <label class="group-toggle"><input type="checkbox" id="apply_high" checked /> Price streak</label>
-      <div class="filter">
-        <label>Streak length (days)</label>
-        <input id="high_lookback" type="number" min="2" max="60" value="2" />
-      </div>
-      <div class="filter">
-        <label>Mode</label>
-        <select id="streak_mode">
-          <option value="high">Higher highs (high &gt; prior high)</option>
-          <option value="close">Higher closes (close &gt; prior close)</option>
-          <option value="green">Green bodies (close &gt; open)</option>
-          <option value="close_green">Higher closes &amp; green bodies (both)</option>
-        </select>
-      </div>
-    </div>
+        <div class="filter-group" data-group="avg_volume">
+          <label class="group-toggle"><input type="checkbox" id="apply_avg_volume" checked /> Avg volume floor</label>
+          <div class="filter">
+            <label>min (shares)</label>
+            <input id="avg_volume_min" type="number" step="1000" min="0" value="50000" />
+          </div>
+        </div>
 
-    <div class="filter-group" data-group="rsi">
-      <label class="group-toggle"><input type="checkbox" id="apply_rsi" checked /> RSI(14) band</label>
-      <div class="filter">
-        <label>min</label>
-        <input id="rsi_min" type="number" step="0.1" min="0" max="100" value="45" />
-      </div>
-      <div class="filter">
-        <label>max</label>
-        <input id="rsi_max" type="number" step="0.1" min="0" max="100" value="65" />
-      </div>
-    </div>
+        <div class="filter-group" data-group="turnover">
+          <label class="group-toggle" title="Daily volume divided by market cap. Equals volume / shares outstanding × 100 — the price cancels out, so this is the share-of-float traded today."><input type="checkbox" id="apply_turnover" /> Volume / market cap</label>
+          <div class="filter">
+            <label>min (%)</label>
+            <input id="turnover_min_pct" type="number" step="0.1" min="0" value="0.5" />
+          </div>
+          <div class="filter">
+            <label>max (%)</label>
+            <input id="turnover_max_pct" type="number" step="0.5" min="0" value="100" />
+          </div>
+        </div>
 
-    <div class="filter-group" data-group="rsi_dev">
-      <label class="group-toggle"><input type="checkbox" id="apply_rsi_dev" checked /> RSI(14) dev vs 9d SMA</label>
-      <div class="filter">
-        <label>min (%)</label>
-        <input id="rsi_dev_min_pct" type="number" step="0.5" value="0" />
-      </div>
-      <div class="filter">
-        <label>max (%)</label>
-        <input id="rsi_dev_max_pct" type="number" step="0.5" value="10" />
-      </div>
-    </div>
-
-    <div class="filter-group" data-group="price_dev">
-      <label class="group-toggle"><input type="checkbox" id="apply_price_dev" checked /> Price dev vs EMA(21)</label>
-      <div class="filter">
-        <label>min (%)</label>
-        <input id="price_dev_min_pct" type="number" step="0.5" value="-1" />
-      </div>
-      <div class="filter">
-        <label>max (%)</label>
-        <input id="price_dev_max_pct" type="number" step="0.5" value="4" />
-      </div>
-    </div>
-
-    <div class="filter-group" data-group="ema_dev">
-      <label class="group-toggle"><input type="checkbox" id="apply_ema_dev" checked /> EMA(21) dev vs EMA(50)</label>
-      <div class="filter">
-        <label>min (%)</label>
-        <input id="ema_dev_min_pct" type="number" step="0.5" value="-3" />
-      </div>
-      <div class="filter">
-        <label>max (%)</label>
-        <input id="ema_dev_max_pct" type="number" step="0.5" value="3" />
-      </div>
-    </div>
-
-    <div class="filter-group" data-group="macd">
-      <label class="group-toggle"><input type="checkbox" id="apply_macd" checked /> MACD histogram bullish</label>
-      <div class="filter">
-        <label>min hist value</label>
-        <input id="macd_hist_min" type="number" step="0.01" value="0" />
-      </div>
-      <div class="filter inline-toggle">
-        <label class="inline-checkbox"><input type="checkbox" id="macd_require_rising" checked /> require rising</label>
-      </div>
-    </div>
-
-    <div class="filter-group" data-group="macd_vs_signal" title="MACD line relative to its 9-day SMA (the signal line). Sub-conditions are independent checkboxes — every box you tick must hold for a stock to pass.&#10;&#10;Examples:&#10;  • 'within X%' alone   → near-crossover (either direction)&#10;  • 'MACD ≥ signal' alone → bullish crossover already in place&#10;  • both together       → just crossed above and still close to signal&#10;  • + 'line rising'     → slope confirmation on top of position">
-      <label class="group-toggle"><input type="checkbox" id="apply_macd_vs_signal" /> MACD vs signal line</label>
-      <div class="filter inline-toggle">
-        <label class="inline-checkbox"><input type="checkbox" id="macd_within_pct" checked /> within</label>
-        <input id="macd_vs_signal_pct" type="number" step="0.5" min="0" value="5" style="width: 4em;" />
-        <span class="muted">% of signal</span>
-      </div>
-      <div class="filter inline-toggle">
-        <label class="inline-checkbox"><input type="checkbox" id="macd_above_signal" /> MACD ≥ signal (at or above)</label>
-      </div>
-      <div class="filter inline-toggle">
-        <label class="inline-checkbox"><input type="checkbox" id="macd_line_rising" /> MACD line rising</label>
-      </div>
-    </div>
-
-    <div class="filter-group" data-group="sma_revival" title="Catches the early-stage bullish setup where the 10-day SMA has flattened and starts to slope up while price crosses above it from below. Two required signals:&#10;  • 10-SMA slope turned from ≤ 0 to > 0 within the last N bars&#10;  • Close crossed above 10-SMA from below within the last N bars&#10;The min-slope value gates today's slope so flat-line noise doesn't fire. Optional sub-toggles further restrict to early-stage (20-SMA still flat) or to crosses confirmed by above-average volume.">
-      <label class="group-toggle"><input type="checkbox" id="apply_sma_revival" /> SMA Revival (10-SMA turn-up + cross)</label>
-      <div class="filter">
-        <label title="How many bars back to search for the close-crosses-above-10-SMA event. Lower = stricter (only very fresh crosses).">cross lookback (bars)</label>
-        <input id="sma_cross_lookback" type="number" min="1" max="20" value="3" />
-      </div>
-      <div class="filter">
-        <label title="How many bars back to search for the 10-SMA slope turning from ≤ 0 to > 0. Slope typically inflects within a few bars of the cross.">slope-turn lookback (bars)</label>
-        <input id="sma_slope_turn_lookback" type="number" min="1" max="20" value="5" />
-      </div>
-      <div class="filter">
-        <label title="Number of bars over which to measure 10-SMA slope: slope = (SMA[t] - SMA[t-window]) / SMA[t-window] / window × 100. Larger window = smoother but more lagging.">slope window (bars)</label>
-        <input id="sma_slope_window" type="number" min="2" max="10" value="3" />
-      </div>
-      <div class="filter">
-        <label title="Today's 10-SMA slope must exceed this many %/day. Filters out flat-line noise where the SMA wiggles around zero.">min slope (%/day)</label>
-        <input id="sma_min_slope_pct" type="number" step="0.01" min="0" value="0.10" />
-      </div>
-      <div class="filter inline-toggle">
-        <label class="inline-checkbox" title="Catch the inflection early — fires only when SMA20 is still ≤ the max-slope value below (i.e. the longer trend hasn't turned up yet). Off by default."><input type="checkbox" id="sma_require_long_flat" /> early-stage (20-SMA still flat)</label>
-      </div>
-      <div class="filter">
-        <label title="Max %/day slope for the 20-SMA to count as 'still flat'. Lower = stricter. Only used when the early-stage toggle is on.">20-SMA max slope (%/day)</label>
-        <input id="sma_long_flat_max_pct" type="number" step="0.05" min="0" value="0.30" />
-      </div>
-      <div class="filter inline-toggle">
-        <label class="inline-checkbox" title="Require the cross-up bar's volume to be at least N× its 20-day average. Filters out low-conviction crosses on quiet days. Off by default."><input type="checkbox" id="sma_require_volume" /> confirm cross with volume</label>
-      </div>
-      <div class="filter">
-        <label title="Multiplier for the volume confirmation: cross-bar volume ≥ N × 20-day average. Only used when the volume toggle is on.">volume multiplier</label>
-        <input id="sma_volume_mult" type="number" step="0.1" min="1" value="1.2" />
-      </div>
-    </div>
-
-    <div class="filter-group" data-group="rvol">
-      <label class="group-toggle"><input type="checkbox" id="apply_rvol" checked /> Relative volume</label>
-      <div class="filter">
-        <label>lookback (days)</label>
-        <input id="rvol_lookback" type="number" min="2" max="60" value="10" />
-      </div>
-      <div class="filter">
-        <label>min (×)</label>
-        <input id="rvol_min" type="number" step="0.05" min="0" value="1.2" />
-      </div>
-    </div>
-
-    <div class="filter-group" data-group="avg_volume">
-      <label class="group-toggle"><input type="checkbox" id="apply_avg_volume" checked /> Avg volume floor</label>
-      <div class="filter">
-        <label>min (shares)</label>
-        <input id="avg_volume_min" type="number" step="1000" min="0" value="50000" />
-      </div>
-    </div>
-
-    <div class="filter-group" data-group="turnover">
-      <label class="group-toggle" title="Daily volume divided by market cap. Equals volume / shares outstanding × 100 — the price cancels out, so this is the share-of-float traded today."><input type="checkbox" id="apply_turnover" /> Volume / market cap</label>
-      <div class="filter">
-        <label>min (%)</label>
-        <input id="turnover_min_pct" type="number" step="0.1" min="0" value="0.5" />
-      </div>
-      <div class="filter">
-        <label>max (%)</label>
-        <input id="turnover_max_pct" type="number" step="0.5" min="0" value="100" />
-      </div>
-    </div>
-
-    <div class="filter-group" data-group="market_cap">
-      <label class="group-toggle" title="Filter by company size. Input is in millions of dollars: 100 = $100M (small-cap floor), 2000 = $2B (mid-cap floor), 10000 = $10B (large-cap), 200000 = $200B (mega-cap). Needs shares outstanding from the live cache or snapshot — tickers without shares data are excluded when this filter is on."><input type="checkbox" id="apply_market_cap" /> Market cap ($M)</label>
-      <div class="filter">
-        <label>min ($M)</label>
-        <input id="market_cap_min_m" type="number" step="50" min="0" value="0" />
-      </div>
-      <div class="filter">
-        <label>max ($M)</label>
-        <input id="market_cap_max_m" type="number" step="50" min="0" value="10000000" />
+        <div class="filter-group" data-group="market_cap">
+          <label class="group-toggle" title="Filter by company size. Input is in millions of dollars: 100 = $100M (small-cap floor), 2000 = $2B (mid-cap floor), 10000 = $10B (large-cap), 200000 = $200B (mega-cap). Needs shares outstanding from the live cache or snapshot — tickers without shares data are excluded when this filter is on."><input type="checkbox" id="apply_market_cap" /> Market cap ($M)</label>
+          <div class="filter">
+            <label>min ($M)</label>
+            <input id="market_cap_min_m" type="number" step="50" min="0" value="0" />
+          </div>
+          <div class="filter">
+            <label>max ($M)</label>
+            <input id="market_cap_max_m" type="number" step="50" min="0" value="10000000" />
+          </div>
+        </div>
       </div>
     </div>
 
@@ -651,12 +656,6 @@
             <label class="group-toggle"><input type="checkbox" id="cm_apply_ema_dev" checked /> EMA(21) dev vs EMA(50)</label>
             <div class="filter"><label>min (%)</label><input id="cm_ema_dev_min_pct" type="number" step="0.5" value="-3" /></div>
             <div class="filter"><label>max (%)</label><input id="cm_ema_dev_max_pct" type="number" step="0.5" value="3" /></div>
-          </div>
-
-          <div class="filter-group" data-group="cm_macd">
-            <label class="group-toggle"><input type="checkbox" id="cm_apply_macd" checked /> MACD histogram bullish</label>
-            <div class="filter"><label>min hist value</label><input id="cm_macd_hist_min" type="number" step="0.01" value="0" /></div>
-            <div class="filter inline-toggle"><label class="inline-checkbox"><input type="checkbox" id="cm_macd_require_rising" checked /> require rising</label></div>
           </div>
 
           <div class="filter-group" data-group="cm_macd_vs_signal">

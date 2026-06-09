@@ -189,7 +189,6 @@ const inputs = {
   price_dev_max_pct: $('#price_dev_max_pct'),
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
-  macd_hist_min: $('#macd_hist_min'),
   macd_vs_signal_pct: $('#macd_vs_signal_pct'),
   turnover_min_pct: $('#turnover_min_pct'),
   turnover_max_pct: $('#turnover_max_pct'),
@@ -215,8 +214,6 @@ const toggles = {
   apply_price: $('#apply_price'),
   apply_price_dev: $('#apply_price_dev'),
   apply_ema_dev: $('#apply_ema_dev'),
-  apply_macd: $('#apply_macd'),
-  macd_require_rising: $('#macd_require_rising'),
   apply_macd_vs_signal: $('#apply_macd_vs_signal'),
   macd_within_pct: $('#macd_within_pct'),
   macd_above_signal: $('#macd_above_signal'),
@@ -247,7 +244,6 @@ const modalInputs = {
   price_dev_max_pct: $('#cm_price_dev_max_pct'),
   ema_dev_min_pct: $('#cm_ema_dev_min_pct'),
   ema_dev_max_pct: $('#cm_ema_dev_max_pct'),
-  macd_hist_min: $('#cm_macd_hist_min'),
   macd_vs_signal_pct: $('#cm_macd_vs_signal_pct'),
   turnover_min_pct: $('#cm_turnover_min_pct'),
   turnover_max_pct: $('#cm_turnover_max_pct'),
@@ -264,8 +260,6 @@ const modalToggles = {
   apply_price: $('#cm_apply_price'),
   apply_price_dev: $('#cm_apply_price_dev'),
   apply_ema_dev: $('#cm_apply_ema_dev'),
-  apply_macd: $('#cm_apply_macd'),
-  macd_require_rising: $('#cm_macd_require_rising'),
   apply_macd_vs_signal: $('#cm_apply_macd_vs_signal'),
   macd_within_pct: $('#cm_macd_within_pct'),
   macd_above_signal: $('#cm_macd_above_signal'),
@@ -556,7 +550,6 @@ function syncDisabledStates() {
     apply_price: 'price',
     apply_price_dev: 'price_dev',
     apply_ema_dev: 'ema_dev',
-    apply_macd: 'macd',
     apply_macd_vs_signal: 'macd_vs_signal',
     apply_turnover: 'turnover',
     apply_market_cap: 'market_cap',
@@ -1889,7 +1882,6 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_rsi_dev) out.push(`RSI dev ${n(p.rsi_dev_min_pct)}–${n(p.rsi_dev_max_pct)}%`);
   if (p.apply_price_dev) out.push(`vs EMA21 ${n(p.price_dev_min_pct)}–${n(p.price_dev_max_pct)}%`);
   if (p.apply_ema_dev) out.push(`EMA21 vs EMA50 ${n(p.ema_dev_min_pct)}–${n(p.ema_dev_max_pct)}%`);
-  if (p.apply_macd) out.push(`MACD hist ≥ ${n(p.macd_hist_min)}${p.macd_require_rising ? ' & rising' : ''}`);
   if (p.apply_macd_vs_signal) {
     const parts = [];
     if (p.macd_within_pct) parts.push(`within ${n(p.macd_vs_signal_pct)}% of signal`);
@@ -2239,7 +2231,6 @@ function syncModalDisabled() {
     apply_price: 'cm_price',
     apply_price_dev: 'cm_price_dev',
     apply_ema_dev: 'cm_ema_dev',
-    apply_macd: 'cm_macd',
     apply_macd_vs_signal: 'cm_macd_vs_signal',
     apply_turnover: 'cm_turnover',
     apply_market_cap: 'cm_market_cap',

@@ -75,12 +75,11 @@ DEFAULT_ALERT_PARAMS: dict = {
     "price_min": 1.0, "price_max": 1000.0,
     "price_dev_min_pct": -1.0, "price_dev_max_pct": 4.0,
     "ema_dev_min_pct": -3.0, "ema_dev_max_pct": 3.0,
-    "macd_hist_min": 0.0, "macd_require_rising": True,
     "turnover_min_pct": 0.5, "turnover_max_pct": 100.0,
     "apply_high": True, "apply_rsi": True, "apply_rsi_dev": True,
     "apply_rvol": True, "apply_avg_volume": False,
     "apply_price": True, "apply_price_dev": True,
-    "apply_ema_dev": True, "apply_macd": True,
+    "apply_ema_dev": True,
     "apply_turnover": False,
 }
 
