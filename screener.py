@@ -74,6 +74,12 @@ class ScreenHit:
     turnover_pct: float | None
     momentum_score: float
     score: float
+    # SMA-revival fields. Populated even when the filter is off so the
+    # columns are always available in the results table.
+    sma10: float | None = None
+    sma10_slope_pct: float | None = None
+    cross_days_ago: int | None = None
+    slope_turn_days_ago: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -96,6 +102,82 @@ def rsi_wilder(close: pd.Series, period: int = 14) -> pd.Series:
 
 def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False, min_periods=period).mean()
+
+
+# --- SMA-revival detection helpers ----------------------------------------
+# Three primitives that power the "10-SMA turn-up + price cross" filter.
+# All operate on a list[float] / np.ndarray and bail out cleanly on NaN
+# or short input. Reused by both evaluate_ticker (DataFrame path) and
+# _evaluate_from_snapshot (recent_bars path) so the math is identical.
+
+def _sma_slope_pct(values, *, window: int = 3, end_idx: int = -1) -> float | None:
+    """Return the slope of `values` as %/day, measured over `window` bars
+    ending at `end_idx` (default = last). `(end - start) / start / window`.
+    None if either endpoint is NaN/zero or the window doesn't fit."""
+    if values is None:
+        return None
+    n = len(values)
+    if n == 0:
+        return None
+    e = end_idx if end_idx >= 0 else n + end_idx
+    s = e - window
+    if s < 0 or e >= n:
+        return None
+    start_v = float(values[s])
+    end_v = float(values[e])
+    if not (np.isfinite(start_v) and np.isfinite(end_v)) or start_v == 0:
+        return None
+    return (end_v - start_v) / start_v / window * 100.0
+
+
+def _cross_above_days_ago(closes, sma, *, max_lookback: int = 5) -> int | None:
+    """Days since `closes` last crossed `sma` from below (close[t-1] < sma[t-1]
+    AND close[t] >= sma[t]). Searches the last `max_lookback` bars. Returns
+    0 for "today", 1 for "yesterday", etc. None if no cross found, if either
+    series is too short, or if any of the required values are NaN."""
+    if closes is None or sma is None:
+        return None
+    n = min(len(closes), len(sma))
+    if n < 2:
+        return None
+    # Walk backwards from the most recent bar. Bar t is a cross-up if the
+    # prior bar's close was strictly below its SMA and bar t's close is
+    # at-or-above its SMA. NaN comparisons fail naturally.
+    end = n - 1
+    earliest = max(1, n - max_lookback)
+    for t in range(end, earliest - 1, -1):
+        c_t = float(closes[t]); s_t = float(sma[t])
+        c_p = float(closes[t - 1]); s_p = float(sma[t - 1])
+        if not all(np.isfinite(v) for v in (c_t, s_t, c_p, s_p)):
+            continue
+        if c_p < s_p and c_t >= s_t:
+            return end - t
+    return None
+
+
+def _slope_turn_days_ago(values, *, window: int = 3, max_lookback: int = 5) -> int | None:
+    """Days since the slope (measured over `window` bars) last crossed from
+    ≤ 0 to > 0 — i.e. the inflection where the SMA stopped declining and
+    started rising. Returns 0 for "today", 1 for "yesterday", etc. None if
+    the zero-crossing isn't found in the last `max_lookback` bars.
+
+    Magnitude is intentionally NOT checked here — the caller separately
+    gates today's slope on a minimum value. Combining the two checks would
+    miss setups where the slope creeps smoothly through zero (e.g. one bar
+    is just above zero, then several bars cross the magnitude threshold)."""
+    if values is None:
+        return None
+    n = len(values)
+    end = n - 1
+    earliest = max(window + 1, n - max_lookback)
+    for t in range(end, earliest - 1, -1):
+        s_today = _sma_slope_pct(values, window=window, end_idx=t)
+        s_prev = _sma_slope_pct(values, window=window, end_idx=t - 1)
+        if s_today is None or s_prev is None:
+            continue
+        if s_prev <= 0 and s_today > 0:
+            return end - t
+    return None
 
 
 # --- heuristic "momentum continuation" score ------------------------------
@@ -464,9 +546,9 @@ def _fetch_shares(ticker: str) -> float | None:
 
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     """Precompute every indicator the screener filters on — EMA(21), EMA(50),
-    RSI(14) + its 9d SMA, and MACD(12, 26, 9) — and store each as a
-    float32 column. Moves all the expensive pandas ewm/rolling work to
-    cache-build time so a screen run becomes a slice + filter pass."""
+    RSI(14) + its 9d SMA, MACD(12, 26, 9), and SMA(10/20/30/40) — and store
+    each as a float32 column. Moves all the expensive pandas ewm/rolling
+    work to cache-build time so a screen run becomes a slice + filter pass."""
     closes = df["Close"]
     df["ema21"] = ema(closes, 21).astype("float32")
     df["ema50"] = ema(closes, 50).astype("float32")
@@ -477,6 +559,12 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     df["macd"] = macd_line.astype("float32")
     df["macd_signal"] = macd_signal.astype("float32")
     df["macd_hist"] = (macd_line - macd_signal).astype("float32")
+    # SMA stack used by the "SMA Revival" filter (10-SMA slope turn-up + price
+    # cross from below). We compute up to SMA40 so the early-stage guard
+    # (require SMA20 still flat) and longer-trend context fields are
+    # available without rolling work at screen time.
+    for n in (10, 20, 30, 40):
+        df[f"sma{n}"] = closes.rolling(window=n, min_periods=n).mean().astype("float32")
     return df
 
 
@@ -504,7 +592,9 @@ def _cached_history(ticker: str, period: str = "6mo", need_shares: bool = False)
             rewrite = False
             # Old cache files (pre-enrichment) lack the indicator columns.
             # Enrich in place and rewrite so we don't have to refetch.
-            if "rsi14" not in df.columns:
+            # Same path catches caches that were enriched before sma10/20/30/40
+            # were added — re-enrich fills them in without a fetch.
+            if "rsi14" not in df.columns or "sma10" not in df.columns:
                 df = _enrich(df)
                 rewrite = True
             # Shares attr was added later; backfill once on demand so the
@@ -837,6 +927,13 @@ def _row_from_df(ticker: str, df: pd.DataFrame) -> dict | None:
         "macd_signal": _scalar("macd_signal"),
         "macd_hist": _scalar("macd_hist"),
         "macd_hist_prev": _scalar("macd_hist", -2),
+        # SMA stack — snapshot the current scalars so the screen path can
+        # compare without rolling. Cross/slope-turn detection still walks
+        # recent_bars closes to find the inflection date.
+        "sma10": _scalar("sma10"),
+        "sma20": _scalar("sma20"),
+        "sma30": _scalar("sma30"),
+        "sma40": _scalar("sma40"),
         "shares": shares_val,
         "recent_bars": {"bars": bars},
     }
@@ -888,7 +985,7 @@ def _read_pickle_for_snapshot(ticker: str) -> tuple[pd.DataFrame | None, str]:
         return None, "empty"
     if len(df) < 2:
         return None, "short"
-    if "rsi14" not in df.columns:
+    if "rsi14" not in df.columns or "sma10" not in df.columns:
         try:
             df = _enrich(df)
         except Exception:
@@ -1215,6 +1312,16 @@ def evaluate_ticker(
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
     apply_pct_change: bool = False,
+    # --- SMA Revival filter (10-SMA slope turn-up + price cross) ----------
+    apply_sma_revival: bool = False,
+    sma_cross_lookback: int = 3,        # bars to look back for the cross-up
+    sma_slope_turn_lookback: int = 5,   # bars to look back for slope inflection
+    sma_slope_window: int = 3,          # window over which slope is measured
+    sma_min_slope_pct: float = 0.10,    # %/day; suppresses flat-line noise
+    sma_require_long_flat: bool = False,  # early-stage guard (20-SMA still flat)
+    sma_long_flat_max_pct: float = 0.30,  # max %/day slope for "still flat"
+    sma_require_volume: bool = False,     # confirm cross-up bar with volume
+    sma_volume_mult: float = 1.20,        # cross-bar vol ≥ N × 20d avg
     as_of_offset: int = 0,
 ) -> ScreenHit | None:
     if as_of_offset < 0:
@@ -1428,6 +1535,62 @@ def evaluate_ticker(
         if not (market_cap_min_m * 1_000_000 <= market_cap <= market_cap_max_m * 1_000_000):
             return None
 
+    # --- SMA Revival filter ----------------------------------------------
+    # Two conditions, both happening within recent bars:
+    #   1. SMA10 slope (over `sma_slope_window` bars) turned from ≤ 0 to
+    #      > `sma_min_slope_pct` within the last `sma_slope_turn_lookback` bars.
+    #   2. Close crossed above SMA10 from below within the last
+    #      `sma_cross_lookback` bars.
+    # Always populate the descriptive fields so the columns are present in
+    # the results regardless of whether the filter is on.
+    sma10_series = df["sma10"].iloc[max(-(sma_slope_turn_lookback + sma_slope_window + 2),
+                                       -len(df)):].to_numpy()
+    closes_for_cross = df["Close"].iloc[max(-(sma_cross_lookback + 2),
+                                           -len(df)):].to_numpy()
+    sma10_for_cross = df["sma10"].iloc[max(-(sma_cross_lookback + 2),
+                                          -len(df)):].to_numpy()
+    sma10_val = float(df["sma10"].iloc[eval_idx]) if np.isfinite(df["sma10"].iloc[eval_idx]) else None
+    sma10_slope = _sma_slope_pct(sma10_series, window=sma_slope_window)
+    cross_days = _cross_above_days_ago(closes_for_cross, sma10_for_cross,
+                                       max_lookback=sma_cross_lookback)
+    slope_turn_days = _slope_turn_days_ago(sma10_series,
+                                           window=sma_slope_window,
+                                           max_lookback=sma_slope_turn_lookback)
+    if apply_sma_revival:
+        if cross_days is None or slope_turn_days is None:
+            return None
+        if sma10_slope is None or sma10_slope <= sma_min_slope_pct:
+            return None
+        # Early-stage guard — require SMA20 still flat / barely rising so we
+        # catch the inflection rather than the already-running trend.
+        if sma_require_long_flat:
+            sma20_series = df["sma20"].iloc[max(-(sma_slope_window + 2),
+                                                -len(df)):].to_numpy()
+            sma20_slope = _sma_slope_pct(sma20_series, window=sma_slope_window)
+            if sma20_slope is None or sma20_slope > sma_long_flat_max_pct:
+                return None
+        # Volume confirmation on the cross-up bar (cross_days_ago = 0 means
+        # today; 1 means yesterday; etc.). Compare against the 20d avg
+        # volume *before* the cross bar.
+        if sma_require_volume:
+            cross_idx = eval_idx - cross_days
+            try:
+                cross_vol = float(volumes.iloc[cross_idx])
+                vol_window_start = cross_idx - 20
+                if vol_window_start < -len(df):
+                    return None
+                if cross_idx == -1:
+                    pre_cross_vols = volumes.iloc[vol_window_start:cross_idx]
+                else:
+                    pre_cross_vols = volumes.iloc[vol_window_start:cross_idx]
+                if len(pre_cross_vols) < 20:
+                    return None
+                avg20 = float(pre_cross_vols.mean())
+                if avg20 <= 0 or cross_vol < avg20 * sma_volume_mult:
+                    return None
+            except (IndexError, ValueError):
+                return None
+
     pct_change = (prev_close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
     breakout = (eval_streak_val - streak_start_val) / streak_start_val if streak_start_val else 0.0
@@ -1476,6 +1639,10 @@ def evaluate_ticker(
         turnover_pct=round(turnover_pct, 4) if turnover_pct is not None else None,
         momentum_score=momentum,
         score=round(score, 4),
+        sma10=round(sma10_val, 4) if sma10_val is not None else None,
+        sma10_slope_pct=round(sma10_slope, 4) if sma10_slope is not None else None,
+        cross_days_ago=cross_days,
+        slope_turn_days_ago=slope_turn_days,
     )
 
 
@@ -1523,6 +1690,16 @@ def _evaluate_from_snapshot(
     apply_turnover: bool,
     apply_market_cap: bool,
     apply_pct_change: bool,
+    # SMA-revival filter — mirror of the evaluate_ticker signature.
+    apply_sma_revival: bool = False,
+    sma_cross_lookback: int = 3,
+    sma_slope_turn_lookback: int = 5,
+    sma_slope_window: int = 3,
+    sma_min_slope_pct: float = 0.10,
+    sma_require_long_flat: bool = False,
+    sma_long_flat_max_pct: float = 0.30,
+    sma_require_volume: bool = False,
+    sma_volume_mult: float = 1.20,
 ) -> ScreenHit | None:
     """Apply every filter against a single snapshot row + its trailing bars.
     Mirrors evaluate_ticker's gates but reads from a dict instead of a
@@ -1696,6 +1873,76 @@ def _evaluate_from_snapshot(
         if not (market_cap_min_m * 1_000_000 <= market_cap <= market_cap_max_m * 1_000_000):
             return None
 
+    # --- SMA Revival (snapshot path) -------------------------------------
+    # The snapshot row carries sma10/20/30/40 scalars and a recent_bars
+    # window (≤60 bars of OHLCV). Build closes + sma10 arrays from the bars
+    # so the inflection / cross detection runs on the same shape of data
+    # as the live path. SMA10 at each historical bar is recomputed from the
+    # bars closes — cheap (≤60 entries) and avoids needing per-bar SMA in
+    # the JSONB payload.
+    sma10_val = row.get("sma10")
+    sma10_slope = None
+    cross_days = None
+    slope_turn_days = None
+    if bars and len(bars) >= 12:
+        try:
+            bar_closes = np.array([float(b["c"]) for b in bars
+                                   if b.get("c") is not None], dtype="float64")
+        except (TypeError, ValueError):
+            bar_closes = np.array([], dtype="float64")
+        if len(bar_closes) >= 11:
+            # Rolling 10-day SMA over the bars window; leading 9 entries
+            # are NaN by design so _sma_slope_pct / _cross_above_days_ago
+            # treat them as not-yet-available.
+            kernel = np.full(10, 1.0 / 10.0)
+            sma10_arr = np.full(len(bar_closes), np.nan, dtype="float64")
+            if len(bar_closes) >= 10:
+                conv = np.convolve(bar_closes, kernel, mode="valid")
+                sma10_arr[9:] = conv
+            sma10_slope = _sma_slope_pct(sma10_arr, window=sma_slope_window)
+            cross_days = _cross_above_days_ago(bar_closes, sma10_arr,
+                                               max_lookback=sma_cross_lookback)
+            slope_turn_days = _slope_turn_days_ago(sma10_arr,
+                                                   window=sma_slope_window,
+                                                   max_lookback=sma_slope_turn_lookback)
+    if apply_sma_revival:
+        if cross_days is None or slope_turn_days is None:
+            return None
+        if sma10_slope is None or sma10_slope <= sma_min_slope_pct:
+            return None
+        if sma_require_long_flat:
+            # Same trick for SMA20 over the bars window.
+            try:
+                bar_closes2 = bar_closes
+            except NameError:
+                return None
+            if len(bar_closes2) < 21:
+                return None
+            kernel20 = np.full(20, 1.0 / 20.0)
+            sma20_arr = np.full(len(bar_closes2), np.nan, dtype="float64")
+            sma20_arr[19:] = np.convolve(bar_closes2, kernel20, mode="valid")
+            sma20_slope = _sma_slope_pct(sma20_arr, window=sma_slope_window)
+            if sma20_slope is None or sma20_slope > sma_long_flat_max_pct:
+                return None
+        if sma_require_volume:
+            if cross_days is None:
+                return None
+            # bars are oldest→newest; cross-bar is at index (len - 1 - cross_days)
+            cross_idx_b = len(bars) - 1 - cross_days
+            window_start = cross_idx_b - 20
+            if window_start < 0:
+                return None
+            try:
+                cross_vol = float(bars[cross_idx_b].get("v") or 0)
+                pre_vols = [float(b.get("v") or 0) for b in bars[window_start:cross_idx_b]]
+            except (TypeError, ValueError):
+                return None
+            if len(pre_vols) < 20:
+                return None
+            avg20 = sum(pre_vols) / len(pre_vols)
+            if avg20 <= 0 or cross_vol < avg20 * sma_volume_mult:
+                return None
+
     pct_change = (close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
     breakout = (eval_streak_val - streak_start_val) / streak_start_val if streak_start_val else 0.0
@@ -1744,6 +1991,10 @@ def _evaluate_from_snapshot(
         turnover_pct=round(turnover_pct, 4) if turnover_pct is not None else None,
         momentum_score=momentum,
         score=round(score, 4),
+        sma10=round(float(sma10_val), 4) if sma10_val is not None else None,
+        sma10_slope_pct=round(sma10_slope, 4) if sma10_slope is not None else None,
+        cross_days_ago=cross_days,
+        slope_turn_days_ago=slope_turn_days,
     )
 
 
@@ -1787,6 +2038,16 @@ def run_screen(
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
     apply_pct_change: bool = False,
+    # SMA Revival — see evaluate_ticker for semantics.
+    apply_sma_revival: bool = False,
+    sma_cross_lookback: int = 3,
+    sma_slope_turn_lookback: int = 5,
+    sma_slope_window: int = 3,
+    sma_min_slope_pct: float = 0.10,
+    sma_require_long_flat: bool = False,
+    sma_long_flat_max_pct: float = 0.30,
+    sma_require_volume: bool = False,
+    sma_volume_mult: float = 1.20,
     as_of_offset: int = 0,
     lists: list[str] | None = None,
     extras: list[str] | None = None,
@@ -1862,6 +2123,15 @@ def run_screen(
                         apply_turnover=apply_turnover,
                         apply_market_cap=apply_market_cap,
                         apply_pct_change=apply_pct_change,
+                        apply_sma_revival=apply_sma_revival,
+                        sma_cross_lookback=sma_cross_lookback,
+                        sma_slope_turn_lookback=sma_slope_turn_lookback,
+                        sma_slope_window=sma_slope_window,
+                        sma_min_slope_pct=sma_min_slope_pct,
+                        sma_require_long_flat=sma_require_long_flat,
+                        sma_long_flat_max_pct=sma_long_flat_max_pct,
+                        sma_require_volume=sma_require_volume,
+                        sma_volume_mult=sma_volume_mult,
                     )
                 except Exception as exc:
                     log.warning("snapshot evaluate failed for %s: %s", tk_name, exc)
@@ -1918,6 +2188,15 @@ def run_screen(
                 apply_turnover=apply_turnover,
                 apply_market_cap=apply_market_cap,
                 apply_pct_change=apply_pct_change,
+                apply_sma_revival=apply_sma_revival,
+                sma_cross_lookback=sma_cross_lookback,
+                sma_slope_turn_lookback=sma_slope_turn_lookback,
+                sma_slope_window=sma_slope_window,
+                sma_min_slope_pct=sma_min_slope_pct,
+                sma_require_long_flat=sma_require_long_flat,
+                sma_long_flat_max_pct=sma_long_flat_max_pct,
+                sma_require_volume=sma_require_volume,
+                sma_volume_mult=sma_volume_mult,
                 as_of_offset=as_of_offset,
             )
         except Exception as exc:
@@ -2066,6 +2345,15 @@ def diagnose_ticker(
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
     apply_pct_change: bool = False,
+    apply_sma_revival: bool = False,
+    sma_cross_lookback: int = 3,
+    sma_slope_turn_lookback: int = 5,
+    sma_slope_window: int = 3,
+    sma_min_slope_pct: float = 0.10,
+    sma_require_long_flat: bool = False,
+    sma_long_flat_max_pct: float = 0.30,
+    sma_require_volume: bool = False,
+    sma_volume_mult: float = 1.20,
     as_of_offset: int = 0,
 ) -> dict:
     """Run each filter independently and return a per-filter pass/fail
@@ -2342,6 +2630,31 @@ def diagnose_ticker(
         round(mc_m, 1) if mc_m is not None else None,
         apply_market_cap, market_cap_ok,
         [market_cap_min_m, market_cap_max_m])
+
+    # 12. SMA Revival — slope turn-up + recent cross from below
+    sma10_series = df["sma10"].iloc[max(-(sma_slope_turn_lookback + sma_slope_window + 2),
+                                       -len(df)):].to_numpy()
+    closes_for_cross = df["Close"].iloc[max(-(sma_cross_lookback + 2),
+                                           -len(df)):].to_numpy()
+    sma10_for_cross = df["sma10"].iloc[max(-(sma_cross_lookback + 2),
+                                          -len(df)):].to_numpy()
+    sma10_slope = _sma_slope_pct(sma10_series, window=sma_slope_window)
+    cross_days = _cross_above_days_ago(closes_for_cross, sma10_for_cross,
+                                       max_lookback=sma_cross_lookback)
+    slope_turn_days = _slope_turn_days_ago(sma10_series,
+                                           window=sma_slope_window,
+                                           max_lookback=sma_slope_turn_lookback)
+    sma_ok = (cross_days is not None and slope_turn_days is not None
+              and sma10_slope is not None and sma10_slope > sma_min_slope_pct)
+    add("sma_revival",
+        f"10-SMA slope > {sma_min_slope_pct:.2f}%/day "
+        f"& cross-up within {sma_cross_lookback}d "
+        f"& slope-turn within {sma_slope_turn_lookback}d",
+        {"slope_pct": round(sma10_slope, 4) if sma10_slope is not None else None,
+         "cross_days_ago": cross_days,
+         "slope_turn_days_ago": slope_turn_days},
+        apply_sma_revival, sma_ok,
+        [sma_min_slope_pct, sma_cross_lookback, sma_slope_turn_lookback])
 
     out["all_pass"] = all(c["pass"] for c in out["checks"])
     return out
