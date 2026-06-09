@@ -69,12 +69,56 @@ button.primary {
 }
 button.primary:hover { filter: brightness(1.05); }
 .filters {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.filter-section {
+  padding: 10px 16px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.filter-section:last-of-type { border-bottom: none; }
+.filter-section-header {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 2px 8px;
+}
+.filter-section-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
   gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
+}
+
+/* Wide groups (e.g. SMA Revival) span 2 columns and arrange their inner
+   .filter cells in a 2-column subgrid so 8 controls fit cleanly as 4×2. */
+.filter-group.wide { grid-column: span 2; }
+.filter-group.wide .filter-grid-inner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  width: 100%;
+}
+.filter-group.wide .filter { min-width: 0; }
+
+/* Sub-gate row inside a wide group: a checkbox-label on top + small
+   inline numeric input below. Used for "early-stage" + max-slope and
+   "confirm with volume" + multiplier. */
+.filter.sub-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.filter.sub-gate .inline-checkbox {
+  padding-bottom: 0;
+  font-size: 12px;
+}
+.filter.sub-gate input[type="number"] {
+  width: 100%;
 }
 
 .section-toggle {

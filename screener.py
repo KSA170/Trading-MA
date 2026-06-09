@@ -1288,8 +1288,6 @@ def evaluate_ticker(
     price_dev_max_pct: float = 4.0,
     ema_dev_min_pct: float = -3.0,
     ema_dev_max_pct: float = 3.0,
-    macd_hist_min: float = 0.0,
-    macd_require_rising: bool = True,
     macd_within_pct: bool = True,
     macd_vs_signal_pct: float = 5.0,
     macd_above_signal: bool = False,
@@ -1307,7 +1305,6 @@ def evaluate_ticker(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
-    apply_macd: bool = True,
     apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
@@ -1462,7 +1459,8 @@ def evaluate_ticker(
     if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
         return None
 
-    # MACD(12, 26, 9) — histogram threshold and optional "rising" gate.
+    # MACD(12, 26, 9) — scalars used by both the MACD-vs-signal gate and
+    # the momentum_score / results columns.
     macd_val = _scalar("macd")
     macd_prev_val = _scalar("macd", eval_idx - 1)
     macd_signal_val = _scalar("macd_signal")
@@ -1471,11 +1469,6 @@ def evaluate_ticker(
     if (macd_val is None or macd_signal_val is None
             or macd_hist_val is None or macd_hist_prev is None):
         return None
-    if apply_macd:
-        if macd_hist_val < macd_hist_min:
-            return None
-        if macd_require_rising and not (macd_hist_val > macd_hist_prev):
-            return None
     # MACD vs signal — sub-conditions are independent checkboxes (all
     # checked must pass, AND-semantics). Mix as needed:
     #   within X%      — |MACD − signal| / max(|signal|, ε) × 100 ≤ X
@@ -1666,8 +1659,6 @@ def _evaluate_from_snapshot(
     price_dev_max_pct: float,
     ema_dev_min_pct: float,
     ema_dev_max_pct: float,
-    macd_hist_min: float,
-    macd_require_rising: bool,
     macd_within_pct: bool,
     macd_vs_signal_pct: float,
     macd_above_signal: bool,
@@ -1685,7 +1676,6 @@ def _evaluate_from_snapshot(
     apply_price: bool,
     apply_price_dev: bool,
     apply_ema_dev: bool,
-    apply_macd: bool,
     apply_macd_vs_signal: bool,
     apply_turnover: bool,
     apply_market_cap: bool,
@@ -1813,11 +1803,6 @@ def _evaluate_from_snapshot(
     macd_signal_val = row.get("macd_signal")
     if macd_hist_val is None or macd_hist_prev is None:
         return None
-    if apply_macd:
-        if macd_hist_val < macd_hist_min:
-            return None
-        if macd_require_rising and not (macd_hist_val > macd_hist_prev):
-            return None
     # MACD vs signal — see twin block in the single-ticker path for the
     # full rationale.
     if apply_macd_vs_signal:
@@ -2014,8 +1999,6 @@ def run_screen(
     price_dev_max_pct: float = 4.0,
     ema_dev_min_pct: float = -3.0,
     ema_dev_max_pct: float = 3.0,
-    macd_hist_min: float = 0.0,
-    macd_require_rising: bool = True,
     macd_within_pct: bool = True,
     macd_vs_signal_pct: float = 5.0,
     macd_above_signal: bool = False,
@@ -2033,7 +2016,6 @@ def run_screen(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
-    apply_macd: bool = True,
     apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
@@ -2100,8 +2082,6 @@ def run_screen(
                         price_dev_max_pct=price_dev_max_pct,
                         ema_dev_min_pct=ema_dev_min_pct,
                         ema_dev_max_pct=ema_dev_max_pct,
-                        macd_hist_min=macd_hist_min,
-                        macd_require_rising=macd_require_rising,
                         macd_within_pct=macd_within_pct,
                         macd_vs_signal_pct=macd_vs_signal_pct,
                         macd_above_signal=macd_above_signal,
@@ -2118,7 +2098,6 @@ def run_screen(
                         apply_price=apply_price,
                         apply_price_dev=apply_price_dev,
                         apply_ema_dev=apply_ema_dev,
-                        apply_macd=apply_macd,
                         apply_macd_vs_signal=apply_macd_vs_signal,
                         apply_turnover=apply_turnover,
                         apply_market_cap=apply_market_cap,
@@ -2164,8 +2143,6 @@ def run_screen(
                 price_dev_max_pct=price_dev_max_pct,
                 ema_dev_min_pct=ema_dev_min_pct,
                 ema_dev_max_pct=ema_dev_max_pct,
-                macd_hist_min=macd_hist_min,
-                macd_require_rising=macd_require_rising,
                 macd_within_pct=macd_within_pct,
                 macd_vs_signal_pct=macd_vs_signal_pct,
                 macd_above_signal=macd_above_signal,
@@ -2183,7 +2160,6 @@ def run_screen(
                 apply_price=apply_price,
                 apply_price_dev=apply_price_dev,
                 apply_ema_dev=apply_ema_dev,
-                apply_macd=apply_macd,
                 apply_macd_vs_signal=apply_macd_vs_signal,
                 apply_turnover=apply_turnover,
                 apply_market_cap=apply_market_cap,
@@ -2321,8 +2297,6 @@ def diagnose_ticker(
     price_dev_max_pct: float = 4.0,
     ema_dev_min_pct: float = -3.0,
     ema_dev_max_pct: float = 3.0,
-    macd_hist_min: float = 0.0,
-    macd_require_rising: bool = True,
     macd_within_pct: bool = True,
     macd_vs_signal_pct: float = 5.0,
     macd_above_signal: bool = False,
@@ -2340,7 +2314,6 @@ def diagnose_ticker(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
-    apply_macd: bool = True,
     apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
@@ -2536,22 +2509,10 @@ def diagnose_ticker(
         apply_ema_dev, ed_ok, [ema_dev_min_pct, ema_dev_max_pct],
         {"ema50": round(ema_long_val, 4) if ema_long_val is not None else None})
 
-    # 7. MACD histogram
+    # 7. MACD scalars — read once so 7b (MACD vs signal) and the rest of
+    # the report can reference macd_hist without re-fetching.
     macd_hist_val = _scalar("macd_hist")
     macd_hist_prev = _scalar("macd_hist", eval_idx - 1)
-    macd_ok = True
-    if macd_hist_val is None:
-        macd_ok = False
-    else:
-        if macd_hist_val < macd_hist_min:
-            macd_ok = False
-        if macd_require_rising and macd_hist_prev is not None and not (macd_hist_val > macd_hist_prev):
-            macd_ok = False
-    add("macd", f"MACD hist ≥ {macd_hist_min}" + (" and rising" if macd_require_rising else ""),
-        round(macd_hist_val, 4) if macd_hist_val is not None else None,
-        apply_macd, macd_ok, None,
-        {"prev_hist": round(macd_hist_prev, 4) if macd_hist_prev is not None else None,
-         "rising": macd_hist_val is not None and macd_hist_prev is not None and macd_hist_val > macd_hist_prev})
 
     # 7b. MACD vs signal — independent sub-conditions, all checked must
     # pass (AND-semantics). Same shape as the actual filter so the audit
