@@ -1384,11 +1384,40 @@ def available_rec_dates(limit: int = 30) -> list[str]:
 # copy survives even if the underlying options_recommendations row is
 # overwritten by a re-scan on the same day.
 
+def _format_suggested_contract(rec: dict) -> str:
+    """Brokers-style summary of the contract this rec recommends — used
+    as the default note when a user pins without typing their own.
+    Format: `TICKER EXPIRY $STRIKE TYPE @ $MID mid`. Returns "" if the
+    rec doesn't actually pin down a specific contract (no strike / no
+    expiration)."""
+    if not rec: return ""
+    tkr  = (rec.get("ticker") or "").upper()
+    dir_ = (rec.get("direction") or "").upper()
+    exp  = rec.get("expiration") or ""
+    strk = rec.get("strike")
+    mid  = rec.get("mid_price")
+    if not tkr or not exp or strk is None:
+        return ""
+    parts = [tkr, str(exp), f"${strk:g}"]
+    if dir_: parts.append(dir_)
+    s = " ".join(parts)
+    if mid is not None:
+        s += f" @ ${mid:g} mid"
+    return s
+
+
 def pin_rec(ticker: str, as_of: str, note: str = "") -> dict | None:
     """Pin a rec. Looks up the live row from options_recommendations,
     snapshots its full dict into options_pinned_recs, and returns the
     new pin (or the updated existing one). Returns None if the source
-    rec doesn't exist or DB is disabled."""
+    rec doesn't exist or DB is disabled.
+
+    Note handling:
+    - First pin (no existing row) with blank note → default note is the
+      formatted suggested contract.
+    - Re-pin with blank note → existing note is preserved (don't clobber
+      the user's previous text just because they re-clicked Pin).
+    - Re-pin with a non-empty note → overwrite with the new note."""
     import snapshots
     if not snapshots.enabled():
         log.warning("pin_rec: DB disabled, can't persist")
@@ -1400,6 +1429,12 @@ def pin_rec(ticker: str, as_of: str, note: str = "") -> dict | None:
     if rec is None:
         log.warning("pin_rec: no rec found for %s on %s", ticker, as_of)
         return None
+    note_clean = (note or "").strip()
+    # Note value used for the INSERT branch only — defaulted to the
+    # suggested contract when caller didn't pass one. ON CONFLICT
+    # deliberately does NOT touch note (handled below) so existing
+    # user notes survive a re-pin.
+    insert_note = note_clean or _format_suggested_contract(rec)
     try:
         with snapshots._conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -1407,19 +1442,27 @@ def pin_rec(ticker: str, as_of: str, note: str = "") -> dict | None:
                 "VALUES (%s, %s, %s::jsonb, %s) "
                 "ON CONFLICT (ticker, as_of) DO UPDATE SET "
                 "  snapshot = EXCLUDED.snapshot, "
-                "  note = EXCLUDED.note, "
                 "  pinned_at = now() "
-                "RETURNING id, pinned_at",
-                (ticker.upper(), as_of, json.dumps(rec), (note or "").strip()),
+                "RETURNING id, note, pinned_at",
+                (ticker.upper(), as_of, json.dumps(rec), insert_note),
             )
-            row = cur.fetchone()
+            pin_id, db_note, pinned_at_db = cur.fetchone()
+            # If caller passed a non-empty note AND the row already
+            # existed (so ON CONFLICT skipped the note overwrite),
+            # apply the user's note now. Otherwise db_note is correct.
+            if note_clean and db_note != note_clean:
+                cur.execute(
+                    "UPDATE options_pinned_recs SET note = %s WHERE id = %s",
+                    (note_clean, pin_id),
+                )
+                db_note = note_clean
         return {
-            "id": int(row[0]),
+            "id": int(pin_id),
             "ticker": ticker.upper(),
             "as_of": as_of,
             "snapshot": rec,
-            "note": (note or "").strip(),
-            "pinned_at": row[1].isoformat() if row[1] else None,
+            "note": db_note or "",
+            "pinned_at": pinned_at_db.isoformat() if pinned_at_db else None,
         }
     except Exception as exc:
         log.warning("pin_rec(%s, %s) failed: %s", ticker, as_of, exc)
