@@ -250,6 +250,12 @@ const modalInputs = {
   market_cap_min_m: $('#cm_market_cap_min_m'),
   market_cap_max_m: $('#cm_market_cap_max_m'),
   pct_change_min: $('#cm_pct_change_min'),
+  sma_cross_lookback: $('#cm_sma_cross_lookback'),
+  sma_slope_turn_lookback: $('#cm_sma_slope_turn_lookback'),
+  sma_slope_window: $('#cm_sma_slope_window'),
+  sma_min_slope_pct: $('#cm_sma_min_slope_pct'),
+  sma_long_flat_max_pct: $('#cm_sma_long_flat_max_pct'),
+  sma_volume_mult: $('#cm_sma_volume_mult'),
 };
 const modalToggles = {
   apply_high: $('#cm_apply_high'),
@@ -267,6 +273,9 @@ const modalToggles = {
   apply_turnover: $('#cm_apply_turnover'),
   apply_market_cap: $('#cm_apply_market_cap'),
   apply_pct_change: $('#cm_apply_pct_change'),
+  apply_sma_revival: $('#cm_apply_sma_revival'),
+  sma_require_long_flat: $('#cm_sma_require_long_flat'),
+  sma_require_volume: $('#cm_sma_require_volume'),
 };
 
 // Setup-rule criteria fields inside the same modal (shown when rule
@@ -2222,6 +2231,7 @@ function syncModalDisabled() {
     apply_turnover: 'cm_turnover',
     apply_market_cap: 'cm_market_cap',
     apply_pct_change: 'cm_pct_change',
+    apply_sma_revival: 'cm_sma_revival',
   };
   for (const [toggleKey, groupKey] of Object.entries(map)) {
     const t = modalToggles[toggleKey];
