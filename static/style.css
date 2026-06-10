@@ -557,7 +557,7 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 .hover-chart {
   position: fixed;
   width: 900px;
-  height: 820px;
+  height: 600px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -591,30 +591,6 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
   min-height: 0;
 }
 
-.hover-chart-legend {
-  display: flex;
-  gap: 12px;
-  padding: 4px 12px;
-  border-top: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--muted);
-  background: var(--panel-2);
-}
-.hover-chart-legend .dot {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  vertical-align: middle;
-  margin-right: 4px;
-}
-.hover-chart-legend .dot-ema21    { background: #d2a8ff; }
-.hover-chart-legend .dot-ema50    { background: #ffa657; }
-.hover-chart-legend .dot-rsi      { background: #58a6ff; }
-.hover-chart-legend .dot-rsi9     { background: #f0883e; }
-.hover-chart-legend .dot-macd     { background: #58a6ff; }
-.hover-chart-legend .dot-macd-sig { background: #f0883e; }
-
 /* Pane labels overlaid in the top-left corner of each chart pane.
    Lightweight-charts has no native title support; positionPaneLabels()
    in app.js sets the `top` offset for panes 1/2 based on their heights. */
@@ -631,6 +607,21 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
   border-radius: 3px;
   pointer-events: none;
   z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.hover-pane-label .legend-chip {
+  display: inline-block;
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  margin: 0 2px 0 6px;
+}
+.hover-pane-label .legend-chip.legend-chip-bar {
+  width: 6px;
+  height: 8px;
+  border-radius: 1px;
 }
 
 .pos { color: var(--green); }

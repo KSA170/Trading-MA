@@ -1370,22 +1370,19 @@ function escapeHtml(s) {
 }
 
 // --- hover chart popover --------------------------------------------------
-// Hovering a ticker cell opens a small daily chart (price + EMAs + volume on
-// pane 0, RSI(14) + 9d SMA on pane 1) anchored next to the cell. Fetched
-// payloads are cached per ticker for the session so a second hover is
-// instant.
+// Hovering a ticker cell opens a small daily chart anchored next to the
+// cell. Pane 0 = candles + SMA(10/20/30/40) + volume bars overlaid in the
+// bottom strip of the same pane (so volume reads as part of the price
+// context). Pane 1 = RSI(14) + 9d SMA of RSI. Fetched payloads are cached
+// per ticker for the session so a second hover is instant.
 
 const HOVER_DELAY_MS = 220;
 const HOVER_W = 900;
-const HOVER_H = 820;
-// Pane order: Price (0, remainder) → Volume (1) → MACD (2) → RSI (3).
-// Volume gets its own dedicated strip so the price pane doesn't end in
-// a confusing band of overlay bars (previously they bled visually into
-// the MACD pane below). MACD and RSI both get enough vertical room to
-// keep their lines / 30-70 bands legible.
-const HOVER_PANE_VOL_H  = 70;
-const HOVER_PANE_MACD_H = 180;
-const HOVER_PANE_RSI_H  = 180;
+const HOVER_H = 600;
+// Volume sits inside the price pane via an overlay scale; these margins
+// reserve the bottom 18% of pane 0 for the volume histogram.
+const VOL_SCALE_TOP_MARGIN = 0.82;
+const HOVER_PANE_RSI_H = 180;
 const _chartCache = new Map();
 let _hoverChart = null;
 let _hoverShowTimer = null;
@@ -1473,86 +1470,80 @@ function drawHoverChart(data) {
     autoSize: true,
   });
 
-  // Pane 0 — candles + EMA21 + EMA50. Volume gets its own dedicated
-  // pane below (pane 1) — keeping it overlaid in the price pane left
-  // a confusing "wall of bars" between the candles and MACD that ate
-  // into the MACD pane's perceived height.
+  // Pane 0 — candles + SMA(10/20/30/40) + volume bars overlaid in the
+  // bottom strip of the same pane (volume uses a separate "volume"
+  // price scale so the candles aren't dragged into the bar range).
   const candle = _hoverChart.addSeries(LightweightCharts.CandlestickSeries, {
     upColor: '#3fb950', downColor: '#f85149',
     wickUpColor: '#3fb950', wickDownColor: '#f85149',
     borderVisible: false,
   }, 0);
-  const ema21 = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#d2a8ff', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-  }, 0);
-  const ema50 = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#ffa657', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-  }, 0);
+  // Price scale margins reserve a band at the bottom for the volume
+  // histogram so SMAs/candles don't collide with the bars.
+  candle.priceScale().applyOptions({
+    scaleMargins: { top: 0.05, bottom: 1 - VOL_SCALE_TOP_MARGIN + 0.02 },
+  });
+  // Four SMAs — colours match the legend chips in the pane label, ordered
+  // shortest → longest so the eye reads them as a fan.
+  const smaSeries = [
+    { key: 'sma10', color: '#58a6ff' },
+    { key: 'sma20', color: '#d2a8ff' },
+    { key: 'sma30', color: '#ffa657' },
+    { key: 'sma40', color: '#7ee787' },
+  ].map(({ key, color }) => {
+    const s = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+      color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+    }, 0);
+    s.setData(rows.filter((r) => r[key] != null).map((r) => ({ time: r.time, value: r[key] })));
+    return s;
+  });
   candle.setData(rows.map((r) => ({
     time: r.time, open: r.open, high: r.high, low: r.low, close: r.close,
   })));
-  ema21.setData(rows.filter((r) => r.ema21 != null).map((r) => ({ time: r.time, value: r.ema21 })));
-  ema50.setData(rows.filter((r) => r.ema50 != null).map((r) => ({ time: r.time, value: r.ema50 })));
 
-  // Pane 1 — Volume only. Compact strip, bars coloured by day direction.
+  // Volume overlay — same pane as candles, separate "volume" price scale
+  // anchored to the bottom 18% of the pane. Bars coloured by day
+  // direction (green up-day, red down-day).
   const vol = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
     priceFormat: { type: 'volume' },
+    priceScaleId: 'volume',
     color: '#30363d',
     lastValueVisible: false,
     priceLineVisible: false,
-  }, 1);
+  }, 0);
+  _hoverChart.priceScale('volume').applyOptions({
+    scaleMargins: { top: VOL_SCALE_TOP_MARGIN, bottom: 0 },
+    visible: false,
+  });
   vol.setData(rows.map((r) => ({
     time: r.time, value: r.volume || 0,
-    color: r.close >= r.open ? 'rgba(63,185,80,0.5)' : 'rgba(248,81,73,0.5)',
+    color: r.close >= r.open ? 'rgba(63,185,80,0.55)' : 'rgba(248,81,73,0.55)',
   })));
 
-  // Pane 2 — MACD(12, 26, 9): line + signal + histogram. The histogram
-  // is the diff between the two lines (MACD − signal); positive bars
-  // green / negative bars red. Zero line dashed grey so the
-  // crossover point is visible at a glance.
-  const macdHist = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
-    priceLineVisible: false, lastValueVisible: false,
-  }, 2);
-  const macdLine = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
-  }, 2);
-  const macdSignal = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-  }, 2);
-  macdHist.setData(rows.filter((r) => r.macd_hist != null).map((r) => ({
-    time: r.time, value: r.macd_hist,
-    color: r.macd_hist >= 0 ? 'rgba(63,185,80,0.6)' : 'rgba(248,81,73,0.6)',
-  })));
-  macdLine.setData(rows.filter((r) => r.macd != null).map((r) => ({ time: r.time, value: r.macd })));
-  macdSignal.setData(rows.filter((r) => r.macd_signal != null).map((r) => ({ time: r.time, value: r.macd_signal })));
-  macdLine.createPriceLine({ price: 0, color: '#6e7681', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
-
-  // Pane 3 — RSI(14) + 9d SMA of RSI.
+  // Pane 1 — RSI(14) + 9d SMA of RSI. 30/70 bands dashed for the
+  // classic oversold/overbought reference points.
   const rsi = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
-  }, 3);
+  }, 1);
   const rsiSma = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-  }, 3);
+  }, 1);
   rsi.setData(rows.filter((r) => r.rsi != null).map((r) => ({ time: r.time, value: r.rsi })));
   rsiSma.setData(rows.filter((r) => r.rsi_sma9 != null).map((r) => ({ time: r.time, value: r.rsi_sma9 })));
   rsi.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
   rsi.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 
-  // Compress the two oscillator panes; the price pane absorbs the rest.
+  // RSI pane gets a fixed compact height; the price pane absorbs the rest.
   // Aligning right-side scale widths keeps the time axis straight across
-  // all three panes. Pane labels are absolutely positioned over the
-  // chart container in CSS — their top offsets depend on these heights
-  // so we recompute on each apply().
+  // both panes. Pane labels are absolutely positioned over the chart
+  // container in CSS — their top offsets depend on the RSI height.
   const apply = () => {
     try {
       const panes = _hoverChart.panes() || [];
       panes.forEach((p) => {
         try { p.priceScale('right').applyOptions({ minimumWidth: 56 }); } catch (_) {}
       });
-      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(HOVER_PANE_VOL_H);
-      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(HOVER_PANE_MACD_H);
-      if (panes.length >= 4 && panes[3].setHeight) panes[3].setHeight(HOVER_PANE_RSI_H);
+      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(HOVER_PANE_RSI_H);
     } catch (_) { /* ignore */ }
     try { _hoverChart.timeScale().fitContent(); } catch (_) {}
     positionPaneLabels();
@@ -1562,24 +1553,20 @@ function drawHoverChart(data) {
   setTimeout(apply, 80);
 }
 
-// Each pane gets a small label in its top-left corner ("Price · EMA21 ·
-// EMA50", "Volume", "MACD(12, 26, 9)", "RSI(14) · 9d SMA"). Lightweight-
-// charts has no native title support, and it wipes its container on
-// dispose — so the spans live as siblings of #hover-chart-container
-// (inside #hover-chart) and are positioned relative to the popup
-// wrapper. Pane 0 (Price) sits at the top of the container; the
-// remaining pane tops stack from the bottom up using the fixed pane
-// heights. The container's offsetTop gives us the y origin.
+// Each pane gets a small label in its top-left corner. Lightweight-charts
+// has no native title support and wipes its container on dispose — so the
+// label spans live as siblings of #hover-chart-container (inside
+// #hover-chart) and are positioned relative to the popup wrapper. Pane 0
+// (Price + SMAs + Volume) sits at the top of the container; pane 1 (RSI)
+// is the bottom strip.
 function positionPaneLabels() {
   if (!els.hoverChartContainer) return;
   const containerH = els.hoverChartContainer.clientHeight;
   if (!containerH) return;
   const top = els.hoverChartContainer.offsetTop;
-  const labels = [0, 1, 2, 3].map((i) => document.getElementById('hover-pane-label-' + i));
+  const labels = [0, 1].map((i) => document.getElementById('hover-pane-label-' + i));
   if (labels[0]) labels[0].style.top = (top + 6) + 'px';
-  if (labels[1]) labels[1].style.top = (top + containerH - HOVER_PANE_VOL_H - HOVER_PANE_MACD_H - HOVER_PANE_RSI_H + 4) + 'px';
-  if (labels[2]) labels[2].style.top = (top + containerH - HOVER_PANE_MACD_H - HOVER_PANE_RSI_H + 4) + 'px';
-  if (labels[3]) labels[3].style.top = (top + containerH - HOVER_PANE_RSI_H + 4) + 'px';
+  if (labels[1]) labels[1].style.top = (top + containerH - HOVER_PANE_RSI_H + 4) + 'px';
 }
 
 function onTickerEnter(ev) {
