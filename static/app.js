@@ -75,11 +75,13 @@ const els = {
   picksWva: $('#picks-w-va'),
   picksWmt: $('#picks-w-mt'),
   picksWdp: $('#picks-w-dp'),
+  picksWsr: $('#picks-w-sr'),
   picksWvcOut: $('#picks-w-vc-out'),
   picksWrsOut: $('#picks-w-rs-out'),
   picksWvaOut: $('#picks-w-va-out'),
   picksWmtOut: $('#picks-w-mt-out'),
   picksWdpOut: $('#picks-w-dp-out'),
+  picksWsrOut: $('#picks-w-sr-out'),
   picksPriceMin: $('#picks-price-min'),
   picksPriceMax: $('#picks-price-max'),
   momentumToggle: $('#momentum-toggle'),
@@ -2382,7 +2384,7 @@ startRulesPolling();
 // weights + price range, and re-ranks live via /api/picks/run. Saved
 // settings are picked up by the nightly cron at close+1hr.
 
-const _PICKS_WEIGHT_KEYS = ['vc', 'rs', 'va', 'mt', 'dp'];
+const _PICKS_WEIGHT_KEYS = ['vc', 'rs', 'va', 'mt', 'dp', 'sr'];
 
 function picksWeightFromUI() {
   const out = {};
@@ -2482,6 +2484,7 @@ function renderPicks(data) {
           ${picksMiniBar('VA', p.va_score)}
           ${picksMiniBar('MT', p.mt_score)}
           ${picksMiniBar('DP', p.dp_score)}
+          ${picksMiniBar('SR', p.sr_score)}
         </span>
         <span class="pick-meta muted">${escapeHtml(metaParts.join(' · '))}</span>
         ${badges ? `<span class="pick-triggers">${badges}</span>` : ''}
