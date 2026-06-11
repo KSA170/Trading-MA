@@ -356,6 +356,11 @@
               <input id="picks-w-dp" type="range" min="0" max="100" step="5" value="15" />
               <span id="picks-w-dp-out" class="picks-weight-out">15</span>
             </label>
+            <label class="picks-weight" title="SR — SMA Reset&#10;&#10;Detects the Stage 1 → Stage 2 transition pattern: 4 SMAs converged after a downtrend and are now fanning out bullish with SMA10 leading.&#10;&#10;Five required conditions (any failure → 0):&#10;  1. Came from a bearish stack ~30 bars ago (SMA40 > SMA10 then).&#10;  2. SMA spread reached ≤ 3.5% of the cluster midpoint within the last 20 bars.&#10;  3. SMA10 has turned up — current SMA10 > SMA10 five bars ago.&#10;  4. Today's close is above all four SMAs.&#10;  5. Not yet exhausted — SMA10/SMA40 ≤ 1.10.&#10;&#10;Score combines tightness of the convergence, freshness of it, and how cleanly the SMAs are now in early-stage fan-out (Gaussian peaked at +3% SMA10/SMA40).&#10;&#10;Why precursor: catches the EXACT inflection — base reset + first fan-out — before the trend is obvious. The classic IBD signals (RS / DP) only fire AFTER the new trend is well underway; SR catches it at bar 1.&#10;&#10;Tickers passing this gate are exempted from the prior-uptrend filter — by design they sit near their lows.">
+              <span class="picks-weight-name">SR <span class="muted">SMA Reset (turn-from-downtrend)</span></span>
+              <input id="picks-w-sr" type="range" min="0" max="100" step="5" value="25" />
+              <span id="picks-w-sr-out" class="picks-weight-out">25</span>
+            </label>
           </div>
           <h4 class="picks-tune-h">Price range</h4>
           <div class="picks-price-grid">

@@ -69,7 +69,7 @@ log = logging.getLogger("picker")
 # --- defaults --------------------------------------------------------------
 
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "vc": 25.0, "rs": 25.0, "va": 20.0, "mt": 15.0, "dp": 15.0,
+    "vc": 20.0, "rs": 15.0, "va": 15.0, "mt": 10.0, "dp": 15.0, "sr": 25.0,
 }
 DEFAULT_PRICE_MIN: float = 5.0
 DEFAULT_PRICE_MAX: float = 1000.0
@@ -101,6 +101,12 @@ CREATE TABLE IF NOT EXISTS nightly_picks (
     dist_pivot   REAL,
     PRIMARY KEY (pick_date, rank)
 );
+-- SR (SMA Reset) sub-score added later; backfill via ALTER ADD so the
+-- column appears on existing deployments without manual migration.
+-- Pattern: 4 SMAs converged after a downtrend and are now fanning out
+-- bullish with SMA10 leading. Captures Stage 1 → Stage 2 transitions
+-- that the original 5 IBD-style signals didn't reward.
+ALTER TABLE nightly_picks ADD COLUMN IF NOT EXISTS sr_score REAL;
 CREATE INDEX IF NOT EXISTS nightly_picks_ticker_idx
     ON nightly_picks (ticker, pick_date DESC);
 
@@ -317,26 +323,42 @@ def _compute_raw_metrics(row: dict) -> dict | None:
         return None
     dp_pct = float((high30 - last_close) / high30 * 100.0)
 
+    # --- SR: SMA Reset score ------------------------------------------
+    # Compute BEFORE the trend gates so SR-pattern names (which sit near
+    # their lows by definition) can bypass the prior-uptrend gate. See
+    # _sr_score for the pattern semantics.
+    sr_raw = _sr_score(closes)
+
     # --- Universe gates ------------------------------------------------
     # Applied AFTER metric extraction so individual gate failures show up
     # in logs (return None drops the ticker silently from ranking).
     #
-    # Gate 1 — Prior uptrend. Real bases form after an advance. Require
-    # the last close to be at least 20% above the 60-bar low, so a stock
-    # that's been sideways near its lows or in a downtrend can't qualify.
+    # Gate 1 — Prior uptrend OR SR pattern. Real continuation bases form
+    # after an advance, so we require close ≥ 1.20 × 60-bar low. But
+    # SR-pattern tickers sit near their lows BY DEFINITION (the whole
+    # point is they were in a downtrend that just ended); we let them
+    # through when SR ≥ 30 (a meaningful reset signal, not just a noisy
+    # detector ping).
     lo60 = float(np.nanmin(closes[-60:]))
-    if not np.isfinite(lo60) or lo60 <= 0 or last_close < lo60 * 1.20:
+    if not np.isfinite(lo60) or lo60 <= 0:
+        return None
+    if last_close < lo60 * 1.20 and sr_raw < 30.0:
         return None
 
-    # Gate 2 — 50-day SMA rising. Compare SMA50 ending today vs SMA50
-    # ending 10 bars ago; both windows fit inside the 60-bar payload.
+    # Gate 2 — 50-day SMA rising OR SR pattern. Same exception: an SR
+    # cluster forms while SMA50 is still flat-to-down, with the turn-up
+    # happening simultaneously with or AFTER the cluster.
     sma50_now  = float(np.nanmean(closes[-50:]))
     sma50_then = float(np.nanmean(closes[-60:-10]))
-    if not (np.isfinite(sma50_now) and np.isfinite(sma50_then) and sma50_now > sma50_then):
+    if not (np.isfinite(sma50_now) and np.isfinite(sma50_then)):
+        return None
+    if sma50_now <= sma50_then and sr_raw < 30.0:
         return None
 
     # Gate 3 — Not extended. A stock up 80% in 60 days is mid-move, not
-    # mid-base; calling a base on it is wishful. Hard cap at +80%.
+    # mid-base; calling a base on it is wishful. Hard cap at +80%
+    # (applies to SR pattern too — extension cap doesn't depend on the
+    # signal type).
     if ret_60d > 0.80:
         return None
 
@@ -350,6 +372,7 @@ def _compute_raw_metrics(row: dict) -> dict | None:
         "va_ratio":  va_ratio,
         "mt_raw":    mt_raw,
         "dp_pct":    dp_pct,
+        "sr_raw":    sr_raw,
     }
 
 
@@ -392,6 +415,122 @@ def _dp_bell_score(dp_pct: float) -> float:
     if not np.isfinite(dp_pct):
         return float("nan")
     return 100.0 * math.exp(-((dp_pct - 1.5) ** 2) / (2.0 * 5.0 ** 2))
+
+
+def _sr_score(closes_arr: np.ndarray) -> float:
+    """SMA Reset score [0, 100]. Detects the pattern where the four
+    SMAs (10/20/30/40) converged after a downtrend and are now fanning
+    out bullish with SMA10 leading — i.e. the Stage 1 → Stage 2
+    transition visible at the right edge of a "cluster then break"
+    base.
+
+    Five necessary conditions; any failure → 0.0:
+
+      (1) Came from a bearish stack ~30 bars ago — SMA40 was above
+          SMA10 then (long > short = was declining).
+      (2) Convergence in the last 20 bars — the SMA spread reached
+          a low of ≤ 3.5% of the cluster midpoint.
+      (3) SMA10 has turned up — current SMA10 > SMA10 five bars ago.
+      (4) Today's close is above all four SMAs (the break is
+          starting).
+      (5) Not yet exhausted — SMA10/SMA40 ≤ 1.10 (above that the
+          move is already in progress and the SR window has closed).
+
+    Score combines three factors when all conditions hold:
+      tightness   — exp(-min_spread / 1.5%), favours tighter clusters
+      freshness   — exp(-days_since_min_spread / 10), favours recent
+                    convergence
+      fan_out     — Gaussian centred at +3% (SMA10 over SMA40), so
+                    "just starting to fan out" scores best and
+                    "barely fanned out" / "already fanned out a lot"
+                    both fall off.
+    """
+    n = len(closes_arr)
+    if n < 60:
+        return 0.0
+
+    # Rolling SMAs over the input array. min_periods enforced by the
+    # nan-padding so we never compare against a partial window.
+    def _sma(arr: np.ndarray, w: int) -> np.ndarray:
+        out = np.full(len(arr), np.nan, dtype=float)
+        if len(arr) < w:
+            return out
+        kernel = np.full(w, 1.0 / w)
+        out[w - 1:] = np.convolve(arr, kernel, mode="valid")
+        return out
+
+    s10 = _sma(closes_arr, 10)
+    s20 = _sma(closes_arr, 20)
+    s30 = _sma(closes_arr, 30)
+    s40 = _sma(closes_arr, 40)
+
+    s10_t, s20_t, s30_t, s40_t = s10[-1], s20[-1], s30[-1], s40[-1]
+    if not (np.isfinite(s10_t) and np.isfinite(s20_t)
+            and np.isfinite(s30_t) and np.isfinite(s40_t)):
+        return 0.0
+    last_close = float(closes_arr[-1])
+
+    # (1) Came from downtrend. SMA40 isn't valid 30 bars back when the
+    # input is exactly 60 bars (s40[-30] = NaN), so the "bearish stack"
+    # version of this check would always fail at the boundary. Use raw
+    # closes instead: the early portion of the window must have a peak
+    # at least 5% above the lowest point in the cluster window. That
+    # establishes "declining into the cluster" without an SMA dependency.
+    early_high   = float(np.nanmax(closes_arr[-60:-30]))
+    cluster_low  = float(np.nanmin(closes_arr[-30:-10]))
+    if not (np.isfinite(early_high) and np.isfinite(cluster_low) and cluster_low > 0):
+        return 0.0
+    if not (early_high > cluster_low * 1.05):
+        return 0.0
+
+    # (2) Convergence in last 20 bars: find tightest SMA spread.
+    smas = np.stack([s10, s20, s30, s40], axis=0)
+    sma_max = np.nanmax(smas, axis=0)
+    sma_min = np.nanmin(smas, axis=0)
+    mid = (sma_max + sma_min) / 2.0
+    spread = np.where(mid > 0, (sma_max - sma_min) / mid, np.nan)
+    recent = spread[-20:]
+    if not np.isfinite(recent).any():
+        return 0.0
+    min_spread = float(np.nanmin(recent))
+    days_since_min = (len(recent) - 1) - int(np.nanargmin(recent))
+    if min_spread > 0.035:
+        return 0.0
+
+    # (3) SMA10 has turned up.
+    if not np.isfinite(s10[-6]):
+        return 0.0
+    if not (s10_t > s10[-6]):
+        return 0.0
+
+    # (4) Close above all four SMAs.
+    if last_close < max(s10_t, s20_t, s30_t, s40_t):
+        return 0.0
+
+    # (5) Not yet exhausted: SMA10/SMA40 ≤ 1.10.
+    if s40_t <= 0:
+        return 0.0
+    fan_ratio = s10_t / s40_t
+    if fan_ratio > 1.10:
+        return 0.0
+
+    # Scoring factors, σ values tuned to realistic price-action ranges:
+    #   tightness  σ = 2.5%   (typical real-stock cluster widths are 1-4%)
+    #   freshness  σ = 15 bars (3 weeks)
+    #   fan_out    σ = 6%     centred at +3% (sweet spot is "just starting
+    #                          to fan out" — too little = pattern unconfirmed,
+    #                          too much = move already done)
+    tightness = math.exp(-min_spread / 0.025)
+    freshness = math.exp(-days_since_min / 15.0)
+    fan_x = max(0.0, fan_ratio - 1.0)
+    fan_out = math.exp(-((fan_x - 0.03) / 0.06) ** 2)
+
+    # Weighted sum (not product). The previous multiplicative form needed
+    # every factor near 1.0 to score meaningfully — a 0.4 in any one
+    # zeroed the result, which made the signal vanish on realistic data.
+    # Sum is more forgiving: tightness leads (40%), freshness and fan-out
+    # split the remainder (30% each).
+    return float(100.0 * (0.40 * tightness + 0.30 * freshness + 0.30 * fan_out))
 
 
 def rank_universe(
@@ -455,6 +594,11 @@ def rank_universe(
     )
     mt_arr = np.array([r["mt_raw"] for r in raw_rows], dtype=float)
     dp_arr = np.array([_dp_bell_score(r["dp_pct"]) for r in raw_rows], dtype=float)
+    # SR is already absolute [0, 100] (not percentile-ranked) — using
+    # the raw bell score directly so the magnitude of the SR signal
+    # matters, not just its rank in the surviving pool. A pool of weak
+    # SR scores shouldn't get artificially promoted.
+    sr_arr = np.array([r.get("sr_raw", 0.0) for r in raw_rows], dtype=float)
 
     composites = (
         norm["vc"] * np.nan_to_num(vc_pct)
@@ -462,6 +606,7 @@ def rank_universe(
         + norm["va"] * np.nan_to_num(va_pct)
         + norm["mt"] * np.nan_to_num(mt_arr)
         + norm["dp"] * np.nan_to_num(dp_arr)
+        + norm.get("sr", 0.0) * np.nan_to_num(sr_arr)
     )
 
     for i, r in enumerate(raw_rows):
@@ -470,6 +615,7 @@ def rank_universe(
         r["va_score"]  = float(va_pct[i]) if np.isfinite(va_pct[i]) else None
         r["mt_score"]  = float(mt_arr[i]) if np.isfinite(mt_arr[i]) else None
         r["dp_score"]  = float(dp_arr[i]) if np.isfinite(dp_arr[i]) else None
+        r["sr_score"]  = float(sr_arr[i]) if np.isfinite(sr_arr[i]) else None
         r["composite"] = float(composites[i])
 
     raw_rows.sort(key=lambda r: -r["composite"])
@@ -505,12 +651,12 @@ def save_picks(picks: list[dict], as_of: str) -> int:
                 cur.execute(
                     "INSERT INTO nightly_picks ("
                     "  pick_date, rank, ticker, composite, "
-                    "  vc_score, rs_score, va_score, mt_score, dp_score, "
+                    "  vc_score, rs_score, va_score, mt_score, dp_score, sr_score, "
                     "  close, atr_ratio, ret_20d, dvol_ratio, dist_pivot"
-                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (as_of, rank, p["ticker"], p["composite"],
                      p.get("vc_score"), p.get("rs_score"), p.get("va_score"),
-                     p.get("mt_score"), p.get("dp_score"),
+                     p.get("mt_score"), p.get("dp_score"), p.get("sr_score"),
                      p.get("close"), p.get("vc_ratio"),
                      p.get("ret_20d"), p.get("va_ratio"), p.get("dp_pct")),
                 )
@@ -530,7 +676,7 @@ def load_picks(as_of: str | None = None) -> list[dict]:
             if as_of:
                 cur.execute(
                     "SELECT pick_date, rank, ticker, composite, "
-                    "vc_score, rs_score, va_score, mt_score, dp_score, "
+                    "vc_score, rs_score, va_score, mt_score, dp_score, sr_score, "
                     "close, atr_ratio, ret_20d, dvol_ratio, dist_pivot "
                     "FROM nightly_picks WHERE pick_date = %s ORDER BY rank",
                     (as_of,),
@@ -538,7 +684,7 @@ def load_picks(as_of: str | None = None) -> list[dict]:
             else:
                 cur.execute(
                     "SELECT pick_date, rank, ticker, composite, "
-                    "vc_score, rs_score, va_score, mt_score, dp_score, "
+                    "vc_score, rs_score, va_score, mt_score, dp_score, sr_score, "
                     "close, atr_ratio, ret_20d, dvol_ratio, dist_pivot "
                     "FROM nightly_picks WHERE pick_date = "
                     "(SELECT MAX(pick_date) FROM nightly_picks) ORDER BY rank"
@@ -556,11 +702,12 @@ def load_picks(as_of: str | None = None) -> list[dict]:
                 "va_score":   float(r[6]) if r[6] is not None else None,
                 "mt_score":   float(r[7]) if r[7] is not None else None,
                 "dp_score":   float(r[8]) if r[8] is not None else None,
-                "close":      float(r[9])  if r[9]  is not None else None,
-                "atr_ratio":  float(r[10]) if r[10] is not None else None,
-                "ret_20d":    float(r[11]) if r[11] is not None else None,
-                "dvol_ratio": float(r[12]) if r[12] is not None else None,
-                "dist_pivot": float(r[13]) if r[13] is not None else None,
+                "sr_score":   float(r[9]) if r[9] is not None else None,
+                "close":      float(r[10]) if r[10] is not None else None,
+                "atr_ratio":  float(r[11]) if r[11] is not None else None,
+                "ret_20d":    float(r[12]) if r[12] is not None else None,
+                "dvol_ratio": float(r[13]) if r[13] is not None else None,
+                "dist_pivot": float(r[14]) if r[14] is not None else None,
             })
         return out
     except Exception as exc:
