@@ -2464,10 +2464,10 @@ function renderPicks(data) {
   }
   const rows = picks.map((p) => {
     const close = p.close != null ? `$${Number(p.close).toFixed(2)}` : '';
-    const ret = p.ret_20d != null ? `${(p.ret_20d * 100).toFixed(1)}%` : '';
+    const ret = p.ret_20d != null ? `${(p.ret_20d * 100).toFixed(1)}% / 60d` : '';
     const dist = p.dist_pivot != null ? `${p.dist_pivot.toFixed(1)}% from pivot` : '';
     const atr = p.atr_ratio != null ? `ATR20/60 ${p.atr_ratio.toFixed(2)}` : '';
-    const dvol = p.dvol_ratio != null ? `dvol 10/60 ${p.dvol_ratio.toFixed(2)}` : '';
+    const dvol = p.dvol_ratio != null ? `vol 10/60 ${p.dvol_ratio.toFixed(2)}` : '';
     const metaParts = [ret, dist, atr, dvol].filter(Boolean);
     const badges = renderPickTriggerBadges(p.ticker);
     return `

@@ -20,17 +20,33 @@ that describe the breakout itself):
 
   VC — Volatility contraction (20d ATR / 60d ATR). Tight range +
        compressing → coiled spring.
-  RS — Relative strength. Ticker's 20-day return percentile-ranked
-       across the eligible universe.
-  VA — Volume accumulation. 10d avg dollar volume / 60d avg.
-       Above-average sustained dollar volume = institutional
-       footprint.
+  RS — Relative strength. Ticker's **60-day** return percentile-
+       ranked across the eligible universe. The longer window catches
+       sustained leaders instead of recent gappers — a name up 40%
+       three weeks ago dominates a 20-day ranking but is exhausted,
+       not coiling.
+  VA — Volume accumulation. 10d avg **share** volume / 60d avg.
+       (Was $-volume; that conflated price moves with accumulation —
+       a stock that ran up 30% on average share volume scored high
+       VA even though nothing was being accumulated.)
   MT — Multi-timeframe trend alignment. Daily EMA stack (close >
        EMA21 > EMA50) + weekly 10w SMA support both pass = 100.
-  DP — Distance to 20-day pivot high. Bell curve peaks at 1.5%
-       below the pivot (ripe, not yet broken).
+  DP — Distance to **30-day** pivot high. Bell curve peaks at 1.5%
+       below the pivot, widened (σ=5) so stocks 5–10% off the pivot
+       (textbook cup-and-handle bases) still score meaningfully.
 
 Composite = weighted sum (default 25/25/20/15/15, tunable from UI).
+
+Universe gates (applied BEFORE scoring — keep the pool to genuine
+basing setups):
+
+  Price band: $5–$1000 (tunable from UI).
+  Liquidity:  ≥ $1M average daily $-volume over the last 60 sessions.
+  Prior trend: close ≥ 1.20 × 60d low AND 50d SMA rising. Real bases
+              form after an advance, not in dead-money names.
+  Not extended: 60d return ≤ 80%. Above that the move is the move —
+                no edge in calling a base on a parabolic.
+
 Top ranks are written to the nightly_picks Postgres table.
 """
 
@@ -216,27 +232,36 @@ def _compute_raw_metrics(row: dict) -> dict | None:
         return None
     vc_ratio = atr20 / atr60   # < 1 = contracting
 
-    # --- RS: Relative Strength (20d return) ---------------------------
+    # --- RS: Relative Strength (60d return) ---------------------------
+    # Use the full 60-bar window for a "3-month return" measure. The
+    # previous 20-day version surfaced one-off gappers; 60d catches
+    # sustained leaders, which is what we want for a base setup.
     # Reject tickers climbing off a near-zero base — that's the
-    # warrant / penny-spike artifact (closes[-21] = $0.05, closes[-1] =
-    # $2 → ret_20d = 39 = 3900%, which clamps RS to 100). Require the
-    # 21-day-ago close to be at least $1 to even count.
-    if closes[-21] < 1.0:
+    # warrant / penny-spike artifact (closes[-60] = $0.05, closes[-1] =
+    # $2 → 3,900%, which clamps RS to 100). Require the start of the
+    # window to be at least $1 to even count.
+    if closes[-60] < 1.0:
         return None
-    ret_20d = float(closes[-1] / closes[-21] - 1.0)
+    ret_60d = float(closes[-1] / closes[-60] - 1.0)
 
-    # --- VA: Volume Accumulation (10d dvol / 60d dvol) ----------------
-    dvol = closes * vols
-    if not np.isfinite(dvol).any():
+    # --- VA: Volume Accumulation (10d / 60d share volume) -------------
+    # Use SHARE volume (not $-volume) so a price runup doesn't fake an
+    # accumulation read. Liquidity floor is enforced separately on
+    # dollar volume below.
+    if not np.isfinite(vols).any():
         return None
-    dvol10 = float(np.nanmean(dvol[-10:]))
-    dvol60 = float(np.nanmean(dvol[-60:]))
+    vol10 = float(np.nanmean(vols[-10:]))
+    vol60 = float(np.nanmean(vols[-60:]))
+    if vol60 <= 0 or not np.isfinite(vol10) or not np.isfinite(vol60):
+        return None
+    va_ratio = vol10 / vol60   # > 1 = accumulating
+
     # Absolute liquidity floor: at least $1M average daily dollar
     # volume over the last 60 sessions. Kills illiquid warrants and
     # micro-caps that the relative ratio alone lets slip through.
-    if dvol60 < 1_000_000 or not np.isfinite(dvol10) or not np.isfinite(dvol60):
+    dvol60 = float(np.nanmean(closes[-60:] * vols[-60:]))
+    if not np.isfinite(dvol60) or dvol60 < 1_000_000:
         return None
-    va_ratio = dvol10 / dvol60   # > 1 = accumulating
 
     # --- MT: Multi-timeframe alignment ---------------------------------
     # Daily: snapshot row already carries EMA21 / EMA50 columns.
@@ -282,16 +307,46 @@ def _compute_raw_metrics(row: dict) -> dict | None:
     if weekly_aligned:
         mt_raw += 50.0
 
-    # --- DP: Distance to 20-day pivot high -----------------------------
-    high20 = float(np.nanmax(highs[-20:])) if n >= 20 else float(np.nanmax(highs))
-    if high20 <= 0:
+    # --- DP: Distance to 30-day pivot high -----------------------------
+    # Widened from 20d to 30d so the pivot represents a real base high,
+    # not a recent 4-week swing. The DP bell-score itself (in
+    # _dp_bell_score) also widens its tail so 5–10% bases score
+    # meaningfully instead of getting trashed.
+    high30 = float(np.nanmax(highs[-30:])) if n >= 30 else float(np.nanmax(highs))
+    if high30 <= 0:
         return None
-    dp_pct = float((high20 - last_close) / high20 * 100.0)
+    dp_pct = float((high30 - last_close) / high30 * 100.0)
+
+    # --- Universe gates ------------------------------------------------
+    # Applied AFTER metric extraction so individual gate failures show up
+    # in logs (return None drops the ticker silently from ranking).
+    #
+    # Gate 1 — Prior uptrend. Real bases form after an advance. Require
+    # the last close to be at least 20% above the 60-bar low, so a stock
+    # that's been sideways near its lows or in a downtrend can't qualify.
+    lo60 = float(np.nanmin(closes[-60:]))
+    if not np.isfinite(lo60) or lo60 <= 0 or last_close < lo60 * 1.20:
+        return None
+
+    # Gate 2 — 50-day SMA rising. Compare SMA50 ending today vs SMA50
+    # ending 10 bars ago; both windows fit inside the 60-bar payload.
+    sma50_now  = float(np.nanmean(closes[-50:]))
+    sma50_then = float(np.nanmean(closes[-60:-10]))
+    if not (np.isfinite(sma50_now) and np.isfinite(sma50_then) and sma50_now > sma50_then):
+        return None
+
+    # Gate 3 — Not extended. A stock up 80% in 60 days is mid-move, not
+    # mid-base; calling a base on it is wishful. Hard cap at +80%.
+    if ret_60d > 0.80:
+        return None
 
     return {
         "close":     last_close,
         "vc_ratio":  vc_ratio,
-        "ret_20d":   ret_20d,
+        # Field name is kept as ret_20d because the nightly_picks table
+        # already has a `ret_20d` column; we store the new 60d return
+        # value there. Migration would invalidate historical rows.
+        "ret_20d":   ret_60d,
         "va_ratio":  va_ratio,
         "mt_raw":    mt_raw,
         "dp_pct":    dp_pct,
@@ -324,12 +379,19 @@ def _percentile_rank(values: list[float], ascending: bool = True) -> np.ndarray:
 
 
 def _dp_bell_score(dp_pct: float) -> float:
-    """Distance-to-pivot bell curve. Peak at 1.5% below the 20-day high
-    (ripe), drops off rapidly for "already broken" (negative dp) and
-    gradually for "still too far below" (large positive dp)."""
+    """Distance-to-pivot bell curve. Peak at 1.5% below the 30-day high
+    (ripe). σ widened from 2.5 to 5.0 so 5–10% bases still score
+    meaningfully — textbook cup-and-handle bases end in that band, and
+    the previous narrow bell (σ=2.5) trashed them (10% off → score ~0).
+    The new curve:
+      1.5% below pivot →  100   (ripe sweet spot, unchanged)
+        5% below pivot →   77
+       10% below pivot →   23
+       15% below pivot →    3
+    """
     if not np.isfinite(dp_pct):
         return float("nan")
-    return 100.0 * math.exp(-((dp_pct - 1.5) ** 2) / (2.0 * 2.5 ** 2))
+    return 100.0 * math.exp(-((dp_pct - 1.5) ** 2) / (2.0 * 5.0 ** 2))
 
 
 def rank_universe(
