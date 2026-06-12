@@ -1657,6 +1657,60 @@ def evaluate_ticker(
     )
 
 
+def _df_from_snapshot_row(row: dict) -> "pd.DataFrame | None":
+    """Build a DataFrame from a snapshot row's recent_bars and overlay
+    the snapshot's stored indicator scalars onto the last row.
+
+    Use as the data source for diagnose against a past date so the
+    per-filter check results match what the snapshot-based screen
+    computed for that date — without this, diagnose reads the LIVE
+    cache (which Yahoo may have retroactively adjusted after the
+    snapshot was created), producing pass/fail mismatches like the
+    PRM case where the screen included the ticker but diagnose
+    rejected it on a stale SMA10 cross check.
+
+    Returns None if the snapshot row lacks usable bars (< 12). The
+    re-enrichment computes rolling indicators on the ~60-bar window;
+    only the LAST bar's EMA/MACD/RSI values match the live cache,
+    because EMA recursion starts from a different point on truncated
+    history. The overlay step plugs the snapshot's pre-computed
+    scalars in at the last bar so diagnose reads them verbatim."""
+    bars = (row.get("recent_bars") or {}).get("bars") or []
+    if len(bars) < 12:
+        return None
+    try:
+        df = pd.DataFrame([{
+            "Open": float(b.get("o")) if b.get("o") is not None else float("nan"),
+            "High": float(b.get("h")) if b.get("h") is not None else float("nan"),
+            "Low":  float(b.get("l")) if b.get("l") is not None else float("nan"),
+            "Close": float(b.get("c")) if b.get("c") is not None else float("nan"),
+            "Volume": float(b.get("v")) if b.get("v") is not None else float("nan"),
+        } for b in bars])
+        df.index = pd.to_datetime([b.get("d") for b in bars])
+    except Exception:
+        return None
+    df = _enrich(df)
+    # Overlay snapshot scalars onto the latest bar — these were computed
+    # with full history at snapshot time and supersede the re-enrichment's
+    # values for the last row.
+    for col in ("ema21", "ema50", "rsi14", "rsi_sma9",
+                "macd", "macd_signal", "macd_hist",
+                "sma10", "sma20", "sma30", "sma40"):
+        v = row.get(col)
+        if v is not None and col in df.columns:
+            try:
+                df.iloc[-1, df.columns.get_loc(col)] = float(v)
+            except (TypeError, ValueError):
+                pass
+    shares_val = row.get("shares")
+    if shares_val is not None:
+        try:
+            df.attrs["shares"] = float(shares_val)
+        except (TypeError, ValueError):
+            pass
+    return df
+
+
 def _evaluate_from_snapshot(
     ticker: str,
     as_of_date: str,
@@ -2371,11 +2425,39 @@ def diagnose_ticker(
         "error": None,
     }
 
-    df = _cached_history(ticker, period="6mo", need_shares=True)
+    # Route diagnose through the SNAPSHOT when one exists for the
+    # requested as-of date. The screen uses the snapshot path for past
+    # dates, and Yahoo can retroactively adjust historical bars after
+    # the snapshot was created — so reading the live cache here would
+    # silently produce a different SMA10/RSI/EMA series and flip
+    # pass/fail on the SMA Revival check (the PRM case: screen saw a
+    # cross-up using snapshot bars, diagnose missed it on adjusted
+    # live-cache bars). When the snapshot ends at target_date, we treat
+    # the last row as the evaluation bar regardless of the user's
+    # as_of_offset value.
+    df = None
+    used_snapshot = False
+    target_date = _resolve_as_of_date(as_of_offset) if as_of_offset >= 0 else None
+    if target_date and snapshots.enabled() and snapshots.has_date(target_date):
+        for tk, row in snapshots.iter_for_date(target_date, [ticker.upper()]):
+            if tk.upper() != ticker.upper():
+                continue
+            df = _df_from_snapshot_row(row)
+            if df is not None:
+                used_snapshot = True
+                # Snapshot ends AT target_date, so any as_of_offset
+                # value is already baked into the source data. The
+                # remaining diagnose logic should treat the last row
+                # as the eval bar.
+                as_of_offset = 0
+            break
+    if df is None:
+        df = _cached_history(ticker, period="6mo", need_shares=True)
     if df is None or df.empty:
         out["error"] = "yfinance returned no data for this ticker"
         return out
     out["data_bars"] = int(len(df))
+    out["data_source"] = "snapshot" if used_snapshot else "live"
 
     needed = max(
         high_lookback + 2, rsi_period + 5, rvol_lookback + 2,
