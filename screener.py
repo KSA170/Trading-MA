@@ -55,17 +55,22 @@ class ScreenHit:
     prev_close: float
     pct_change: float
     high_lookback: float
-    rsi: float
-    rsi_sma9: float
-    rsi_dev_pct: float
-    ema21: float
-    price_ema21_dev_pct: float
-    ema50: float
-    ema21_ema50_dev_pct: float
-    macd: float
-    macd_signal: float
-    macd_hist: float
-    macd_hist_prev: float
+    # Indicator fields are float | None — snapshots / live caches can
+    # be missing a scalar for tickers whose rolling windows haven't
+    # populated yet (e.g. new listings). Filter UI gates on these are
+    # already conditional; the values flow through as None and render
+    # as "—" in the UI when absent.
+    rsi: float | None
+    rsi_sma9: float | None
+    rsi_dev_pct: float | None
+    ema21: float | None
+    price_ema21_dev_pct: float | None
+    ema50: float | None
+    ema21_ema50_dev_pct: float | None
+    macd: float | None
+    macd_signal: float | None
+    macd_hist: float | None
+    macd_hist_prev: float | None
     rel_volume: float
     avg_volume: float
     volume: float
@@ -1428,46 +1433,59 @@ def evaluate_ticker(
         v = float(v)
         return v if np.isfinite(v) else None
 
-    # RSI(14)
+    # RSI(14). Only hard-reject when the corresponding filter is on —
+    # see the snapshot-path comment for the rationale (a missing
+    # indicator scalar shouldn't drop a ticker from a screen that
+    # doesn't gate on that indicator).
     rsi_val = _scalar("rsi14")
-    if rsi_val is None:
+    if rsi_val is None and apply_rsi:
         return None
     if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
         return None
 
     # 9-day SMA of RSI(14) and RSI's deviation from it.
     rsi_sma_val = _scalar("rsi_sma9")
-    if rsi_sma_val is None or rsi_sma_val == 0:
+    if apply_rsi_dev and (rsi_val is None or rsi_sma_val is None or rsi_sma_val == 0):
         return None
-    rsi_dev_pct = (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+    rsi_dev_pct = (
+        (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+        if (rsi_val is not None and rsi_sma_val) else None
+    )
     if apply_rsi_dev and not (rsi_dev_min_pct <= rsi_dev_pct <= rsi_dev_max_pct):
         return None
 
     # EMA(21) + price deviation.
     ema_val = _scalar("ema21")
-    if ema_val is None or ema_val == 0:
+    if (apply_price_dev or apply_ema_dev) and (ema_val is None or ema_val == 0):
         return None
-    price_ema21_dev_pct = (prev_close - ema_val) / ema_val * 100.0
+    price_ema21_dev_pct = (
+        (prev_close - ema_val) / ema_val * 100.0 if ema_val else None
+    )
     if apply_price_dev and not (price_dev_min_pct <= price_ema21_dev_pct <= price_dev_max_pct):
         return None
 
     # EMA(50) + EMA21-vs-EMA50 deviation.
     ema_long_val = _scalar("ema50")
-    if ema_long_val is None or ema_long_val == 0:
+    if apply_ema_dev and (ema_long_val is None or ema_long_val == 0):
         return None
-    ema21_ema50_dev_pct = (ema_val - ema_long_val) / ema_long_val * 100.0
+    ema21_ema50_dev_pct = (
+        (ema_val - ema_long_val) / ema_long_val * 100.0
+        if (ema_val and ema_long_val) else None
+    )
     if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
         return None
 
-    # MACD(12, 26, 9) — scalars used by both the MACD-vs-signal gate and
-    # the momentum_score / results columns.
+    # MACD(12, 26, 9) — scalars used by the MACD-vs-signal gate and the
+    # momentum_score / results columns. Only hard-reject when the gate
+    # is on; missing scalars otherwise flow through as None and render
+    # as "—" in the UI.
     macd_val = _scalar("macd")
     macd_prev_val = _scalar("macd", eval_idx - 1)
     macd_signal_val = _scalar("macd_signal")
     macd_hist_val = _scalar("macd_hist")
     macd_hist_prev = _scalar("macd_hist", eval_idx - 1)
-    if (macd_val is None or macd_signal_val is None
-            or macd_hist_val is None or macd_hist_prev is None):
+    if apply_macd_vs_signal and (macd_val is None or macd_signal_val is None
+                                  or macd_hist_val is None or macd_hist_prev is None):
         return None
     # MACD vs signal — sub-conditions are independent checkboxes (all
     # checked must pass, AND-semantics). Mix as needed:
@@ -1613,17 +1631,17 @@ def evaluate_ticker(
         prev_close=round(prior_close, 4),
         pct_change=round(pct_change, 2),
         high_lookback=round(eval_streak_val, 4),
-        rsi=round(float(rsi_val), 2),
-        rsi_sma9=round(float(rsi_sma_val), 2),
-        rsi_dev_pct=round(rsi_dev_pct, 2),
-        ema21=round(ema_val, 4),
-        price_ema21_dev_pct=round(price_ema21_dev_pct, 2),
-        ema50=round(ema_long_val, 4),
-        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2),
-        macd=round(float(macd_val), 4),
-        macd_signal=round(float(macd_signal_val), 4),
-        macd_hist=round(float(macd_hist_val), 4),
-        macd_hist_prev=round(float(macd_hist_prev), 4),
+        rsi=round(float(rsi_val), 2) if rsi_val is not None else None,
+        rsi_sma9=round(float(rsi_sma_val), 2) if rsi_sma_val is not None else None,
+        rsi_dev_pct=round(rsi_dev_pct, 2) if rsi_dev_pct is not None else None,
+        ema21=round(ema_val, 4) if ema_val is not None else None,
+        price_ema21_dev_pct=round(price_ema21_dev_pct, 2) if price_ema21_dev_pct is not None else None,
+        ema50=round(ema_long_val, 4) if ema_long_val is not None else None,
+        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2) if ema21_ema50_dev_pct is not None else None,
+        macd=round(float(macd_val), 4) if macd_val is not None else None,
+        macd_signal=round(float(macd_signal_val), 4) if macd_signal_val is not None else None,
+        macd_hist=round(float(macd_hist_val), 4) if macd_hist_val is not None else None,
+        macd_hist_prev=round(float(macd_hist_prev), 4) if macd_hist_prev is not None else None,
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
@@ -1770,29 +1788,43 @@ def _evaluate_from_snapshot(
         return None
 
     rsi_val = row.get("rsi14")
-    if rsi_val is None:
+    # Only hard-reject when the corresponding filter is on. The snapshot
+    # writer may emit None for indicator scalars on freshly-listed names
+    # where the rolling window hasn't fully populated yet — silently
+    # dropping those tickers from EVERY screen, even ones that don't gate
+    # on the missing value, was the bug behind "diagnose says PASS but
+    # screen drops the ticker."
+    if rsi_val is None and apply_rsi:
         return None
     if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
         return None
 
     rsi_sma_val = row.get("rsi_sma9")
-    if rsi_sma_val is None or rsi_sma_val == 0:
+    if apply_rsi_dev and (rsi_val is None or rsi_sma_val is None or rsi_sma_val == 0):
         return None
-    rsi_dev_pct = (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+    rsi_dev_pct = (
+        (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+        if (rsi_val is not None and rsi_sma_val) else None
+    )
     if apply_rsi_dev and not (rsi_dev_min_pct <= rsi_dev_pct <= rsi_dev_max_pct):
         return None
 
     ema_val = row.get("ema21")
-    if ema_val is None or ema_val == 0:
+    if (apply_price_dev or apply_ema_dev) and (ema_val is None or ema_val == 0):
         return None
-    price_ema21_dev_pct = (close - ema_val) / ema_val * 100.0
+    price_ema21_dev_pct = (
+        (close - ema_val) / ema_val * 100.0 if ema_val else None
+    )
     if apply_price_dev and not (price_dev_min_pct <= price_ema21_dev_pct <= price_dev_max_pct):
         return None
 
     ema_long_val = row.get("ema50")
-    if ema_long_val is None or ema_long_val == 0:
+    if apply_ema_dev and (ema_long_val is None or ema_long_val == 0):
         return None
-    ema21_ema50_dev_pct = (ema_val - ema_long_val) / ema_long_val * 100.0
+    ema21_ema50_dev_pct = (
+        (ema_val - ema_long_val) / ema_long_val * 100.0
+        if (ema_val and ema_long_val) else None
+    )
     if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
         return None
 
@@ -1801,13 +1833,13 @@ def _evaluate_from_snapshot(
     macd_val = row.get("macd")
     macd_prev_val = row.get("macd_prev")
     macd_signal_val = row.get("macd_signal")
-    if macd_hist_val is None or macd_hist_prev is None:
+    # Only hard-reject on missing MACD scalars when the MACD-vs-signal
+    # filter is on. The legacy MACD-histogram filter has been removed
+    # (PR #62), so unconditional rejection was orphaned.
+    if apply_macd_vs_signal and (macd_hist_val is None or macd_hist_prev is None
+                                  or macd_val is None or macd_signal_val is None):
         return None
-    # MACD vs signal — see twin block in the single-ticker path for the
-    # full rationale.
     if apply_macd_vs_signal:
-        if macd_val is None or macd_signal_val is None:
-            return None
         if macd_within_pct:
             denom = abs(macd_signal_val) if abs(macd_signal_val) > 1e-6 else 1e-6
             gap_pct = abs(macd_val - macd_signal_val) / denom * 100.0
@@ -1957,17 +1989,17 @@ def _evaluate_from_snapshot(
         prev_close=round(prior_close, 4),
         pct_change=round(pct_change, 2),
         high_lookback=round(eval_streak_val, 4),
-        rsi=round(float(rsi_val), 2),
-        rsi_sma9=round(float(rsi_sma_val), 2),
-        rsi_dev_pct=round(rsi_dev_pct, 2),
-        ema21=round(ema_val, 4),
-        price_ema21_dev_pct=round(price_ema21_dev_pct, 2),
-        ema50=round(ema_long_val, 4),
-        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2),
-        macd=round(float(macd_val), 4) if macd_val is not None else 0.0,
-        macd_signal=round(float(macd_signal_val), 4) if macd_signal_val is not None else 0.0,
-        macd_hist=round(float(macd_hist_val), 4),
-        macd_hist_prev=round(float(macd_hist_prev), 4),
+        rsi=round(float(rsi_val), 2) if rsi_val is not None else None,
+        rsi_sma9=round(float(rsi_sma_val), 2) if rsi_sma_val is not None else None,
+        rsi_dev_pct=round(rsi_dev_pct, 2) if rsi_dev_pct is not None else None,
+        ema21=round(ema_val, 4) if ema_val is not None else None,
+        price_ema21_dev_pct=round(price_ema21_dev_pct, 2) if price_ema21_dev_pct is not None else None,
+        ema50=round(ema_long_val, 4) if ema_long_val is not None else None,
+        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2) if ema21_ema50_dev_pct is not None else None,
+        macd=round(float(macd_val), 4) if macd_val is not None else None,
+        macd_signal=round(float(macd_signal_val), 4) if macd_signal_val is not None else None,
+        macd_hist=round(float(macd_hist_val), 4) if macd_hist_val is not None else None,
+        macd_hist_prev=round(float(macd_hist_prev), 4) if macd_hist_prev is not None else None,
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
@@ -2600,15 +2632,25 @@ def diagnose_ticker(
                                            max_lookback=sma_slope_turn_lookback)
     sma_ok = (cross_days is not None and slope_turn_days is not None
               and sma10_slope is not None and sma10_slope > sma_min_slope_pct)
+    # Value summarises the three sub-checks as a readable string so the
+    # diagnose UI displays "slope=0.42%/d · cross 2d ago · turn 1d ago"
+    # instead of "[object Object]". Structured data goes in `extra`.
+    sma_value = (
+        f"slope={sma10_slope:.3f}%/d · "
+        f"cross {'—' if cross_days is None else f'{cross_days}d ago'} · "
+        f"turn {'—' if slope_turn_days is None else f'{slope_turn_days}d ago'}"
+        if sma10_slope is not None else "—"
+    )
     add("sma_revival",
         f"10-SMA slope > {sma_min_slope_pct:.2f}%/day "
         f"& cross-up within {sma_cross_lookback}d "
         f"& slope-turn within {sma_slope_turn_lookback}d",
+        sma_value,
+        apply_sma_revival, sma_ok,
+        [sma_min_slope_pct, sma_cross_lookback, sma_slope_turn_lookback],
         {"slope_pct": round(sma10_slope, 4) if sma10_slope is not None else None,
          "cross_days_ago": cross_days,
-         "slope_turn_days_ago": slope_turn_days},
-        apply_sma_revival, sma_ok,
-        [sma_min_slope_pct, sma_cross_lookback, sma_slope_turn_lookback])
+         "slope_turn_days_ago": slope_turn_days})
 
     out["all_pass"] = all(c["pass"] for c in out["checks"])
     return out
