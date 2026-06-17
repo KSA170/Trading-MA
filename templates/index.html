@@ -313,7 +313,7 @@
 
     <section class="match-history picks-panel">
       <button id="picks-toggle" type="button" class="section-toggle" aria-controls="picks-body" aria-expanded="true">
-        <span class="chevron">▾</span> Watchlist — tonight's picks <span class="muted">(top 25, ranked by composite signal — nightly at close+1hr · gated on prior uptrend + ≤80% in 60d · intraday triggers on US names)</span>
+        <span class="chevron">▾</span> Watchlist — tonight's picks <span class="muted">(top <span id="picks-count-label">25</span>, ranked by composite signal — nightly at close+1hr · gated on prior uptrend + ≤80% in 60d · intraday triggers on US names · set count in Tune…)</span>
       </button>
       <div id="picks-body" class="history-body">
         <div class="picks-header">
@@ -371,6 +371,13 @@
             <label class="picks-price">
               <span>Max ($)</span>
               <input id="picks-price-max" type="number" min="0" step="5" value="1000" />
+            </label>
+          </div>
+          <h4 class="picks-tune-h" title="How many top-ranked names to save and alert on. Controls both the list shown here and the intraday Telegram watchlist. Range 5–100.">Number of picks / alerts</h4>
+          <div class="picks-price-grid">
+            <label class="picks-price">
+              <span>Top N</span>
+              <input id="picks-limit" type="number" min="5" max="100" step="1" value="25" />
             </label>
           </div>
           <p class="muted picks-tune-help">Saved settings are reused by the nightly cron at close+1hr.</p>

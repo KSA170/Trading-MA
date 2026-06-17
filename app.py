@@ -896,9 +896,10 @@ def api_picks():
 @app.route("/api/picks/run", methods=["POST"])
 def api_picks_run():
     """Re-rank the universe now. Synchronous — expect 5-30s depending
-    on universe size. Body: {weights?, price_min?, price_max?, save?}.
-    `save=true` (default) overwrites the latest persisted picks and
-    saves the config so the next nightly cron uses these settings."""
+    on universe size. Body: {weights?, price_min?, price_max?,
+    pick_limit?, save?}. `save=true` (default) overwrites the latest
+    persisted picks and saves the config so the next nightly cron uses
+    these settings."""
     payload = request.get_json(silent=True) or {}
     cfg = picker.get_config()
     weights = payload.get("weights")
@@ -909,14 +910,15 @@ def api_picks_run():
         price_max = float(payload.get("price_max", cfg["price_max"]))
     except (TypeError, ValueError):
         return jsonify({"error": "price_min / price_max must be numeric"}), 400
+    pick_limit = picker._clamp_limit(payload.get("pick_limit", cfg["pick_limit"]))
     save = bool(payload.get("save", True))
 
     picks, as_of = picker.rank_universe(
         weights=weights, price_min=price_min, price_max=price_max,
-        limit=picker.DEFAULT_LIMIT,
+        limit=pick_limit,
     )
     if save:
-        picker.save_config(weights, price_min, price_max)
+        picker.save_config(weights, price_min, price_max, pick_limit=pick_limit)
         if picks and as_of:
             picker.save_picks(picks, as_of)
     return jsonify({
