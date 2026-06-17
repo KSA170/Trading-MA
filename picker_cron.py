@@ -36,15 +36,15 @@ def main() -> int:
 
     cfg = picker.get_config()
     log.info(
-        "picker config: weights=%s price=%g-%g",
-        cfg["weights"], cfg["price_min"], cfg["price_max"],
+        "picker config: weights=%s price=%g-%g limit=%d",
+        cfg["weights"], cfg["price_min"], cfg["price_max"], cfg["pick_limit"],
     )
 
     picks, as_of = picker.rank_universe(
         weights=cfg["weights"],
         price_min=cfg["price_min"],
         price_max=cfg["price_max"],
-        limit=picker.DEFAULT_LIMIT,
+        limit=cfg["pick_limit"],
     )
     if not picks:
         log.warning("ranking returned 0 picks — nothing to write or alert")

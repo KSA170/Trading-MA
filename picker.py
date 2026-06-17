@@ -73,10 +73,23 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 }
 DEFAULT_PRICE_MIN: float = 5.0
 DEFAULT_PRICE_MAX: float = 1000.0
-# Stage 1 saves the top 25; Stage 2 (intraday monitor) watches all of
-# them. The UI displays all 25 too. If 25 feels noisy, slice client-side.
+# Stage 1 saves the top N; Stage 2 (intraday monitor) watches all of
+# them and the UI displays all of them. Default 25, but tunable from
+# the picks "Tune…" panel and persisted in picker_config.pick_limit.
 DEFAULT_LIMIT: int = 25
+MIN_LIMIT: int = 5
+MAX_LIMIT: int = 100
 INTRADAY_TRIGGER_TYPES: tuple[str, ...] = ("vwap_reclaim",)
+
+
+def _clamp_limit(value) -> int:
+    """Coerce a user-supplied pick limit into [MIN_LIMIT, MAX_LIMIT],
+    falling back to DEFAULT_LIMIT on garbage input."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_LIMIT
+    return max(MIN_LIMIT, min(MAX_LIMIT, n))
 
 
 # --- schema ----------------------------------------------------------------
@@ -122,6 +135,11 @@ CREATE TABLE IF NOT EXISTS picker_config (
 -- schedule, but exits immediately when this flag is FALSE.
 ALTER TABLE picker_config
     ADD COLUMN IF NOT EXISTS intraday_alerts_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+-- How many top-ranked picks Stage 1 saves (and Stage 2 watches / the UI
+-- shows). Tunable from the picks "Tune…" panel. Backfilled via ALTER ADD
+-- so existing deployments pick up the column without manual migration.
+ALTER TABLE picker_config
+    ADD COLUMN IF NOT EXISTS pick_limit INT NOT NULL DEFAULT 25;
 
 -- Stage 2: intraday triggers that fire on the nightly top-25 watchlist.
 -- One row per (date, ticker, trigger_type) — dedupes so the cron can
@@ -723,13 +741,15 @@ def get_config() -> dict:
         "price_min": DEFAULT_PRICE_MIN,
         "price_max": DEFAULT_PRICE_MAX,
         "intraday_alerts_enabled": True,
+        "pick_limit": DEFAULT_LIMIT,
     }
     if not snapshots.enabled():
         return cfg
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
-                "SELECT weights, price_min, price_max, intraday_alerts_enabled "
+                "SELECT weights, price_min, price_max, intraday_alerts_enabled, "
+                "pick_limit "
                 "FROM picker_config WHERE id = 1"
             )
             row = cur.fetchone()
@@ -754,6 +774,8 @@ def get_config() -> dict:
         cfg["price_max"] = float(row[2])
     if row[3] is not None:
         cfg["intraday_alerts_enabled"] = bool(row[3])
+    if row[4] is not None:
+        cfg["pick_limit"] = _clamp_limit(row[4])
     return cfg
 
 
@@ -781,23 +803,29 @@ def set_intraday_alerts_enabled(enabled: bool) -> bool:
         return False
 
 
-def save_config(weights: dict, price_min: float, price_max: float) -> bool:
+def save_config(weights: dict, price_min: float, price_max: float,
+                pick_limit: int | None = None) -> bool:
     if not snapshots.enabled():
         return False
     # Filter the weights dict down to the known keys to keep the schema
     # honest if the caller throws extra keys at us.
     clean = {k: float(weights.get(k, DEFAULT_WEIGHTS[k])) for k in DEFAULT_WEIGHTS}
+    # When pick_limit isn't supplied, preserve whatever is stored (or the
+    # default) rather than clobbering it.
+    limit = _clamp_limit(pick_limit) if pick_limit is not None else get_config()["pick_limit"]
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
-                "INSERT INTO picker_config (id, weights, price_min, price_max, updated_at) "
-                "VALUES (1, %s, %s, %s, now()) "
+                "INSERT INTO picker_config "
+                "(id, weights, price_min, price_max, pick_limit, updated_at) "
+                "VALUES (1, %s, %s, %s, %s, now()) "
                 "ON CONFLICT (id) DO UPDATE SET "
                 "weights = EXCLUDED.weights, "
                 "price_min = EXCLUDED.price_min, "
                 "price_max = EXCLUDED.price_max, "
+                "pick_limit = EXCLUDED.pick_limit, "
                 "updated_at = now()",
-                (json.dumps(clean), float(price_min), float(price_max)),
+                (json.dumps(clean), float(price_min), float(price_max), int(limit)),
             )
         return True
     except Exception as exc:

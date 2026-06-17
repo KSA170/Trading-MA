@@ -84,6 +84,8 @@ const els = {
   picksWsrOut: $('#picks-w-sr-out'),
   picksPriceMin: $('#picks-price-min'),
   picksPriceMax: $('#picks-price-max'),
+  picksLimit: $('#picks-limit'),
+  picksCountLabel: $('#picks-count-label'),
   momentumToggle: $('#momentum-toggle'),
   momentumBody: $('#momentum-body'),
   momentumList: $('#momentum-list'),
@@ -2453,7 +2455,12 @@ function renderPicks(data) {
     picksApplyWeightsToUI(cfg.weights);
     if (els.picksPriceMin && cfg.price_min != null) els.picksPriceMin.value = String(cfg.price_min);
     if (els.picksPriceMax && cfg.price_max != null) els.picksPriceMax.value = String(cfg.price_max);
+    if (els.picksLimit && cfg.pick_limit != null) els.picksLimit.value = String(cfg.pick_limit);
     _picksTuningHydrated = true;
+  }
+  // Count label always reflects the latest saved limit (re-ranks change it).
+  if (cfg && els.picksCountLabel && cfg.pick_limit != null) {
+    els.picksCountLabel.textContent = String(cfg.pick_limit);
   }
   if (!els.picksList) return;
   if (!picks.length) {
@@ -2581,6 +2588,7 @@ async function runPicks() {
       weights:   picksWeightFromUI(),
       price_min: Number(els.picksPriceMin && els.picksPriceMin.value) || 0,
       price_max: Number(els.picksPriceMax && els.picksPriceMax.value) || 1000,
+      pick_limit: Number(els.picksLimit && els.picksLimit.value) || 25,
       save: true,
     };
     const res = await fetch('/api/picks/run', {
