@@ -56,7 +56,9 @@ const els = {
   diagnoseToggle: $('#diagnose-toggle'),
   filtersSection: $('#filters-section'),
   filtersToggle: $('#filters-toggle'),
-  saveDefaultsBtn: $('#save-defaults-btn'),
+  presetsSelect: $('#presets-select'),
+  presetSaveBtn: $('#preset-save-btn'),
+  presetDeleteBtn: $('#preset-delete-btn'),
   resetDefaultsBtn: $('#reset-defaults-btn'),
   defaultsMsg: $('#defaults-msg'),
   setupsToggle: $('#setups-toggle'),
@@ -578,11 +580,19 @@ function syncDisabledStates() {
 }
 
 // --- saved filter defaults ------------------------------------------------
-// Snapshot the current filter values, group toggles and exchange selection
-// so they auto-load on the next visit. Stored in localStorage — the app
-// has no per-user server account.
+// Named filter presets — up to 5 saved setups of filter values, group
+// toggles and exchange selection. Stored in localStorage (the app has no
+// per-user server account). The most-recently selected/saved preset
+// auto-loads on the next visit.
+//
+// Storage shape (filter_presets_v1):
+//   { presets: [{ name, state }], lastUsed: "<name>" }
+// where `state` is the same {inputs, toggles, exchanges} object the old
+// single-default feature used.
 
-const FILTER_DEFAULTS_KEY = 'filter_defaults_v1';
+const FILTER_PRESETS_KEY = 'filter_presets_v1';
+const FILTER_DEFAULTS_KEY = 'filter_defaults_v1';   // legacy single-slot
+const MAX_PRESETS = 5;
 
 function setDefaultsMsg(text, kind) {
   if (!els.defaultsMsg) return;
@@ -620,27 +630,160 @@ function applyFilterState(state) {
   updateHighHeader();
 }
 
-function saveFilterDefaults() {
+// --- preset store -----------------------------------------------------
+
+function readPresetStore() {
+  let store = { presets: [], lastUsed: null };
   try {
-    localStorage.setItem(FILTER_DEFAULTS_KEY, JSON.stringify(collectFilterState()));
-    setDefaultsMsg('Saved — these filters will load automatically next visit.', 'ok');
+    const raw = localStorage.getItem(FILTER_PRESETS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.presets)) {
+        store.presets = parsed.presets
+          .filter((p) => p && typeof p.name === 'string' && p.state)
+          .slice(0, MAX_PRESETS);
+        store.lastUsed = typeof parsed.lastUsed === 'string' ? parsed.lastUsed : null;
+      }
+    }
+  } catch (_) { /* ignore corrupt store */ }
+  // One-time migration: fold the legacy single "default" into a preset.
+  if (!store.presets.length) {
+    try {
+      const legacy = localStorage.getItem(FILTER_DEFAULTS_KEY);
+      if (legacy) {
+        const state = JSON.parse(legacy);
+        if (state && typeof state === 'object') {
+          store.presets.push({ name: 'Default', state });
+          store.lastUsed = 'Default';
+          writePresetStore(store);
+        }
+        localStorage.removeItem(FILTER_DEFAULTS_KEY);
+      }
+    } catch (_) { /* ignore */ }
+  }
+  return store;
+}
+
+function writePresetStore(store) {
+  try {
+    localStorage.setItem(FILTER_PRESETS_KEY, JSON.stringify({
+      presets: store.presets.slice(0, MAX_PRESETS),
+      lastUsed: store.lastUsed || null,
+    }));
+    return true;
   } catch (_) {
+    return false;
+  }
+}
+
+function renderPresetOptions(store, selectedName) {
+  if (!els.presetsSelect) return;
+  const sel = selectedName != null ? selectedName : els.presetsSelect.value;
+  els.presetsSelect.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = store.presets.length ? '— select —' : '— none saved —';
+  els.presetsSelect.appendChild(placeholder);
+  store.presets.forEach((p) => {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = p.name;
+    els.presetsSelect.appendChild(opt);
+  });
+  // Restore selection if it still exists.
+  els.presetsSelect.value = store.presets.some((p) => p.name === sel) ? sel : '';
+  updatePresetButtonState(store);
+}
+
+function updatePresetButtonState(store) {
+  const count = store.presets.length;
+  const hasSelection = els.presetsSelect && !!els.presetsSelect.value;
+  if (els.presetDeleteBtn) els.presetDeleteBtn.disabled = !hasSelection;
+  if (els.presetSaveBtn) {
+    // Save is allowed if under the cap, OR if we'd overwrite an existing
+    // name (handled at save time). Keep it enabled; the cap is enforced
+    // in savePreset() with a clear message.
+    els.presetSaveBtn.title = count >= MAX_PRESETS
+      ? `You have ${MAX_PRESETS} saved (the max). Saving will overwrite an existing name.`
+      : `Save the current filters under a name (up to ${MAX_PRESETS}). Re-using a name overwrites it.`;
+  }
+}
+
+function savePreset() {
+  const store = readPresetStore();
+  const current = (els.presetsSelect && els.presetsSelect.value) || '';
+  const suggested = current || '';
+  let name = window.prompt(
+    `Name this filter setup (up to ${MAX_PRESETS} saved). ` +
+    `Re-use a name to overwrite it.`, suggested);
+  if (name == null) return;            // cancelled
+  name = name.trim();
+  if (!name) { setDefaultsMsg('Enter a name to save.', 'error'); return; }
+  if (name.length > 40) name = name.slice(0, 40);
+
+  const existing = store.presets.findIndex((p) => p.name.toLowerCase() === name.toLowerCase());
+  const state = collectFilterState();
+  if (existing >= 0) {
+    store.presets[existing] = { name, state };
+  } else {
+    if (store.presets.length >= MAX_PRESETS) {
+      setDefaultsMsg(
+        `Limit is ${MAX_PRESETS} setups. Delete one, or re-use an existing name to overwrite.`,
+        'error');
+      return;
+    }
+    store.presets.push({ name, state });
+  }
+  store.lastUsed = name;
+  if (writePresetStore(store)) {
+    renderPresetOptions(store, name);
+    setDefaultsMsg(`Saved "${name}".`, 'ok');
+  } else {
     setDefaultsMsg('Could not save (browser storage unavailable).', 'error');
   }
 }
 
+function onPresetSelect() {
+  const store = readPresetStore();
+  const name = (els.presetsSelect && els.presetsSelect.value) || '';
+  updatePresetButtonState(store);
+  if (!name) return;
+  const preset = store.presets.find((p) => p.name === name);
+  if (!preset) return;
+  applyFilterState(preset.state);
+  store.lastUsed = name;
+  writePresetStore(store);
+  setDefaultsMsg(`Loaded "${name}".`, 'ok');
+}
+
+function deletePreset() {
+  const store = readPresetStore();
+  const name = (els.presetsSelect && els.presetsSelect.value) || '';
+  if (!name) return;
+  store.presets = store.presets.filter((p) => p.name !== name);
+  if (store.lastUsed === name) store.lastUsed = null;
+  writePresetStore(store);
+  renderPresetOptions(store, '');
+  setDefaultsMsg(`Deleted "${name}".`, '');
+}
+
+// On page load: populate the dropdown and apply the last-used preset.
 function loadFilterDefaults() {
-  try {
-    const raw = localStorage.getItem(FILTER_DEFAULTS_KEY);
-    if (!raw) return;
-    applyFilterState(JSON.parse(raw));
-  } catch (_) { /* ignore corrupt saved state */ }
+  const store = readPresetStore();
+  renderPresetOptions(store, store.lastUsed || '');
+  if (store.lastUsed) {
+    const preset = store.presets.find((p) => p.name === store.lastUsed);
+    if (preset) applyFilterState(preset.state);
+  }
 }
 
 function resetFilterDefaults() {
-  try { localStorage.removeItem(FILTER_DEFAULTS_KEY); } catch (_) {}
-  // The built-in defaults are the HTML `value=` attributes — a reload
-  // restores them cleanly.
+  // Clear the active selection (but keep saved presets) and restore the
+  // built-in HTML `value=` defaults via reload. lastUsed is cleared so the
+  // reload doesn't immediately re-apply a preset.
+  const store = readPresetStore();
+  store.lastUsed = null;
+  writePresetStore(store);
   location.reload();
 }
 
@@ -4331,7 +4474,9 @@ els.runBtn.addEventListener('click', runScreen);
 Object.values(toggles).forEach((t) => t && t.addEventListener('change', syncDisabledStates));
 loadFilterDefaults();  // apply the user's saved filter defaults, if any
 syncDisabledStates();
-if (els.saveDefaultsBtn) els.saveDefaultsBtn.addEventListener('click', saveFilterDefaults);
+if (els.presetSaveBtn) els.presetSaveBtn.addEventListener('click', savePreset);
+if (els.presetDeleteBtn) els.presetDeleteBtn.addEventListener('click', deletePreset);
+if (els.presetsSelect) els.presetsSelect.addEventListener('change', onPresetSelect);
 if (els.resetDefaultsBtn) els.resetDefaultsBtn.addEventListener('click', resetFilterDefaults);
 
 if (els.thead) els.thead.addEventListener('click', onSortHeaderClick);

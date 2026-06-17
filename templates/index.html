@@ -254,8 +254,13 @@
     </div>
 
     <div class="filter-actions">
-      <button id="save-defaults-btn" type="button" title="Remember the current filter values, group toggles and exchange selection — they'll load automatically next time you open the screener.">Save current filters as default</button>
-      <button id="reset-defaults-btn" type="button" title="Forget your saved defaults and restore the built-in filter values.">Reset to built-in</button>
+      <label class="presets-label" for="presets-select">Saved filters</label>
+      <select id="presets-select" title="Select one of your saved filter setups to load its values, toggles and exchange selection. The last setup you select or save loads automatically next visit.">
+        <option value="">— none —</option>
+      </select>
+      <button id="preset-save-btn" type="button" title="Save the current filter values, group toggles and exchange selection under a name. You can keep up to 5. Re-using an existing name overwrites it.">Save as…</button>
+      <button id="preset-delete-btn" type="button" title="Delete the currently selected saved filter setup.">Delete</button>
+      <button id="reset-defaults-btn" type="button" title="Clear the selection and restore the built-in filter values.">Reset to built-in</button>
       <span id="defaults-msg" class="muted"></span>
     </div>
 

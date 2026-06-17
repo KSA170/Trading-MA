@@ -362,6 +362,22 @@ button.warn:hover { filter: brightness(1.05); }
   padding-top: 4px;
 }
 .filter-actions #defaults-msg { font-size: 12px; }
+.filter-actions .presets-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.filter-actions #presets-select {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+  min-width: 160px;
+}
+.filter-actions #presets-select:focus { outline: none; border-color: var(--accent); }
+.filter-actions button:disabled { opacity: 0.45; cursor: default; }
 
 .content {
   display: block;
