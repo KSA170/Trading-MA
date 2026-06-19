@@ -408,11 +408,21 @@ def _prefilter_sql(as_of: str, min_price: float, max_price: float,
 
 def scan_setups(as_of: str, min_score: float = 60.0, limit: int = 25,
                 min_price: float = 3.0, max_price: float = 1000.0,
-                min_dollar_vol: float = 1_000_000.0) -> list[dict]:
+                min_dollar_vol: float = 1_000_000.0,
+                base_min: float = 0.0,
+                ignition_min: float = 0.0,
+                earliness_min: float = 0.0) -> list[dict]:
     """Scan today's snapshot for base-breakout candidates. Filters by
     score >= `min_score`, the price band [min_price, max_price], and
-    trailing avg daily dollar volume >= `min_dollar_vol`. Returns up
-    to `limit` rows sorted by score descending."""
+    trailing avg daily dollar volume >= `min_dollar_vol`.
+
+    Optional per-sub-score floors (all 0–100, default 0 = off) AND-stack
+    on top of the composite gate. Use these to say e.g. "I only want
+    setups with HIGH base quality even if ignition is moderate" without
+    having to push the composite up and lose the lower-base-but-high-
+    ignition candidates as collateral damage.
+
+    Returns up to `limit` rows sorted by score descending."""
     if not snapshots.enabled():
         return []
     sql, args = _prefilter_sql(as_of, min_price, max_price, min_dollar_vol)
@@ -443,6 +453,16 @@ def scan_setups(as_of: str, min_score: float = 60.0, limit: int = 25,
                     log.warning("score_base_breakout failed for %s: %s", ticker, exc)
                     continue
                 if result is None or result["score"] < min_score:
+                    continue
+                # Sub-score floors. The pattern_scan sub-scores live on a
+                # 0–1 scale internally; the API takes the user's 0–100
+                # thresholds and divides by 100 here so the wire format
+                # stays consistent with `min_score` (0–100).
+                if base_min > 0 and (result.get("base_quality") or 0) * 100 < base_min:
+                    continue
+                if ignition_min > 0 and (result.get("ignition") or 0) * 100 < ignition_min:
+                    continue
+                if earliness_min > 0 and (result.get("earliness") or 0) * 100 < earliness_min:
                     continue
                 result["ticker"] = ticker
                 candidates.append(result)

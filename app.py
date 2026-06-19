@@ -495,11 +495,23 @@ def api_setups():
         min_dollar_vol = float(request.args.get("min_dollar_vol", "1000000"))
     except (TypeError, ValueError):
         min_dollar_vol = 1_000_000.0
+    # Optional per-sub-score floors (0–100, default 0 = off). Used by
+    # the Setup criteria modal so a rule can require e.g. base_min=70 +
+    # ignition_min=50 on top of the overall score_min.
+    def _flt_arg(name: str) -> float:
+        try:
+            return float(request.args.get(name, "0"))
+        except (TypeError, ValueError):
+            return 0.0
+    base_min     = _flt_arg("base_min")
+    ignition_min = _flt_arg("ignition_min")
+    earliness_min = _flt_arg("earliness_min")
     started = time.time()
     results = pattern_scan.scan_setups(
         as_of, min_score=min_score, limit=limit,
         min_price=min_price, max_price=max_price,
         min_dollar_vol=min_dollar_vol,
+        base_min=base_min, ignition_min=ignition_min, earliness_min=earliness_min,
     )
     elapsed = round(time.time() - started, 1)
     return jsonify({

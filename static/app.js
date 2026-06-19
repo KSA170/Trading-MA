@@ -256,6 +256,9 @@ const els = {
   setupsMinPrice: $('#setups-min-price'),
   setupsMaxPrice: $('#setups-max-price'),
   setupsMinDollarVol: $('#setups-min-dollar-vol'),
+  setupsBaseMin: $('#setups-base-min'),
+  setupsIgnitionMin: $('#setups-ignition-min'),
+  setupsEarlinessMin: $('#setups-earliness-min'),
   setupsLimit: $('#setups-limit'),
   setupsRunBtn: $('#setups-run-btn'),
   setupsSelectionToolbar: $('#setups-selection-toolbar'),
@@ -390,6 +393,13 @@ const setupModalInputs = {
   min_price: $('#cm_setup_min_price'),
   max_price: $('#cm_setup_max_price'),
   min_dollar_vol: $('#cm_setup_min_dollar_vol'),
+  // Optional per-sub-score floors (0–100, 0 = ignored). AND-stack with
+  // score_min so a rule can require e.g. base ≥ 70 + ignition ≥ 50
+  // without raising the composite gate (which would lose any setup
+  // strong in one dimension but mid overall).
+  base_min: $('#cm_setup_base_min'),
+  ignition_min: $('#cm_setup_ignition_min'),
+  earliness_min: $('#cm_setup_earliness_min'),
 };
 
 const listAllCb = $('#list_all');
@@ -3528,6 +3538,9 @@ async function runSetupsScan() {
   const minPrice = Number(els.setupsMinPrice && els.setupsMinPrice.value) || 0;
   const maxPrice = Number(els.setupsMaxPrice && els.setupsMaxPrice.value) || 1000;
   const minDollarVol = Number(els.setupsMinDollarVol && els.setupsMinDollarVol.value) || 0;
+  const baseMin = Number(els.setupsBaseMin && els.setupsBaseMin.value) || 0;
+  const ignitionMin = Number(els.setupsIgnitionMin && els.setupsIgnitionMin.value) || 0;
+  const earlinessMin = Number(els.setupsEarlinessMin && els.setupsEarlinessMin.value) || 0;
   const limit = Number(els.setupsLimit && els.setupsLimit.value) || 20;
   els.setupsRunBtn.disabled = true;
   if (els.setupsStatus) els.setupsStatus.textContent = 'scanning… (5-15s)';
@@ -3544,6 +3557,10 @@ async function runSetupsScan() {
       min_dollar_vol: String(minDollarVol),
       limit: String(limit),
     });
+    // Only send sub-score floors when set (omit zeros so the URL stays short).
+    if (baseMin > 0) qs.set('base_min', String(baseMin));
+    if (ignitionMin > 0) qs.set('ignition_min', String(ignitionMin));
+    if (earlinessMin > 0) qs.set('earliness_min', String(earlinessMin));
     const res = await fetch('/api/setups?' + qs.toString());
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -3600,11 +3617,27 @@ if (els.setupsShareBtn) {
 if (els.setupsCreateAlertBtn) {
   els.setupsCreateAlertBtn.addEventListener('click', () => {
     // Pre-populate the rule-create row with setup type + 'all' scope, then
-    // scroll the user to it so they can name the rule and submit.
+    // scroll the user to it so they can name the rule and submit. Also
+    // copy the toolbar values (score, price, $-vol, sub-score floors) into
+    // the criteria modal's cm_setup_* inputs so the user doesn't have to
+    // re-type what they just dialed in.
     if (els.ruleType) els.ruleType.value = 'setup';
     if (els.ruleScopeType) {
       els.ruleScopeType.value = 'all';
       populateScopeValues();
+    }
+    const seed = [
+      ['cm_setup_score_min',     els.setupsMinScore],
+      ['cm_setup_min_price',     els.setupsMinPrice],
+      ['cm_setup_max_price',     els.setupsMaxPrice],
+      ['cm_setup_min_dollar_vol',els.setupsMinDollarVol],
+      ['cm_setup_base_min',      els.setupsBaseMin],
+      ['cm_setup_ignition_min',  els.setupsIgnitionMin],
+      ['cm_setup_earliness_min', els.setupsEarlinessMin],
+    ];
+    for (const [modalId, srcEl] of seed) {
+      const target = document.getElementById(modalId);
+      if (target && srcEl && srcEl.value !== '') target.value = srcEl.value;
     }
     syncRuleTypeUI();
     if (els.ruleName) {
