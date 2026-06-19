@@ -2158,6 +2158,12 @@ function summarizeRuleParams(p, ruleType) {
       out.push(`Price $${n(p.min_price)}–$${n(p.max_price)}`);
     }
     if (p.min_dollar_vol != null) out.push(`$-vol/day ≥ $${n(p.min_dollar_vol)}`);
+    // Surface active sub-score floors so an at-a-glance look at the rule
+    // list makes it obvious whether Base/Ignition/Earliness gates are
+    // contributing. Zero = off and stays hidden to avoid noise.
+    if (Number(p.base_min) > 0) out.push(`Base ≥ ${n(p.base_min)}`);
+    if (Number(p.ignition_min) > 0) out.push(`Ignition ≥ ${n(p.ignition_min)}`);
+    if (Number(p.earliness_min) > 0) out.push(`Earliness ≥ ${n(p.earliness_min)}`);
     return out;
   }
   const out = [];
@@ -2469,6 +2475,15 @@ function readSetupToolbarAsParams() {
     min_price: Number(els.setupsMinPrice && els.setupsMinPrice.value) || 0,
     max_price: Number(els.setupsMaxPrice && els.setupsMaxPrice.value) || 1000,
     min_dollar_vol: Number(els.setupsMinDollarVol && els.setupsMinDollarVol.value) || 0,
+    // Sub-score floors flow from toolbar into the create-rule modal so a
+    // rule created right after dialling-in the live filter inherits all
+    // of the user's intent. Omitting these was the bug behind alerts
+    // ignoring Base/Ignition/Earliness post-PR-75: applySetupParamsToModal
+    // only overwrites fields whose source value is defined, so the modal's
+    // HTML defaults (0) won and rules persisted with floors disabled.
+    base_min: Number(els.setupsBaseMin && els.setupsBaseMin.value) || 0,
+    ignition_min: Number(els.setupsIgnitionMin && els.setupsIgnitionMin.value) || 0,
+    earliness_min: Number(els.setupsEarlinessMin && els.setupsEarlinessMin.value) || 0,
   };
 }
 
