@@ -47,6 +47,17 @@ KNOWN_KEYS: tuple[str, ...] = (
     "collapse_options_scan",
     "app_tab",                     # "stock" | "options"
     "options_history_view",        # "all" | "today" | etc.
+    # Setups toolbar values — the live scanner remembers what you last
+    # dialled in (composite gate, price/$-vol band, sub-score floors,
+    # row limit) so a refresh doesn't reset the panel to HTML defaults.
+    "setups_min_score",
+    "setups_min_price",
+    "setups_max_price",
+    "setups_min_dollar_vol",
+    "setups_base_min",
+    "setups_ignition_min",
+    "setups_earliness_min",
+    "setups_limit",
 )
 
 _SCHEMA = """
