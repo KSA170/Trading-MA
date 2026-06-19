@@ -1,5 +1,104 @@
 const $ = (sel) => document.querySelector(sel);
 
+// --- UI prefs adapter (cross-device) -------------------------------------
+// Drop-in replacement for the per-device localStorage calls that used to
+// remember column layout, collapsed sections, active tab, and the options-
+// history view mode. The Flask template injects the current values into
+// window.__UI_PREFS__ at render time so reads are synchronous (no flash
+// of defaults before hydration). Writes update the in-memory cache and
+// fire-and-forget POST /api/ui-prefs to persist.
+//
+// localStorage stays as a degradation backstop: if the network is down
+// when we try to write, the value still sits in window.__UI_PREFS__ for
+// the rest of the session, and we mirror to localStorage so the next
+// page load can re-attempt the upload (see hydrateUiPrefs migration).
+const uiPrefs = (() => {
+  const cache = (typeof window !== 'undefined' && window.__UI_PREFS__) || {};
+  const inflight = new Set();
+  function get(key, fallback) {
+    if (cache[key] !== undefined) return cache[key];
+    // Fall back to legacy localStorage on a per-key basis so the
+    // pre-migration value still hydrates the UI until the upload
+    // succeeds in hydrateUiPrefs().
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw === null || raw === undefined) return fallback;
+      try { return JSON.parse(raw); } catch (_) { return raw; }
+    } catch (_) { return fallback; }
+  }
+  function set(key, value) {
+    cache[key] = value;
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* ignore */ }
+    // De-dupe concurrent writes for the same key.
+    if (inflight.has(key)) return;
+    inflight.add(key);
+    fetch('/api/ui-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value }),
+    }).catch(() => { /* network down — value already in cache + localStorage */ })
+      .finally(() => inflight.delete(key));
+  }
+  function batchUpload(prefs) {
+    return fetch('/api/ui-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefs }),
+    }).catch(() => ({ ok: false }));
+  }
+  return { get, set, batchUpload, _cache: cache };
+})();
+
+// One-time migration: copy known legacy localStorage keys to the server
+// (if the server-rendered cache didn't already have them), then trim
+// localStorage so future writes flow only through the cache+server path.
+// Called once at script init below.
+function hydrateUiPrefs() {
+  // Keys with prefixes from the old _v1 / hard-coded names get normalised
+  // to their server-side counterparts here so the migration is invisible.
+  const aliases = {
+    'match_columns_order_v1':  'match_columns_order',
+    'match_columns_hidden_v1': 'match_columns_hidden',
+  };
+  const knownLegacy = [
+    'match_columns_order_v1', 'match_columns_hidden_v1',
+    'collapse_filters', 'collapse_diagnose', 'collapse_rules',
+    'collapse_picks', 'collapse_momentum', 'collapse_momentum_diagnose',
+    'collapse_setups', 'collapse_options_history', 'collapse_options_scan',
+    'app_tab', 'options_history_view',
+  ];
+  const toUpload = {};
+  for (const legacyKey of knownLegacy) {
+    const serverKey = aliases[legacyKey] || legacyKey;
+    if (uiPrefs._cache[serverKey] !== undefined) {
+      // Server already has it — drop the local copy.
+      try { localStorage.removeItem(legacyKey); } catch (_) {}
+      continue;
+    }
+    let raw;
+    try { raw = localStorage.getItem(legacyKey); } catch (_) { raw = null; }
+    if (raw == null) continue;
+    // Legacy collapse booleans are stored as '0' / '1' strings, not JSON.
+    // Tab + options-history-view are bare strings. Columns are JSON arrays.
+    let parsed;
+    if (raw === '0' || raw === '1') parsed = (raw === '1');
+    else {
+      try { parsed = JSON.parse(raw); } catch (_) { parsed = raw; }
+    }
+    toUpload[serverKey] = parsed;
+    uiPrefs._cache[serverKey] = parsed;
+  }
+  if (Object.keys(toUpload).length) {
+    uiPrefs.batchUpload(toUpload).then(() => {
+      // On success: drop legacy localStorage entries.
+      for (const legacyKey of Object.keys(toUpload)) {
+        try { localStorage.removeItem(legacyKey); } catch (_) {}
+        try { localStorage.removeItem(Object.keys(aliases).find((k) => aliases[k] === legacyKey) || legacyKey); } catch (_) {}
+      }
+    });
+  }
+}
+
 const els = {
   runBtn: $('#run-btn'),
   warmBtn: $('#warm-btn'),
@@ -1017,35 +1116,31 @@ const COLUMN_DEFS = [
 ];
 const COLUMN_BY_KEY = Object.fromEntries(COLUMN_DEFS.map((d) => [d.key, d]));
 const ALL_COLUMN_KEYS = COLUMN_DEFS.map((d) => d.key);
-const COLS_ORDER_KEY = 'match_columns_order_v1';
-const COLS_HIDDEN_KEY = 'match_columns_hidden_v1';
+// Server-side pref keys — see ui_prefs.py KNOWN_KEYS. The legacy v1
+// localStorage keys are aliased to these names in hydrateUiPrefs().
+const COLS_ORDER_PREF  = 'match_columns_order';
+const COLS_HIDDEN_PREF = 'match_columns_hidden';
 
 function loadColumnOrder() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(COLS_ORDER_KEY) || '[]');
-    if (Array.isArray(saved)) {
-      const valid = saved.filter((k) => COLUMN_BY_KEY[k]);
-      for (const k of ALL_COLUMN_KEYS) if (!valid.includes(k)) valid.push(k);
-      if (valid.length) return valid;
-    }
-  } catch (_) { /* fall through */ }
+  const saved = uiPrefs.get(COLS_ORDER_PREF, null);
+  if (Array.isArray(saved)) {
+    const valid = saved.filter((k) => COLUMN_BY_KEY[k]);
+    for (const k of ALL_COLUMN_KEYS) if (!valid.includes(k)) valid.push(k);
+    if (valid.length) return valid;
+  }
   return ALL_COLUMN_KEYS.slice();
 }
 function loadHiddenColumns() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(COLS_HIDDEN_KEY) || '[]');
-    if (Array.isArray(saved)) return new Set(saved.filter((k) => COLUMN_BY_KEY[k]));
-  } catch (_) { /* fall through */ }
+  const saved = uiPrefs.get(COLS_HIDDEN_PREF, null);
+  if (Array.isArray(saved)) return new Set(saved.filter((k) => COLUMN_BY_KEY[k]));
   return new Set();
 }
 let columnOrder = loadColumnOrder();
 let hiddenColumns = loadHiddenColumns();
 
 function saveColumnState() {
-  try {
-    localStorage.setItem(COLS_ORDER_KEY, JSON.stringify(columnOrder));
-    localStorage.setItem(COLS_HIDDEN_KEY, JSON.stringify(Array.from(hiddenColumns)));
-  } catch (_) { /* ignore */ }
+  uiPrefs.set(COLS_ORDER_PREF, columnOrder);
+  uiPrefs.set(COLS_HIDDEN_PREF, Array.from(hiddenColumns));
 }
 function visibleColumns() {
   return columnOrder.map((k) => COLUMN_BY_KEY[k]).filter((d) => d && !hiddenColumns.has(d.key));
@@ -1355,11 +1450,13 @@ function wireCollapse(toggleBtn, targets, storageKey) {
     toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     arr.forEach((el) => el.classList.toggle('collapsed-section', collapsed));
   };
-  apply(localStorage.getItem(storageKey) === '1');
+  // Server-stored as a JSON boolean; the legacy '0'/'1' strings are
+  // normalised in hydrateUiPrefs() so === true / === false works here.
+  apply(uiPrefs.get(storageKey, false) === true);
   toggleBtn.addEventListener('click', () => {
     const next = !toggleBtn.classList.contains('collapsed');
     apply(next);
-    try { localStorage.setItem(storageKey, next ? '1' : '0'); } catch (_) {}
+    uiPrefs.set(storageKey, next);
   });
 }
 
@@ -3715,10 +3812,7 @@ const _pinnedIndex = new Map();
 // Driven by the radio buttons; persisted to localStorage so it survives
 // reloads.
 const _OH_VIEW_KEY = 'options_history_view';
-let _ohView = (() => {
-  try { return localStorage.getItem(_OH_VIEW_KEY) || 'all'; }
-  catch (_) { return 'all'; }
-})();
+let _ohView = uiPrefs.get(_OH_VIEW_KEY, 'all');
 
 function _ohPinKey(ticker, as_of) {
   return `${(ticker || '').toUpperCase()}|${as_of || ''}`;
@@ -3928,7 +4022,7 @@ function activateTab(name, persist = true) {
   if (runBtn)  runBtn.classList.toggle('hidden', isOptions);
   if (warmBtn) warmBtn.classList.toggle('hidden', isOptions);
   if (persist) {
-    try { localStorage.setItem('app_tab', name); } catch (_) {}
+    uiPrefs.set('app_tab', name);
     if (history && history.replaceState) {
       const hash = isOptions ? '#options' : '#stock';
       if (location.hash !== hash) history.replaceState(null, '', hash);
@@ -3939,7 +4033,7 @@ function activateTab(name, persist = true) {
 function _initialTab() {
   const fromHash = (location.hash || '').replace('#', '');
   if (fromHash === 'options' || fromHash === 'stock') return fromHash;
-  try { return localStorage.getItem('app_tab') || 'stock'; } catch (_) { return 'stock'; }
+  return uiPrefs.get('app_tab', 'stock');
 }
 
 if (els.tabBtnStock)   els.tabBtnStock  .addEventListener('click', () => activateTab('stock'));
@@ -4040,7 +4134,7 @@ document.querySelectorAll('input[name="options-history-view"]').forEach((r) => {
   r.addEventListener('change', () => {
     if (!r.checked) return;
     _ohView = r.value;
-    try { localStorage.setItem(_OH_VIEW_KEY, _ohView); } catch (_) {}
+    uiPrefs.set(_OH_VIEW_KEY, _ohView);
     // Date picker is only relevant in "all" view.
     if (els.optionsHistoryDate) els.optionsHistoryDate.disabled = (_ohView === 'pinned');
     loadOptionsHistory();
@@ -4507,6 +4601,7 @@ if (els.optionsScanPreviewRefresh)
 els.runBtn.addEventListener('click', runScreen);
 
 Object.values(toggles).forEach((t) => t && t.addEventListener('change', syncDisabledStates));
+hydrateUiPrefs();      // one-time push of legacy localStorage UI prefs to the server
 loadFilterDefaults();  // apply the user's saved filter defaults, if any
 syncDisabledStates();
 if (els.presetSaveBtn) els.presetSaveBtn.addEventListener('click', savePreset);

@@ -6,6 +6,14 @@
   <title>Trading MA — Breakout Screener</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   <script src="https://unpkg.com/lightweight-charts@5.0.7/dist/lightweight-charts.standalone.production.js"></script>
+  <script>
+    // Server-rendered UI prefs (column layout, collapsed-section booleans,
+    // active tab, etc.) — injected so the JS can read them synchronously
+    // and avoid a flash where defaults briefly show before hydration.
+    // Writes go to POST /api/ui-prefs; this snapshot only seeds the
+    // initial state.
+    window.__UI_PREFS__ = {{ ui_prefs|default({})|tojson }};
+  </script>
 </head>
 <body>
   <header class="topbar">

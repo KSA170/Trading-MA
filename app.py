@@ -25,6 +25,7 @@ import alerts
 import pattern_scan
 import picker
 import filter_presets
+import ui_prefs
 import scanner_momentum
 from tickers import LIST_LABELS, refresh_universe, last_fetch_errors
 
@@ -233,7 +234,10 @@ def _parse_params() -> dict:
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # Inject server-stored UI prefs into the page so the JS can read
+    # them synchronously at boot (avoids a flash where collapsed
+    # sections / column layout briefly show defaults before hydrating).
+    return render_template("index.html", ui_prefs=ui_prefs.get_all())
 
 
 @app.route("/api/screen")
@@ -1003,6 +1007,40 @@ def api_filter_presets_mutate():
     return jsonify(response), status
 
 
+# --- UI prefs (cross-device persistence) ----------------------------------
+# Key/value bag for things like column layout, collapsed-section state,
+# active tab, etc. — anything that used to live in browser localStorage.
+# The page render also injects these into window.__UI_PREFS__ so the JS
+# can read them synchronously; these endpoints handle writes and a fresh
+# read for clients that don't trust the server-rendered cache.
+
+@app.route("/api/ui-prefs", methods=["GET"])
+def api_ui_prefs_get():
+    return jsonify(ui_prefs.get_all())
+
+
+@app.route("/api/ui-prefs", methods=["POST"])
+def api_ui_prefs_set():
+    """Body: {key, value} for a single upsert, or {prefs: {...}} for a
+    batch (used by the one-time localStorage migration)."""
+    payload = request.get_json(silent=True) or {}
+    # Batch path — migration uploads everything in one POST.
+    if isinstance(payload.get("prefs"), dict):
+        failed = []
+        for k, v in payload["prefs"].items():
+            r = ui_prefs.set_pref(k, v)
+            if not r.get("ok"):
+                failed.append({"key": k, "error": r.get("error")})
+        return jsonify({"ok": not failed, "failed": failed, "prefs": ui_prefs.get_all()})
+    # Single-key path — typical write from a UI interaction.
+    key = payload.get("key")
+    if "value" not in payload:
+        return jsonify({"ok": False, "error": "value required"}), 400
+    result = ui_prefs.set_pref(key, payload.get("value"))
+    status = 200 if result.get("ok") else 400 if result.get("error") in ("empty_key", "key_too_long", "unserialisable_value") else 500
+    return jsonify(result), status
+
+
 # --- real-time momentum scanner -------------------------------------------
 # Independent of the nightly watchlist. Walks the full snapshot universe
 # every 5 min during market hours via .github/workflows/momentum-scanner.yml
@@ -1262,6 +1300,7 @@ snapshots.init()
 alerts.init_tables()
 picker.init_tables()
 filter_presets.init_tables()
+ui_prefs.init_tables()
 scanner_momentum.init_tables()
 import options  # imported here so init_tables runs after snapshots.init
 options.init_tables()
