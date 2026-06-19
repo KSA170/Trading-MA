@@ -579,20 +579,28 @@ function syncDisabledStates() {
   }
 }
 
-// --- saved filter defaults ------------------------------------------------
-// Named filter presets — up to 5 saved setups of filter values, group
-// toggles and exchange selection. Stored in localStorage (the app has no
-// per-user server account). The most-recently selected/saved preset
-// auto-loads on the next visit.
+// --- saved filter presets ------------------------------------------------
+// Named filter presets persisted SERVER-SIDE in Postgres so the same
+// setups appear from every device and survive a browser refresh. The
+// previous version stored them in localStorage which (a) was per-device
+// and (b) could be evicted by Safari ITP / private mode.
 //
-// Storage shape (filter_presets_v1):
-//   { presets: [{ name, state }], lastUsed: "<name>" }
-// where `state` is the same {inputs, toggles, exchanges} object the old
-// single-default feature used.
+// API contract:
+//   GET  /api/filter-presets
+//     → { presets: [{name, state, last_used_at}], last_used, max }
+//   POST /api/filter-presets   body: {action, name?, state?}
+//     actions: save | delete | select | reset
+//     → same shape as GET, plus {ok, error?}
+//
+// The client keeps a small in-memory cache `_presetCache` so dropdown
+// renders don't re-fetch. We refresh it on every mutation by reading
+// the response body the server already returned.
 
-const FILTER_PRESETS_KEY = 'filter_presets_v1';
-const FILTER_DEFAULTS_KEY = 'filter_defaults_v1';   // legacy single-slot
+const FILTER_PRESETS_KEY = 'filter_presets_v1';   // legacy localStorage
+const FILTER_DEFAULTS_KEY = 'filter_defaults_v1'; // legacy single-default
 const MAX_PRESETS = 5;
+let _presetCache = { presets: [], last_used: null, max: MAX_PRESETS };
+let _presetsHydrated = false;
 
 function setDefaultsMsg(text, kind) {
   if (!els.defaultsMsg) return;
@@ -630,50 +638,22 @@ function applyFilterState(state) {
   updateHighHeader();
 }
 
-// --- preset store -----------------------------------------------------
+// --- server-backed preset store -----------------------------------------
 
-function readPresetStore() {
-  let store = { presets: [], lastUsed: null };
-  try {
-    const raw = localStorage.getItem(FILTER_PRESETS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.presets)) {
-        store.presets = parsed.presets
-          .filter((p) => p && typeof p.name === 'string' && p.state)
-          .slice(0, MAX_PRESETS);
-        store.lastUsed = typeof parsed.lastUsed === 'string' ? parsed.lastUsed : null;
-      }
-    }
-  } catch (_) { /* ignore corrupt store */ }
-  // One-time migration: fold the legacy single "default" into a preset.
-  if (!store.presets.length) {
-    try {
-      const legacy = localStorage.getItem(FILTER_DEFAULTS_KEY);
-      if (legacy) {
-        const state = JSON.parse(legacy);
-        if (state && typeof state === 'object') {
-          store.presets.push({ name: 'Default', state });
-          store.lastUsed = 'Default';
-          writePresetStore(store);
-        }
-        localStorage.removeItem(FILTER_DEFAULTS_KEY);
-      }
-    } catch (_) { /* ignore */ }
-  }
-  return store;
+async function fetchPresets() {
+  const res = await fetch('/api/filter-presets');
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
 }
 
-function writePresetStore(store) {
-  try {
-    localStorage.setItem(FILTER_PRESETS_KEY, JSON.stringify({
-      presets: store.presets.slice(0, MAX_PRESETS),
-      lastUsed: store.lastUsed || null,
-    }));
-    return true;
-  } catch (_) {
-    return false;
-  }
+async function mutatePresets(action, body) {
+  const res = await fetch('/api/filter-presets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...(body || {}) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
 }
 
 function renderPresetOptions(store, selectedName) {
@@ -690,7 +670,6 @@ function renderPresetOptions(store, selectedName) {
     opt.textContent = p.name;
     els.presetsSelect.appendChild(opt);
   });
-  // Restore selection if it still exists.
   els.presetsSelect.value = store.presets.some((p) => p.name === sel) ? sel : '';
   updatePresetButtonState(store);
 }
@@ -700,90 +679,146 @@ function updatePresetButtonState(store) {
   const hasSelection = els.presetsSelect && !!els.presetsSelect.value;
   if (els.presetDeleteBtn) els.presetDeleteBtn.disabled = !hasSelection;
   if (els.presetSaveBtn) {
-    // Save is allowed if under the cap, OR if we'd overwrite an existing
-    // name (handled at save time). Keep it enabled; the cap is enforced
-    // in savePreset() with a clear message.
-    els.presetSaveBtn.title = count >= MAX_PRESETS
-      ? `You have ${MAX_PRESETS} saved (the max). Saving will overwrite an existing name.`
-      : `Save the current filters under a name (up to ${MAX_PRESETS}). Re-using a name overwrites it.`;
+    els.presetSaveBtn.title = count >= (store.max || MAX_PRESETS)
+      ? `You have ${count} saved (the max). Saving will overwrite an existing name.`
+      : `Save the current filters under a name (up to ${store.max || MAX_PRESETS}). Re-using a name overwrites it.`;
   }
 }
 
-function savePreset() {
-  const store = readPresetStore();
+function _applyStoreFromResponse(data, selectedName) {
+  if (data && Array.isArray(data.presets)) {
+    _presetCache = {
+      presets: data.presets,
+      last_used: data.last_used || null,
+      max: typeof data.max === 'number' ? data.max : MAX_PRESETS,
+    };
+    renderPresetOptions(_presetCache, selectedName);
+  }
+}
+
+async function savePreset() {
   const current = (els.presetsSelect && els.presetsSelect.value) || '';
-  const suggested = current || '';
   let name = window.prompt(
-    `Name this filter setup (up to ${MAX_PRESETS} saved). ` +
-    `Re-use a name to overwrite it.`, suggested);
-  if (name == null) return;            // cancelled
+    `Name this filter setup (up to ${_presetCache.max || MAX_PRESETS} saved). ` +
+    `Re-use a name to overwrite it.`, current);
+  if (name == null) return;
   name = name.trim();
   if (!name) { setDefaultsMsg('Enter a name to save.', 'error'); return; }
-  if (name.length > 40) name = name.slice(0, 40);
 
-  const existing = store.presets.findIndex((p) => p.name.toLowerCase() === name.toLowerCase());
-  const state = collectFilterState();
-  if (existing >= 0) {
-    store.presets[existing] = { name, state };
+  setDefaultsMsg('Saving…', '');
+  const { ok, status, data } = await mutatePresets('save', { name, state: collectFilterState() });
+  if (ok) {
+    _applyStoreFromResponse(data, data.name || name);
+    setDefaultsMsg(`Saved "${data.name || name}".`, 'ok');
+  } else if (status === 409 && data.error === 'cap_reached') {
+    setDefaultsMsg(
+      `Limit is ${data.max || MAX_PRESETS} setups. Delete one, or re-use an existing name to overwrite.`,
+      'error');
+  } else if (data && data.error === 'no_db') {
+    setDefaultsMsg('Could not save — server has no database configured.', 'error');
   } else {
-    if (store.presets.length >= MAX_PRESETS) {
-      setDefaultsMsg(
-        `Limit is ${MAX_PRESETS} setups. Delete one, or re-use an existing name to overwrite.`,
-        'error');
-      return;
-    }
-    store.presets.push({ name, state });
-  }
-  store.lastUsed = name;
-  if (writePresetStore(store)) {
-    renderPresetOptions(store, name);
-    setDefaultsMsg(`Saved "${name}".`, 'ok');
-  } else {
-    setDefaultsMsg('Could not save (browser storage unavailable).', 'error');
+    setDefaultsMsg('Could not save (server error). Try again in a moment.', 'error');
   }
 }
 
-function onPresetSelect() {
-  const store = readPresetStore();
+async function onPresetSelect() {
   const name = (els.presetsSelect && els.presetsSelect.value) || '';
-  updatePresetButtonState(store);
+  updatePresetButtonState(_presetCache);
   if (!name) return;
-  const preset = store.presets.find((p) => p.name === name);
+  const preset = _presetCache.presets.find((p) => p.name === name);
   if (!preset) return;
   applyFilterState(preset.state);
-  store.lastUsed = name;
-  writePresetStore(store);
   setDefaultsMsg(`Loaded "${name}".`, 'ok');
+  // Best-effort touch — failure is fine, the values are already loaded.
+  mutatePresets('select', { name }).then(({ data, ok }) => {
+    if (ok) _presetCache.last_used = (data && data.last_used) || name;
+  }).catch(() => { /* ignore */ });
 }
 
-function deletePreset() {
-  const store = readPresetStore();
+async function deletePreset() {
   const name = (els.presetsSelect && els.presetsSelect.value) || '';
   if (!name) return;
-  store.presets = store.presets.filter((p) => p.name !== name);
-  if (store.lastUsed === name) store.lastUsed = null;
-  writePresetStore(store);
-  renderPresetOptions(store, '');
-  setDefaultsMsg(`Deleted "${name}".`, '');
-}
-
-// On page load: populate the dropdown and apply the last-used preset.
-function loadFilterDefaults() {
-  const store = readPresetStore();
-  renderPresetOptions(store, store.lastUsed || '');
-  if (store.lastUsed) {
-    const preset = store.presets.find((p) => p.name === store.lastUsed);
-    if (preset) applyFilterState(preset.state);
+  setDefaultsMsg('Deleting…', '');
+  const { ok, data } = await mutatePresets('delete', { name });
+  if (ok) {
+    _applyStoreFromResponse(data, '');
+    setDefaultsMsg(`Deleted "${name}".`, '');
+  } else {
+    setDefaultsMsg('Could not delete (server error).', 'error');
   }
 }
 
-function resetFilterDefaults() {
-  // Clear the active selection (but keep saved presets) and restore the
-  // built-in HTML `value=` defaults via reload. lastUsed is cleared so the
-  // reload doesn't immediately re-apply a preset.
-  const store = readPresetStore();
-  store.lastUsed = null;
-  writePresetStore(store);
+// --- one-time migration from legacy localStorage to the server --------
+async function _migrateLegacyLocalstoragePresets() {
+  let migrated = 0;
+  // (1) New-format localStorage from PR #71 → server.
+  try {
+    const raw = localStorage.getItem(FILTER_PRESETS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) || {};
+      const presets = Array.isArray(parsed.presets) ? parsed.presets : [];
+      for (const p of presets.slice(0, MAX_PRESETS)) {
+        if (p && typeof p.name === 'string' && p.state) {
+          await mutatePresets('save', { name: p.name, state: p.state }).catch(() => {});
+          migrated++;
+        }
+      }
+      if (parsed.lastUsed) {
+        await mutatePresets('select', { name: parsed.lastUsed }).catch(() => {});
+      }
+      localStorage.removeItem(FILTER_PRESETS_KEY);
+    }
+  } catch (_) { /* ignore */ }
+  // (2) Older single-default localStorage → "Default" preset.
+  try {
+    const legacy = localStorage.getItem(FILTER_DEFAULTS_KEY);
+    if (legacy) {
+      const state = JSON.parse(legacy);
+      if (state && typeof state === 'object') {
+        await mutatePresets('save', { name: 'Default', state }).catch(() => {});
+        migrated++;
+      }
+      localStorage.removeItem(FILTER_DEFAULTS_KEY);
+    }
+  } catch (_) { /* ignore */ }
+  return migrated;
+}
+
+// On page load: fetch presets from the server and auto-apply last-used.
+async function loadFilterDefaults() {
+  let data;
+  try {
+    data = await fetchPresets();
+  } catch (err) {
+    setDefaultsMsg('Saved filters unavailable (server unreachable).', 'error');
+    return;
+  }
+  // First-run migration: server is empty AND something old lives in
+  // localStorage → push it up so users don't lose their saved setups
+  // from the PR #71 release.
+  const hasLegacy = !!(localStorage.getItem(FILTER_PRESETS_KEY)
+                       || localStorage.getItem(FILTER_DEFAULTS_KEY));
+  if ((!data.presets || data.presets.length === 0) && hasLegacy) {
+    await _migrateLegacyLocalstoragePresets();
+    try { data = await fetchPresets(); } catch (_) { /* keep stale data */ }
+  } else if (hasLegacy) {
+    // Server already has presets — the user adopted server storage on
+    // another device. Drop the local copies to avoid future confusion.
+    try { localStorage.removeItem(FILTER_PRESETS_KEY); } catch (_) {}
+    try { localStorage.removeItem(FILTER_DEFAULTS_KEY); } catch (_) {}
+  }
+  _applyStoreFromResponse(data, data.last_used || '');
+  if (data.last_used) {
+    const preset = (data.presets || []).find((p) => p.name === data.last_used);
+    if (preset) applyFilterState(preset.state);
+  }
+  _presetsHydrated = true;
+}
+
+async function resetFilterDefaults() {
+  // Clear server-side last_used (keeps saved presets) and reload to
+  // restore the HTML `value=` defaults.
+  try { await mutatePresets('reset', {}); } catch (_) { /* ignore */ }
   location.reload();
 }
 

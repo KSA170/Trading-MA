@@ -24,6 +24,7 @@ import snapshots
 import alerts
 import pattern_scan
 import picker
+import filter_presets
 import scanner_momentum
 from tickers import LIST_LABELS, refresh_universe, last_fetch_errors
 
@@ -966,6 +967,42 @@ def api_picks_config():
     return jsonify({"saved": ok, "config": picker.get_config()})
 
 
+# --- filter presets (cross-device persistence) ----------------------------
+# Stored in Postgres so the same saved filter setups load on every device.
+# Cap is enforced server-side via filter_presets.MAX_PRESETS. Falls back
+# silently when DATABASE_URL isn't set (the UI then keeps the legacy
+# localStorage behaviour).
+
+@app.route("/api/filter-presets", methods=["GET"])
+def api_filter_presets_list():
+    return jsonify(filter_presets.list_presets())
+
+
+@app.route("/api/filter-presets", methods=["POST"])
+def api_filter_presets_mutate():
+    """Body: {action: "save"|"delete"|"select"|"reset", name?, state?}.
+    Returns the refreshed list_presets() payload so the client doesn't
+    have to round-trip."""
+    payload = request.get_json(silent=True) or {}
+    action = (payload.get("action") or "").strip().lower()
+    name = payload.get("name") or ""
+    if action == "save":
+        result = filter_presets.save_preset(name, payload.get("state") or {})
+    elif action == "delete":
+        result = filter_presets.delete_preset(name)
+    elif action == "select":
+        result = filter_presets.mark_used(name)
+    elif action == "reset":
+        result = filter_presets.clear_last_used()
+    else:
+        return jsonify({"error": "unknown action"}), 400
+    status = 200 if result.get("ok") else 409 if result.get("error") == "cap_reached" else 400
+    if not result.get("ok") and result.get("error") not in ("cap_reached",):
+        status = 500 if result.get("error") == "db_error" else 400
+    response = {**result, **filter_presets.list_presets()}
+    return jsonify(response), status
+
+
 # --- real-time momentum scanner -------------------------------------------
 # Independent of the nightly watchlist. Walks the full snapshot universe
 # every 5 min during market hours via .github/workflows/momentum-scanner.yml
@@ -1224,6 +1261,7 @@ def api_momentum_toggle():
 snapshots.init()
 alerts.init_tables()
 picker.init_tables()
+filter_presets.init_tables()
 scanner_momentum.init_tables()
 import options  # imported here so init_tables runs after snapshots.init
 options.init_tables()
