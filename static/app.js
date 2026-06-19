@@ -3691,6 +3691,32 @@ syncRuleTypeUI();
 
 wireCollapse(els.setupsToggle, els.setupsBody, 'collapse_setups');
 
+// Persist every Setups toolbar value through uiPrefs so a refresh
+// doesn't reset the panel. Hydrates from the server-rendered cache
+// on init, then writes back on `change` (commit, not per-keystroke,
+// so the spinner / typing flow doesn't spam POSTs). Empty input →
+// null, which uiPrefs.get will then ignore on next load and leave
+// the HTML default in place.
+function wirePersistedSetupsInput(el, key) {
+  if (!el) return;
+  const saved = uiPrefs.get(key, undefined);
+  if (saved !== undefined && saved !== null && saved !== '') {
+    el.value = String(saved);
+  }
+  el.addEventListener('change', () => {
+    const raw = el.value;
+    uiPrefs.set(key, raw === '' ? null : Number(raw));
+  });
+}
+wirePersistedSetupsInput(els.setupsMinScore,     'setups_min_score');
+wirePersistedSetupsInput(els.setupsMinPrice,     'setups_min_price');
+wirePersistedSetupsInput(els.setupsMaxPrice,     'setups_max_price');
+wirePersistedSetupsInput(els.setupsMinDollarVol, 'setups_min_dollar_vol');
+wirePersistedSetupsInput(els.setupsBaseMin,      'setups_base_min');
+wirePersistedSetupsInput(els.setupsIgnitionMin,  'setups_ignition_min');
+wirePersistedSetupsInput(els.setupsEarlinessMin, 'setups_earliness_min');
+wirePersistedSetupsInput(els.setupsLimit,        'setups_limit');
+
 
 // --- options recommender (composite-score) -------------------------------
 // Type a ticker (and optional DTE range), get a weighted-composite-score
