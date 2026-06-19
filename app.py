@@ -795,8 +795,10 @@ def api_alerts_rule_create():
     rule_type, setup_params?}.
       - rule_type='screener' (default): criteria taken from screener
         filters in the query string (same params /api/screen accepts).
-      - rule_type='setup': criteria from `setup_params` in the JSON body
-        — {score_min, min_price, max_price, min_dollar_vol}.
+      - rule_type='setup': criteria from `setup_params` in the JSON
+        body — see alerts.SETUP_DEFAULT_PARAMS for the accepted keys
+        (score_min, the price / dollar-volume band, and the optional
+        per-sub-score floors base_min / ignition_min / earliness_min).
     """
     if not alerts.enabled():
         return jsonify({"error": "DATABASE_URL not set"}), 400
@@ -817,10 +819,11 @@ def api_alerts_rule_create():
         return jsonify({"error": "scope_value required for sector/industry rules"}), 400
     if rule_type == "setup":
         sp = payload.get("setup_params") or {}
-        params = {
-            k: sp[k] for k in ("score_min", "min_price", "max_price", "min_dollar_vol")
-            if k in sp
-        }
+        # Drive the whitelist off alerts._SETUP_PARAM_KEYS (the canonical
+        # set derived from SETUP_DEFAULT_PARAMS) so new floor keys added
+        # there flow through here automatically. A previous hand-rolled
+        # 4-tuple silently dropped base_min/ignition_min/earliness_min.
+        params = {k: sp[k] for k in alerts._SETUP_PARAM_KEYS if k in sp}
     else:
         params = _parse_params()
         params.pop("lists", None)  # not an evaluate_ticker kwarg
@@ -859,10 +862,8 @@ def api_alerts_rule_update_criteria():
     rule_id = int(payload.get("id", 0))
     sp = payload.get("setup_params")
     if sp:
-        params = {
-            k: sp[k] for k in ("score_min", "min_price", "max_price", "min_dollar_vol")
-            if k in sp
-        }
+        # Same single-source-of-truth pattern as api_alerts_rule_create.
+        params = {k: sp[k] for k in alerts._SETUP_PARAM_KEYS if k in sp}
     else:
         params = _parse_params()
         params.pop("lists", None)
