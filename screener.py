@@ -1137,29 +1137,17 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
 
 
 def _resolve_as_of_date(as_of_offset: int) -> str | None:
-    """Map an offset (0 = latest) to a YYYY-MM-DD using SPY's calendar.
-    Mirrors the resolution evaluate_ticker does per-ticker; needed up
-    front so the snapshot path can pick the right row in bulk."""
+    """Map an offset (0 = latest) to a YYYY-MM-DD using the same merged
+    calendar that powers the date picker (`_calendar_dates`). Keeping
+    both directions on the same source avoids the bug where the picker
+    lists a date that the screener then can't find."""
     try:
         offset = max(0, min(int(as_of_offset), MAX_AS_OF_OFFSET))
     except (TypeError, ValueError):
         return None
-    for ref in ("SPY", "QQQ", "DIA", "AAPL", "MSFT"):
-        df = _cached_history(ref, period="6mo")
-        if df is None or df.empty:
-            continue
-        idx = -(1 + offset)
-        if idx < -len(df):
-            continue
-        return df.index[idx].strftime("%Y-%m-%d")
-    # Last-ditch: any cached ticker
-    for _, (_, cached_df) in list(_PRICE_CACHE.items()):
-        if cached_df is None or cached_df.empty:
-            continue
-        idx = -(1 + offset)
-        if idx < -len(cached_df):
-            continue
-        return cached_df.index[idx].strftime("%Y-%m-%d")
+    dates = _calendar_dates(offset + 1)
+    if offset < len(dates):
+        return dates[offset]
     return None
 
 
@@ -2275,31 +2263,56 @@ def run_screen(
     return hits
 
 
-def reference_dates(n: int = 21) -> list[dict]:
-    """Last `n` US trading-day dates for the as-of date picker.
+def _calendar_dates(n: int) -> list[str]:
+    """Calendar of recent trading days, most-recent first, capped at `n`.
 
-    Returns a list of {"offset": k, "date": "YYYY-MM-DD"} most recent first.
-    Tries several liquid reference tickers, then falls back to any ticker
-    already in the price cache (warm after a screen run) so the picker still
-    populates even if the reference fetches fail. Per-ticker actual dates may
-    differ on Canadian holidays (each row's `as_of_date` reports the real one).
-    """
-    df = None
+    Source = UNION of (SPY's live price cache, the snapshot table's
+    available dates). The snapshot side matters when SPY's pickle is
+    stale (Yahoo rate-limit, weekend deploy hiccup, etc.) — without it
+    a freshly-written snapshot date wouldn't appear in the date picker
+    even though the screener can serve that date. The SPY side matters
+    when the snapshot's retention window is shorter than the date
+    picker's lookback.
+
+    Used by both `reference_dates()` (the dropdown's offset→date map)
+    and `_resolve_as_of_date()` (the reverse), so a click on offset 0
+    always lands on the genuine latest date regardless of which source
+    has it."""
+    # Live cache side.
+    spy_dates: list[str] = []
     for ref in ("SPY", "QQQ", "DIA", "AAPL", "MSFT"):
         df = _cached_history(ref, period="6mo")
         if df is not None and not df.empty:
+            spy_dates = [idx.strftime("%Y-%m-%d") for idx in df.index]
             break
-    if df is None or df.empty:
-        # Fall back to any cached ticker — US trading calendars match.
+    if not spy_dates:
         for _, (_, cached_df) in list(_PRICE_CACHE.items()):
             if cached_df is not None and not cached_df.empty:
-                df = cached_df
+                spy_dates = [idx.strftime("%Y-%m-%d") for idx in cached_df.index]
                 break
-    if df is None or df.empty:
-        return []
-    dates = [idx.strftime("%Y-%m-%d") for idx in df.index][-n:]
-    # most recent first, with offset 0 = latest
-    return [{"offset": i, "date": d} for i, d in enumerate(reversed(dates))]
+    # Snapshot side. Pull a generous window so we still merge older
+    # snapshot dates that SPY also has (the union dedup handles them).
+    snap_dates: list[str] = []
+    try:
+        if snapshots.enabled():
+            snap_dates = list(snapshots.available_dates(max(n, 50)) or [])
+    except Exception:
+        snap_dates = []
+    # Union, most-recent first, dedup. Sorting lexicographically works
+    # because dates are YYYY-MM-DD.
+    merged = sorted(set(spy_dates) | set(snap_dates), reverse=True)
+    return merged[:n]
+
+
+def reference_dates(n: int = 21) -> list[dict]:
+    """Last `n` US trading-day dates for the as-of date picker.
+
+    Returns a list of {"offset": k, "date": "YYYY-MM-DD"} most recent
+    first, with offset 0 = the most recent date the app can serve
+    (snapshot OR live cache). See `_calendar_dates` for the source mix.
+    """
+    dates = _calendar_dates(n)
+    return [{"offset": i, "date": d} for i, d in enumerate(dates)]
 
 
 # --- chart payload ---------------------------------------------------------
