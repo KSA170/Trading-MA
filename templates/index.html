@@ -499,6 +499,15 @@
           <label title="Skip stocks whose trailing 10-day average daily dollar volume (avg_volume × close) is below this. $1M/day excludes most illiquid names while keeping tradeable small caps.">Min $-vol/day&nbsp;$
             <input id="setups-min-dollar-vol" type="number" min="0" step="100000" value="1000000" />
           </label>
+          <label title="Optional minimum on the Base sub-score (0–100, 0 = ignored). Use this for setups with a clearly identifiable quiet base before the move.">Base&nbsp;≥
+            <input id="setups-base-min" type="number" min="0" max="100" step="5" value="0" />
+          </label>
+          <label title="Optional minimum on the Ignition sub-score (0–100, 0 = ignored). Use this for setups with a strong active breakout — heavy volume burst, range expansion, MACD turning positive.">Ignition&nbsp;≥
+            <input id="setups-ignition-min" type="number" min="0" max="100" step="5" value="0" />
+          </label>
+          <label title="Optional minimum on the Earliness sub-score (0–100, 0 = ignored). Use this to filter out already-extended names.">Earliness&nbsp;≥
+            <input id="setups-earliness-min" type="number" min="0" max="100" step="5" value="0" />
+          </label>
           <label>Limit
             <input id="setups-limit" type="number" min="5" max="100" step="5" value="20" />
           </label>
@@ -622,7 +631,20 @@
               <label>Min $-volume / day</label>
               <input id="cm_setup_min_dollar_vol" type="number" min="0" step="100000" value="1000000" />
             </div>
+            <div class="filter" title="Minimum Base-quality sub-score (0–100, 0 = off). Stacks on top of the overall score. Set this when you want only setups with a clearly identifiable quiet base before the move (tight range + MA convergence + low base volume + flatness).">
+              <label>Base ≥ (0–100)</label>
+              <input id="cm_setup_base_min" type="number" min="0" max="100" step="5" value="0" />
+            </div>
+            <div class="filter" title="Minimum Ignition sub-score (0–100, 0 = off). Set this when you want only setups with a strong active breakout — heavy volume burst, range expansion, MACD turning positive, EMA21/EMA50 cross recency.">
+              <label>Ignition ≥ (0–100)</label>
+              <input id="cm_setup_ignition_min" type="number" min="0" max="100" step="5" value="0" />
+            </div>
+            <div class="filter" title="Minimum Earliness sub-score (0–100, 0 = off). Set this to filter out already-extended names — price still near EMA21, EMA gap not yet wide, RSI not overbought.">
+              <label>Earliness ≥ (0–100)</label>
+              <input id="cm_setup_earliness_min" type="number" min="0" max="100" step="5" value="0" />
+            </div>
           </div>
+          <p class="muted criteria-modal-help" style="margin-top:6px;">Sub-score floors are optional (0 = ignored) and AND-stack with the overall score. Setting Base=70 + Ignition=50 means "score ≥ overall AND base-quality ≥ 70 AND ignition ≥ 50".</p>
         </div>
 
         <div id="cm-criteria-screener" data-criteria-section="screener">

@@ -115,6 +115,12 @@ SETUP_DEFAULT_PARAMS: dict = {
     "min_price": 3.0,
     "max_price": 1000.0,
     "min_dollar_vol": 1_000_000.0,
+    # Per-sub-score floors (0–100). Default 0 = off. AND-stack with
+    # score_min so a setup must clear BOTH the composite and any
+    # sub-score floors the user set.
+    "base_min": 0.0,
+    "ignition_min": 0.0,
+    "earliness_min": 0.0,
 }
 _SETUP_PARAM_KEYS = frozenset(SETUP_DEFAULT_PARAMS.keys())
 
@@ -958,6 +964,9 @@ def run() -> int:
                         min_price=float(p.get("min_price", 3.0)),
                         max_price=float(p.get("max_price", 1000.0)),
                         min_dollar_vol=float(p.get("min_dollar_vol", 1_000_000.0)),
+                        base_min=float(p.get("base_min", 0.0)),
+                        ignition_min=float(p.get("ignition_min", 0.0)),
+                        earliness_min=float(p.get("earliness_min", 0.0)),
                     )
                 except Exception as exc:
                     log.warning("setup rule %d scan failed: %s", rule["id"], exc)
