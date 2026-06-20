@@ -624,7 +624,14 @@ function buildQuery() {
     params.set('lists', selectedLists.join(','));
   }
   if (asOfSelect) {
-    params.set('as_of_offset', asOfSelect.value || '0');
+    // Send the literal date (drift-proof). Server still accepts
+    // as_of_offset as a fallback for any legacy bookmark/link.
+    const v = asOfSelect.value || '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      params.set('as_of', v);
+    } else {
+      params.set('as_of_offset', v || '0');
+    }
   }
   return params.toString();
 }
@@ -941,7 +948,13 @@ async function loadDates() {
     asOfSelect.innerHTML = '';
     dates.forEach((d, i) => {
       const opt = document.createElement('option');
-      opt.value = String(d.offset);
+      // Value is the date string (not the offset) so submission carries
+      // the user's literal choice. If the server's calendar advances
+      // between page load and submit, the user still gets the date they
+      // picked instead of "whatever offset 1 means now". `dataset.offset`
+      // stays for any reader that still wants the index.
+      opt.value = d.date;
+      opt.dataset.offset = String(d.offset);
       const head = i === 0 ? `${d.date} (latest)` : d.date;
       // Only flag snapshot-backed dates explicitly — historical dates
       // outside the snapshot window just show the bare date.

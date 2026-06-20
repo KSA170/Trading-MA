@@ -128,8 +128,13 @@ def _cache_key(params: dict) -> tuple:
         round(float(params["sma_volume_mult"]), 4),
     ) if params["apply_sma_revival"] else ("off",)
     lists = tuple(sorted(params["lists"]))
-    as_of = int(params["as_of_offset"])
-    return ("v18", as_of, price, price_dev, ema_dev, macd_vs_sig, turnover, market_cap, pct_change, sma_rev, high, rsi, rsi_dev, rvol, avg_vol, lists)
+    # Cache key uses the RESOLVED as-of date (not the offset) so cache
+    # entries don't get reused across calendar drift. With offset-based
+    # keying, today's offset=1 and yesterday's offset=1 would collide
+    # but mean different calendar dates → stale rows served under the
+    # wrong date. Resolved-date keying is drift-proof.
+    as_of_key = params.get("as_of_date_resolved") or int(params["as_of_offset"])
+    return ("v19", as_of_key, price, price_dev, ema_dev, macd_vs_sig, turnover, market_cap, pct_change, sma_rev, high, rsi, rsi_dev, rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -171,12 +176,37 @@ def _parse_params() -> dict:
         wanted = sorted(_VALID_LISTS)
     if not wanted:
         wanted = sorted(_VALID_LISTS)
-    as_of_offset = _int("as_of_offset", 0)
-    if as_of_offset < 0:
-        as_of_offset = 0
-    if as_of_offset > screener.MAX_AS_OF_OFFSET:
-        as_of_offset = screener.MAX_AS_OF_OFFSET
+    # Preferred path: client sends `as_of=YYYY-MM-DD` (the actual date
+    # the user picked). Resolve to an offset against the CURRENT calendar
+    # so downstream code keeps using offset-based slicing, but the cache
+    # key (below) is the date string — drift-proof.
+    #
+    # Fallback: `as_of_offset` (legacy clients / bookmarks). Subject to
+    # calendar drift if the calendar advanced since the page loaded —
+    # the symptom users reported as "I picked June 17 but got June 18".
+    raw_as_of_date = (request.args.get("as_of") or "").strip()
+    resolved_as_of_date: str | None = None
+    if raw_as_of_date:
+        calendar = screener._calendar_dates(screener.MAX_AS_OF_OFFSET + 1)
+        try:
+            as_of_offset = calendar.index(raw_as_of_date)
+            resolved_as_of_date = raw_as_of_date
+        except ValueError:
+            # User's picked date is no longer in the calendar (e.g. the
+            # page sat open across a snapshot-retention window roll-off).
+            # Fall back to latest so the screen still returns something
+            # meaningful instead of erroring.
+            as_of_offset = 0
+            resolved_as_of_date = calendar[0] if calendar else None
+    else:
+        as_of_offset = _int("as_of_offset", 0)
+        if as_of_offset < 0:
+            as_of_offset = 0
+        if as_of_offset > screener.MAX_AS_OF_OFFSET:
+            as_of_offset = screener.MAX_AS_OF_OFFSET
+        resolved_as_of_date = screener._resolve_as_of_date(as_of_offset)
     return {
+        "as_of_date_resolved": resolved_as_of_date,
         "high_lookback": _int("high_lookback", 2),
         "streak_mode": (request.args.get("streak_mode", "high") or "high").strip().lower()
                        if (request.args.get("streak_mode", "high") or "high").strip().lower()
@@ -314,6 +344,7 @@ def _api_screen_impl():
         sma_require_volume=params["sma_require_volume"],
         sma_volume_mult=params["sma_volume_mult"],
         as_of_offset=params["as_of_offset"],
+        as_of_date=params.get("as_of_date_resolved"),
         lists=list(params["lists"]),
     )
     payload = [h.to_dict() for h in hits]
