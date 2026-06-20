@@ -2429,6 +2429,14 @@ def diagnose_ticker(
     sma_require_volume: bool = False,
     sma_volume_mult: float = 1.20,
     as_of_offset: int = 0,
+    # Same drift-proofing kwarg as run_screen — when the caller already
+    # resolved the user's chosen date in _parse_params, pass it through
+    # so we don't re-resolve the offset here (which could land on a
+    # different date if the calendar advanced in the meantime). Without
+    # this, Diagnose can report "as of June 18" for a ticker that the
+    # screen reported under "as of June 17" — defeating the panel's
+    # whole purpose of explaining why a row did or didn't match.
+    as_of_date: str | None = None,
 ) -> dict:
     """Run each filter independently and return a per-filter pass/fail
     breakdown. Mirrors evaluate_ticker but without short-circuiting so the
@@ -2459,7 +2467,9 @@ def diagnose_ticker(
     # as_of_offset value.
     df = None
     used_snapshot = False
-    target_date = _resolve_as_of_date(as_of_offset) if as_of_offset >= 0 else None
+    # Prefer the caller-supplied date over re-resolving the offset (see
+    # kwarg comment above for the drift race this avoids).
+    target_date = as_of_date or (_resolve_as_of_date(as_of_offset) if as_of_offset >= 0 else None)
     if target_date and snapshots.enabled() and snapshots.has_date(target_date):
         for tk, row in snapshots.iter_for_date(target_date, [ticker.upper()]):
             if tk.upper() != ticker.upper():
