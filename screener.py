@@ -2105,6 +2105,13 @@ def run_screen(
     sma_require_volume: bool = False,
     sma_volume_mult: float = 1.20,
     as_of_offset: int = 0,
+    # When the caller resolved the user's chosen date up front (see
+    # app._parse_params), pass it through so the snapshot path uses
+    # it directly instead of re-resolving the offset against whatever
+    # calendar happens to be current right now. Eliminates the race
+    # where a new SPY bar landing mid-request shifts the dataset one
+    # day forward of what the user picked.
+    as_of_date: str | None = None,
     lists: list[str] | None = None,
     extras: list[str] | None = None,
     universe: Iterable[str] | None = None,
@@ -2133,7 +2140,9 @@ def run_screen(
     # the 7,800-row result set OOMs the worker (each row carries a ~5KB
     # JSONB recent_bars blob → ~100MB+ in Python dicts).
     if snapshots.enabled():
-        target_date = _resolve_as_of_date(as_of_offset)
+        # Prefer the caller-supplied date over re-resolving the offset
+        # (see kwarg comment above for the drift race this avoids).
+        target_date = as_of_date or _resolve_as_of_date(as_of_offset)
         if target_date and snapshots.has_date(target_date):
             ticker_set = set(tickers)
             snap_hits: list[ScreenHit] = []
