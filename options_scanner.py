@@ -207,6 +207,15 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
                 opt.save_recommendation(rec)
             except Exception as exc:
                 log.warning("save_recommendation(%s) failed: %s", ticker, exc)
+            try:
+                import outcomes
+                outcomes.record_option_outcome(
+                    ticker, rec.get("as_of"), rec,
+                    {"kind": "nightly_scan", "id": None,
+                     "label": "Options recommender (nightly)"},
+                )
+            except Exception as exc:
+                log.warning("record_option_outcome(%s) failed: %s", ticker, exc)
 
     # Sort by |composite - 50| descending so the digest leads with the
     # strongest directional setups first.

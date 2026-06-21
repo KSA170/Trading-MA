@@ -131,8 +131,22 @@ const els = {
   optionsScanBody: $('#options-scan-body'),
   tabBtnStock: $('#tab-btn-stock'),
   tabBtnOptions: $('#tab-btn-options'),
+  tabBtnStockReport: $('#tab-btn-stock-report'),
+  tabBtnOptionsReport: $('#tab-btn-options-report'),
   tabStock: $('#tab-stock'),
   tabOptions: $('#tab-options'),
+  tabStockReport: $('#tab-stock-report'),
+  tabOptionsReport: $('#tab-options-report'),
+  stockReportDays: $('#stock-report-days'),
+  stockReportHorizon: $('#stock-report-horizon'),
+  stockReportRefresh: $('#stock-report-refresh'),
+  stockReportStatus: $('#stock-report-status'),
+  stockReportBody: $('#stock-report-body'),
+  optionsReportDays: $('#options-report-days'),
+  optionsReportHorizon: $('#options-report-horizon'),
+  optionsReportRefresh: $('#options-report-refresh'),
+  optionsReportStatus: $('#options-report-status'),
+  optionsReportBody: $('#options-report-body'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
@@ -3534,42 +3548,251 @@ async function loadOptionsHistory() {
 }
 
 // --- tab switching --------------------------------------------------------
+const TABS = [
+  { name: 'stock',          panel: 'tabStock',         btn: 'tabBtnStock'         },
+  { name: 'stock-report',   panel: 'tabStockReport',   btn: 'tabBtnStockReport'   },
+  { name: 'options',        panel: 'tabOptions',       btn: 'tabBtnOptions'       },
+  { name: 'options-report', panel: 'tabOptionsReport', btn: 'tabBtnOptionsReport' },
+];
+const TAB_NAMES = TABS.map(t => t.name);
+
 function activateTab(name, persist = true) {
-  const isOptions = name === 'options';
-  if (els.tabStock)       els.tabStock.classList.toggle('hidden', isOptions);
-  if (els.tabOptions)     els.tabOptions.classList.toggle('hidden', !isOptions);
-  if (els.tabBtnStock) {
-    els.tabBtnStock.classList.toggle('active', !isOptions);
-    els.tabBtnStock.setAttribute('aria-selected', !isOptions);
+  if (!TAB_NAMES.includes(name)) name = 'stock';
+  for (const t of TABS) {
+    const isActive = t.name === name;
+    if (els[t.panel]) els[t.panel].classList.toggle('hidden', !isActive);
+    if (els[t.btn]) {
+      els[t.btn].classList.toggle('active', isActive);
+      els[t.btn].setAttribute('aria-selected', isActive);
+    }
   }
-  if (els.tabBtnOptions) {
-    els.tabBtnOptions.classList.toggle('active', isOptions);
-    els.tabBtnOptions.setAttribute('aria-selected', isOptions);
-  }
-  // Hide the global "Run screen" + Warm cache buttons on the options tab —
-  // they belong to the stock-screener pipeline. Status text stays visible.
+  // Hide the global "Run screen" + Warm cache buttons on every tab
+  // except the Stock screener — they belong to that pipeline only.
+  const isStockScreener = name === 'stock';
   const runBtn  = document.getElementById('run-btn');
   const warmBtn = document.getElementById('warm-btn');
-  if (runBtn)  runBtn.classList.toggle('hidden', isOptions);
-  if (warmBtn) warmBtn.classList.toggle('hidden', isOptions);
+  if (runBtn)  runBtn.classList.toggle('hidden', !isStockScreener);
+  if (warmBtn) warmBtn.classList.toggle('hidden', !isStockScreener);
   if (persist) {
     try { localStorage.setItem('app_tab', name); } catch (_) {}
     if (history && history.replaceState) {
-      const hash = isOptions ? '#options' : '#stock';
+      const hash = '#' + name;
       if (location.hash !== hash) history.replaceState(null, '', hash);
     }
   }
+  // Lazy-load report data on first activation.
+  if (name === 'stock-report'   && !_stockReportLoaded)   loadStockReport();
+  if (name === 'options-report' && !_optionsReportLoaded) loadOptionsReport();
 }
 
 function _initialTab() {
   const fromHash = (location.hash || '').replace('#', '');
-  if (fromHash === 'options' || fromHash === 'stock') return fromHash;
-  try { return localStorage.getItem('app_tab') || 'stock'; } catch (_) { return 'stock'; }
+  if (TAB_NAMES.includes(fromHash)) return fromHash;
+  try {
+    const saved = localStorage.getItem('app_tab');
+    if (TAB_NAMES.includes(saved)) return saved;
+  } catch (_) {}
+  return 'stock';
 }
 
-if (els.tabBtnStock)   els.tabBtnStock  .addEventListener('click', () => activateTab('stock'));
-if (els.tabBtnOptions) els.tabBtnOptions.addEventListener('click', () => activateTab('options'));
+if (els.tabBtnStock)         els.tabBtnStock        .addEventListener('click', () => activateTab('stock'));
+if (els.tabBtnStockReport)   els.tabBtnStockReport  .addEventListener('click', () => activateTab('stock-report'));
+if (els.tabBtnOptions)       els.tabBtnOptions      .addEventListener('click', () => activateTab('options'));
+if (els.tabBtnOptionsReport) els.tabBtnOptionsReport.addEventListener('click', () => activateTab('options-report'));
 activateTab(_initialTab(), false);
+
+// --- Strategy report tabs ---------------------------------------------------
+
+let _stockReportLoaded = false;
+let _optionsReportLoaded = false;
+
+function _fmtPct(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  const sign = v > 0 ? '+' : '';
+  return sign + Number(v).toFixed(2) + '%';
+}
+function _fmtRate(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  return (Number(v) * 100).toFixed(1) + '%';
+}
+function _csvEscape(s) {
+  if (s === null || s === undefined) return '';
+  const str = String(s);
+  return /[",\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
+}
+
+function _renderSummaryCard(overall, horizon) {
+  if (!overall || !overall.count) {
+    return '<div class="report-card empty">No outcome rows in this window yet.</div>';
+  }
+  const cells = [
+    ['Entries',          overall.count],
+    ['With ' + horizon + 'd return', overall.filled || 0],
+    ['Hit rate',         _fmtRate(overall.hit_rate)],
+    ['Median ' + horizon + 'd', _fmtPct(overall.median)],
+    ['Mean ' + horizon + 'd',   _fmtPct(overall.mean)],
+    ['p25 / p75',        _fmtPct(overall.p25) + ' / ' + _fmtPct(overall.p75)],
+  ];
+  return '<div class="report-card summary-card"><div class="summary-grid">'
+    + cells.map(([k, v]) => '<div class="summary-cell"><div class="muted">' + k + '</div><div class="summary-val">' + v + '</div></div>').join('')
+    + '</div></div>';
+}
+
+function _renderBucketTable(title, buckets, keyField, horizon) {
+  if (!buckets || !buckets.length) {
+    return '<div class="report-card empty"><h3>' + title + '</h3><div class="muted">No data.</div></div>';
+  }
+  const sorted = [...buckets].sort((a, b) => (b.count || 0) - (a.count || 0));
+  const rows = sorted.map(b => (
+    '<tr>'
+    + '<td>' + (b.label || b[keyField] || '—') + '</td>'
+    + '<td class="num">' + (b.count || 0) + '</td>'
+    + '<td class="num">' + _fmtRate(b.hit_rate) + '</td>'
+    + '<td class="num ' + (b.median > 0 ? 'pos' : b.median < 0 ? 'neg' : '') + '">' + _fmtPct(b.median) + '</td>'
+    + '<td class="num">' + _fmtPct(b.mean) + '</td>'
+    + '</tr>'
+  )).join('');
+  return '<div class="report-card"><h3>' + title + '</h3>'
+    + '<table class="report-table"><thead><tr>'
+    + '<th>' + (keyField === 'kind' ? 'Source' : 'Regime') + '</th>'
+    + '<th class="num">Entries</th>'
+    + '<th class="num">Hit rate</th>'
+    + '<th class="num">Median ' + horizon + 'd</th>'
+    + '<th class="num">Mean ' + horizon + 'd</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+function _renderHistogram(hist, horizon) {
+  if (!hist || !hist.counts || !hist.counts.length) {
+    return '<div class="report-card empty"><h3>Return distribution</h3><div class="muted">No data.</div></div>';
+  }
+  const maxCount = Math.max(...hist.counts) || 1;
+  // Each bar = column. Zero line marked where edges cross 0.
+  const bars = hist.counts.map((c, i) => {
+    const lo = hist.edges[i], hi = hist.edges[i + 1];
+    const mid = (lo + hi) / 2;
+    const heightPct = (c / maxCount) * 100;
+    const cls = mid > 0 ? 'pos' : mid < 0 ? 'neg' : '';
+    const title = `${_fmtPct(lo)} → ${_fmtPct(hi)}: ${c}`;
+    return `<div class="hist-bar ${cls}" style="height:${heightPct}%" title="${title}"></div>`;
+  }).join('');
+  return '<div class="report-card"><h3>Return distribution (' + horizon + 'd)</h3>'
+    + '<div class="hist-axis-top muted"><span>' + _fmtPct(hist.edges[0]) + '</span><span>' + _fmtPct(hist.edges[hist.edges.length - 1]) + '</span></div>'
+    + '<div class="histogram">' + bars + '</div></div>';
+}
+
+function _renderRowsTable(rows, kind, horizon) {
+  if (!rows || !rows.length) {
+    return '<div class="report-card empty"><h3>Entries</h3><div class="muted">No rows in this window.</div></div>';
+  }
+  const isOptions = kind === 'options';
+  const head = isOptions
+    ? '<tr><th>Date</th><th>Ticker</th><th>Dir</th><th>Strike</th><th>Exp</th><th>Verdict</th><th class="num">Score</th><th class="num">Ret ' + horizon + 'd</th><th>ITM?</th><th>Sources</th></tr>'
+    : '<tr><th>Date</th><th>Ticker</th><th class="num">Entry</th><th class="num">Ret 1d</th><th class="num">Ret 5d</th><th class="num">Ret 20d</th><th class="num">MFE 20d</th><th class="num">MDD 20d</th><th>Sources</th></tr>';
+  const body = rows.slice(0, 500).map(r => {
+    const srcs = (r.sources || []).map(s => (s && s.kind) || '?').join(', ') || '—';
+    if (isOptions) {
+      const itm = r.expiration_itm === true ? '✓' : r.expiration_itm === false ? '✗' : '—';
+      const ret = r['underlying_ret_' + horizon + 'd'];
+      return '<tr>'
+        + '<td>' + (r.entry_date || '—') + '</td>'
+        + '<td>' + (r.ticker || '—') + '</td>'
+        + '<td>' + (r.direction || '—') + '</td>'
+        + '<td>' + (r.strike != null ? r.strike : '—') + '</td>'
+        + '<td>' + (r.expiration || '—') + '</td>'
+        + '<td>' + (r.verdict || '—') + '</td>'
+        + '<td class="num">' + (r.composite_score != null ? Number(r.composite_score).toFixed(1) : '—') + '</td>'
+        + '<td class="num ' + (ret > 0 ? 'pos' : ret < 0 ? 'neg' : '') + '">' + _fmtPct(ret) + '</td>'
+        + '<td>' + itm + '</td>'
+        + '<td class="muted">' + srcs + '</td>'
+        + '</tr>';
+    }
+    return '<tr>'
+      + '<td>' + (r.entry_date || '—') + '</td>'
+      + '<td>' + (r.ticker || '—') + '</td>'
+      + '<td class="num">' + (r.entry_close != null ? Number(r.entry_close).toFixed(2) : '—') + '</td>'
+      + '<td class="num ' + (r.ret_1d > 0 ? 'pos' : r.ret_1d < 0 ? 'neg' : '') + '">' + _fmtPct(r.ret_1d) + '</td>'
+      + '<td class="num ' + (r.ret_5d > 0 ? 'pos' : r.ret_5d < 0 ? 'neg' : '') + '">' + _fmtPct(r.ret_5d) + '</td>'
+      + '<td class="num ' + (r.ret_20d > 0 ? 'pos' : r.ret_20d < 0 ? 'neg' : '') + '">' + _fmtPct(r.ret_20d) + '</td>'
+      + '<td class="num pos">' + _fmtPct(r.max_favorable_excursion_20d) + '</td>'
+      + '<td class="num neg">' + _fmtPct(r.max_drawdown_20d) + '</td>'
+      + '<td class="muted">' + srcs + '</td>'
+      + '</tr>';
+  }).join('');
+  const cap = rows.length > 500 ? '<div class="muted">(showing 500 of ' + rows.length + ')</div>' : '';
+  return '<div class="report-card"><h3>Entries</h3>' + cap
+    + '<div class="report-table-wrap"><table class="report-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div></div>';
+}
+
+async function loadStockReport() {
+  const days = (els.stockReportDays && els.stockReportDays.value) || 90;
+  const horizon = (els.stockReportHorizon && els.stockReportHorizon.value) || 5;
+  if (els.stockReportStatus) els.stockReportStatus.textContent = 'loading…';
+  try {
+    const r = await fetch('/api/outcomes/stock/report?days=' + days + '&horizon=' + horizon);
+    const j = await r.json();
+    if (!j.enabled) {
+      els.stockReportBody.innerHTML = '<div class="report-card empty">Outcomes table not available — DATABASE_URL is not configured on this worker.</div>';
+      if (els.stockReportStatus) els.stockReportStatus.textContent = '';
+      return;
+    }
+    const h = j.horizon;
+    els.stockReportBody.innerHTML =
+      _renderSummaryCard(j.overall, h)
+      + _renderBucketTable('By source', j.by_source, 'kind', h)
+      + _renderBucketTable('By regime', j.by_regime, 'regime', h)
+      + _renderHistogram(j.histogram, h)
+      + _renderRowsTable(j.rows, 'stock', h);
+    if (els.stockReportStatus) els.stockReportStatus.textContent = (j.rows.length || 0) + ' entries';
+    _stockReportLoaded = true;
+  } catch (exc) {
+    els.stockReportBody.innerHTML = '<div class="report-card empty">Failed to load: ' + (exc && exc.message || exc) + '</div>';
+    if (els.stockReportStatus) els.stockReportStatus.textContent = '';
+  }
+}
+
+async function loadOptionsReport() {
+  const days = (els.optionsReportDays && els.optionsReportDays.value) || 90;
+  const horizon = (els.optionsReportHorizon && els.optionsReportHorizon.value) || 5;
+  if (els.optionsReportStatus) els.optionsReportStatus.textContent = 'loading…';
+  try {
+    const r = await fetch('/api/outcomes/options/report?days=' + days + '&horizon=' + horizon);
+    const j = await r.json();
+    if (!j.enabled) {
+      els.optionsReportBody.innerHTML = '<div class="report-card empty">Outcomes table not available — DATABASE_URL is not configured on this worker.</div>';
+      if (els.optionsReportStatus) els.optionsReportStatus.textContent = '';
+      return;
+    }
+    const h = j.horizon;
+    const exp = j.expiration || {total: 0, itm: 0, otm: 0};
+    const expCard = '<div class="report-card"><h3>Expiration outcomes</h3>'
+      + '<div class="summary-grid">'
+      + '<div class="summary-cell"><div class="muted">Expired</div><div class="summary-val">' + (exp.total || 0) + '</div></div>'
+      + '<div class="summary-cell"><div class="muted">ITM at exp</div><div class="summary-val pos">' + (exp.itm || 0) + '</div></div>'
+      + '<div class="summary-cell"><div class="muted">OTM at exp</div><div class="summary-val neg">' + (exp.otm || 0) + '</div></div>'
+      + '<div class="summary-cell"><div class="muted">ITM rate</div><div class="summary-val">' + (exp.total ? _fmtRate(exp.itm / exp.total) : '—') + '</div></div>'
+      + '</div></div>';
+    els.optionsReportBody.innerHTML =
+      _renderSummaryCard(j.overall, h)
+      + expCard
+      + _renderBucketTable('By source', j.by_source, 'kind', h)
+      + _renderBucketTable('By regime', j.by_regime, 'regime', h)
+      + _renderHistogram(j.histogram, h)
+      + _renderRowsTable(j.rows, 'options', h);
+    if (els.optionsReportStatus) els.optionsReportStatus.textContent = (j.rows.length || 0) + ' entries';
+    _optionsReportLoaded = true;
+  } catch (exc) {
+    els.optionsReportBody.innerHTML = '<div class="report-card empty">Failed to load: ' + (exc && exc.message || exc) + '</div>';
+    if (els.optionsReportStatus) els.optionsReportStatus.textContent = '';
+  }
+}
+
+if (els.stockReportRefresh)   els.stockReportRefresh  .addEventListener('click', loadStockReport);
+if (els.optionsReportRefresh) els.optionsReportRefresh.addEventListener('click', loadOptionsReport);
+if (els.stockReportDays)      els.stockReportDays     .addEventListener('change', loadStockReport);
+if (els.stockReportHorizon)   els.stockReportHorizon  .addEventListener('change', loadStockReport);
+if (els.optionsReportDays)    els.optionsReportDays   .addEventListener('change', loadOptionsReport);
+if (els.optionsReportHorizon) els.optionsReportHorizon.addEventListener('change', loadOptionsReport);
 
 if (els.optionsLookupBtn)   els.optionsLookupBtn  .addEventListener('click', runOptionsLookup);
 if (els.optionsClearBtn)    els.optionsClearBtn   .addEventListener('click', clearOptionsResult);

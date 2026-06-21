@@ -970,6 +970,17 @@ def api_options_lookup():
         # Persist any analyzed ticker (even WATCH/PASS) — useful for
         # the daily history view; load_recommendations sorts by score.
         options.save_recommendation(rec)
+        try:
+            import outcomes
+            outcomes.record_option_outcome(
+                ticker, rec.get("as_of"), rec,
+                {"kind": "user_lookup", "id": None,
+                 "label": "User lookup"},
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger("app").warning(
+                "record_option_outcome(%s) failed: %s", ticker, exc)
     return jsonify(rec)
 
 
@@ -1046,6 +1057,57 @@ def api_momentum_toggle():
     return jsonify({"enabled": scanner_momentum.get_config()["enabled"]})
 
 
+# --- Strategy report (outcomes) -------------------------------------------
+
+def _outcomes_args():
+    """Parse ?days=N&horizon=N from the request with sane defaults."""
+    try:
+        days = int(request.args.get("days") or 90)
+    except (TypeError, ValueError):
+        days = 90
+    try:
+        horizon = int(request.args.get("horizon") or 5)
+    except (TypeError, ValueError):
+        horizon = 5
+    days = max(1, min(days, 365))
+    return days, horizon
+
+
+@app.route("/api/outcomes/stock/report", methods=["GET"])
+def api_outcomes_stock_report():
+    import outcomes
+    days, horizon = _outcomes_args()
+    return jsonify(outcomes.stock_report(days=days, horizon=horizon))
+
+
+@app.route("/api/outcomes/options/report", methods=["GET"])
+def api_outcomes_option_report():
+    import outcomes
+    days, horizon = _outcomes_args()
+    return jsonify(outcomes.option_report(days=days, horizon=horizon))
+
+
+@app.route("/api/outcomes/thumbs-up", methods=["POST"])
+def api_outcomes_thumbs_up():
+    """Manual entry-tracking from the stock screener results table.
+    Body: {ticker: 'AAPL', entry_date: 'YYYY-MM-DD', entry_close: 1.23}"""
+    import outcomes
+    payload = request.get_json(silent=True) or {}
+    ticker = (payload.get("ticker") or "").strip().upper()
+    entry_date = (payload.get("entry_date") or "").strip()
+    if not ticker or not entry_date:
+        return jsonify({"error": "ticker and entry_date required"}), 400
+    try:
+        entry_close = float(payload.get("entry_close")) if payload.get("entry_close") is not None else None
+    except (TypeError, ValueError):
+        entry_close = None
+    ok = outcomes.record_stock_outcome(
+        ticker, entry_date, entry_close,
+        {"kind": "manual", "id": None, "label": "Thumbs-up"},
+    )
+    return jsonify({"recorded": bool(ok)})
+
+
 # Provision the Postgres snapshot + alert tables (no-ops when DATABASE_URL
 # is unset), then kick off the daily auto-warm scheduler. The auto-warm
 # thread will write a snapshot row per ticker when each warm completes.
@@ -1055,6 +1117,8 @@ picker.init_tables()
 scanner_momentum.init_tables()
 import options  # imported here so init_tables runs after snapshots.init
 options.init_tables()
+import outcomes
+outcomes.init_tables()
 screener.start_auto_warm()
 
 
