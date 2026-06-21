@@ -709,6 +709,7 @@ def api_debug(ticker: str):
         sma_require_volume=params["sma_require_volume"],
         sma_volume_mult=params["sma_volume_mult"],
         as_of_offset=params["as_of_offset"],
+        as_of_date=params.get("as_of_date_resolved"),
     )
     return jsonify(result)
 
