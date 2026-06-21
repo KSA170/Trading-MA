@@ -55,17 +55,22 @@ class ScreenHit:
     prev_close: float
     pct_change: float
     high_lookback: float
-    rsi: float
-    rsi_sma9: float
-    rsi_dev_pct: float
-    ema21: float
-    price_ema21_dev_pct: float
-    ema50: float
-    ema21_ema50_dev_pct: float
-    macd: float
-    macd_signal: float
-    macd_hist: float
-    macd_hist_prev: float
+    # Indicator fields are float | None — snapshots / live caches can
+    # be missing a scalar for tickers whose rolling windows haven't
+    # populated yet (e.g. new listings). Filter UI gates on these are
+    # already conditional; the values flow through as None and render
+    # as "—" in the UI when absent.
+    rsi: float | None
+    rsi_sma9: float | None
+    rsi_dev_pct: float | None
+    ema21: float | None
+    price_ema21_dev_pct: float | None
+    ema50: float | None
+    ema21_ema50_dev_pct: float | None
+    macd: float | None
+    macd_signal: float | None
+    macd_hist: float | None
+    macd_hist_prev: float | None
     rel_volume: float
     avg_volume: float
     volume: float
@@ -74,6 +79,12 @@ class ScreenHit:
     turnover_pct: float | None
     momentum_score: float
     score: float
+    # SMA-revival fields. Populated even when the filter is off so the
+    # columns are always available in the results table.
+    sma10: float | None = None
+    sma10_slope_pct: float | None = None
+    cross_days_ago: int | None = None
+    slope_turn_days_ago: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -96,6 +107,82 @@ def rsi_wilder(close: pd.Series, period: int = 14) -> pd.Series:
 
 def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False, min_periods=period).mean()
+
+
+# --- SMA-revival detection helpers ----------------------------------------
+# Three primitives that power the "10-SMA turn-up + price cross" filter.
+# All operate on a list[float] / np.ndarray and bail out cleanly on NaN
+# or short input. Reused by both evaluate_ticker (DataFrame path) and
+# _evaluate_from_snapshot (recent_bars path) so the math is identical.
+
+def _sma_slope_pct(values, *, window: int = 3, end_idx: int = -1) -> float | None:
+    """Return the slope of `values` as %/day, measured over `window` bars
+    ending at `end_idx` (default = last). `(end - start) / start / window`.
+    None if either endpoint is NaN/zero or the window doesn't fit."""
+    if values is None:
+        return None
+    n = len(values)
+    if n == 0:
+        return None
+    e = end_idx if end_idx >= 0 else n + end_idx
+    s = e - window
+    if s < 0 or e >= n:
+        return None
+    start_v = float(values[s])
+    end_v = float(values[e])
+    if not (np.isfinite(start_v) and np.isfinite(end_v)) or start_v == 0:
+        return None
+    return (end_v - start_v) / start_v / window * 100.0
+
+
+def _cross_above_days_ago(closes, sma, *, max_lookback: int = 5) -> int | None:
+    """Days since `closes` last crossed `sma` from below (close[t-1] < sma[t-1]
+    AND close[t] >= sma[t]). Searches the last `max_lookback` bars. Returns
+    0 for "today", 1 for "yesterday", etc. None if no cross found, if either
+    series is too short, or if any of the required values are NaN."""
+    if closes is None or sma is None:
+        return None
+    n = min(len(closes), len(sma))
+    if n < 2:
+        return None
+    # Walk backwards from the most recent bar. Bar t is a cross-up if the
+    # prior bar's close was strictly below its SMA and bar t's close is
+    # at-or-above its SMA. NaN comparisons fail naturally.
+    end = n - 1
+    earliest = max(1, n - max_lookback)
+    for t in range(end, earliest - 1, -1):
+        c_t = float(closes[t]); s_t = float(sma[t])
+        c_p = float(closes[t - 1]); s_p = float(sma[t - 1])
+        if not all(np.isfinite(v) for v in (c_t, s_t, c_p, s_p)):
+            continue
+        if c_p < s_p and c_t >= s_t:
+            return end - t
+    return None
+
+
+def _slope_turn_days_ago(values, *, window: int = 3, max_lookback: int = 5) -> int | None:
+    """Days since the slope (measured over `window` bars) last crossed from
+    ≤ 0 to > 0 — i.e. the inflection where the SMA stopped declining and
+    started rising. Returns 0 for "today", 1 for "yesterday", etc. None if
+    the zero-crossing isn't found in the last `max_lookback` bars.
+
+    Magnitude is intentionally NOT checked here — the caller separately
+    gates today's slope on a minimum value. Combining the two checks would
+    miss setups where the slope creeps smoothly through zero (e.g. one bar
+    is just above zero, then several bars cross the magnitude threshold)."""
+    if values is None:
+        return None
+    n = len(values)
+    end = n - 1
+    earliest = max(window + 1, n - max_lookback)
+    for t in range(end, earliest - 1, -1):
+        s_today = _sma_slope_pct(values, window=window, end_idx=t)
+        s_prev = _sma_slope_pct(values, window=window, end_idx=t - 1)
+        if s_today is None or s_prev is None:
+            continue
+        if s_prev <= 0 and s_today > 0:
+            return end - t
+    return None
 
 
 # --- heuristic "momentum continuation" score ------------------------------
@@ -464,9 +551,9 @@ def _fetch_shares(ticker: str) -> float | None:
 
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     """Precompute every indicator the screener filters on — EMA(21), EMA(50),
-    RSI(14) + its 9d SMA, and MACD(12, 26, 9) — and store each as a
-    float32 column. Moves all the expensive pandas ewm/rolling work to
-    cache-build time so a screen run becomes a slice + filter pass."""
+    RSI(14) + its 9d SMA, MACD(12, 26, 9), and SMA(10/20/30/40) — and store
+    each as a float32 column. Moves all the expensive pandas ewm/rolling
+    work to cache-build time so a screen run becomes a slice + filter pass."""
     closes = df["Close"]
     df["ema21"] = ema(closes, 21).astype("float32")
     df["ema50"] = ema(closes, 50).astype("float32")
@@ -477,6 +564,12 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     df["macd"] = macd_line.astype("float32")
     df["macd_signal"] = macd_signal.astype("float32")
     df["macd_hist"] = (macd_line - macd_signal).astype("float32")
+    # SMA stack used by the "SMA Revival" filter (10-SMA slope turn-up + price
+    # cross from below). We compute up to SMA40 so the early-stage guard
+    # (require SMA20 still flat) and longer-trend context fields are
+    # available without rolling work at screen time.
+    for n in (10, 20, 30, 40):
+        df[f"sma{n}"] = closes.rolling(window=n, min_periods=n).mean().astype("float32")
     return df
 
 
@@ -504,7 +597,9 @@ def _cached_history(ticker: str, period: str = "6mo", need_shares: bool = False)
             rewrite = False
             # Old cache files (pre-enrichment) lack the indicator columns.
             # Enrich in place and rewrite so we don't have to refetch.
-            if "rsi14" not in df.columns:
+            # Same path catches caches that were enriched before sma10/20/30/40
+            # were added — re-enrich fills them in without a fetch.
+            if "rsi14" not in df.columns or "sma10" not in df.columns:
                 df = _enrich(df)
                 rewrite = True
             # Shares attr was added later; backfill once on demand so the
@@ -833,9 +928,17 @@ def _row_from_df(ticker: str, df: pd.DataFrame) -> dict | None:
         "rsi14": _scalar("rsi14"),
         "rsi_sma9": _scalar("rsi_sma9"),
         "macd": _scalar("macd"),
+        "macd_prev": _scalar("macd", -2),
         "macd_signal": _scalar("macd_signal"),
         "macd_hist": _scalar("macd_hist"),
         "macd_hist_prev": _scalar("macd_hist", -2),
+        # SMA stack — snapshot the current scalars so the screen path can
+        # compare without rolling. Cross/slope-turn detection still walks
+        # recent_bars closes to find the inflection date.
+        "sma10": _scalar("sma10"),
+        "sma20": _scalar("sma20"),
+        "sma30": _scalar("sma30"),
+        "sma40": _scalar("sma40"),
         "shares": shares_val,
         "recent_bars": {"bars": bars},
     }
@@ -887,7 +990,7 @@ def _read_pickle_for_snapshot(ticker: str) -> tuple[pd.DataFrame | None, str]:
         return None, "empty"
     if len(df) < 2:
         return None, "short"
-    if "rsi14" not in df.columns:
+    if "rsi14" not in df.columns or "sma10" not in df.columns:
         try:
             df = _enrich(df)
         except Exception:
@@ -1034,29 +1137,17 @@ def take_snapshot(tickers: list[str] | None = None) -> dict:
 
 
 def _resolve_as_of_date(as_of_offset: int) -> str | None:
-    """Map an offset (0 = latest) to a YYYY-MM-DD using SPY's calendar.
-    Mirrors the resolution evaluate_ticker does per-ticker; needed up
-    front so the snapshot path can pick the right row in bulk."""
+    """Map an offset (0 = latest) to a YYYY-MM-DD using the same merged
+    calendar that powers the date picker (`_calendar_dates`). Keeping
+    both directions on the same source avoids the bug where the picker
+    lists a date that the screener then can't find."""
     try:
         offset = max(0, min(int(as_of_offset), MAX_AS_OF_OFFSET))
     except (TypeError, ValueError):
         return None
-    for ref in ("SPY", "QQQ", "DIA", "AAPL", "MSFT"):
-        df = _cached_history(ref, period="6mo")
-        if df is None or df.empty:
-            continue
-        idx = -(1 + offset)
-        if idx < -len(df):
-            continue
-        return df.index[idx].strftime("%Y-%m-%d")
-    # Last-ditch: any cached ticker
-    for _, (_, cached_df) in list(_PRICE_CACHE.items()):
-        if cached_df is None or cached_df.empty:
-            continue
-        idx = -(1 + offset)
-        if idx < -len(cached_df):
-            continue
-        return cached_df.index[idx].strftime("%Y-%m-%d")
+    dates = _calendar_dates(offset + 1)
+    if offset < len(dates):
+        return dates[offset]
     return None
 
 
@@ -1190,12 +1281,14 @@ def evaluate_ticker(
     price_dev_max_pct: float = 4.0,
     ema_dev_min_pct: float = -3.0,
     ema_dev_max_pct: float = 3.0,
-    macd_hist_min: float = 0.0,
-    macd_require_rising: bool = True,
-    macd_line_min: float = 0.0,
-    macd_line_max: float = 10.0,
+    macd_within_pct: bool = True,
+    macd_vs_signal_pct: float = 5.0,
+    macd_above_signal: bool = False,
+    macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
+    market_cap_min_m: float = 0.0,
+    market_cap_max_m: float = 10_000_000.0,   # $10T default ceiling = effectively off
     pct_change_min: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
@@ -1205,10 +1298,20 @@ def evaluate_ticker(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
-    apply_macd: bool = True,
-    apply_macd_line: bool = False,
+    apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
+    apply_market_cap: bool = False,
     apply_pct_change: bool = False,
+    # --- SMA Revival filter (10-SMA slope turn-up + price cross) ----------
+    apply_sma_revival: bool = False,
+    sma_cross_lookback: int = 3,        # bars to look back for the cross-up
+    sma_slope_turn_lookback: int = 5,   # bars to look back for slope inflection
+    sma_slope_window: int = 3,          # window over which slope is measured
+    sma_min_slope_pct: float = 0.10,    # %/day; suppresses flat-line noise
+    sma_require_long_flat: bool = False,  # early-stage guard (20-SMA still flat)
+    sma_long_flat_max_pct: float = 0.30,  # max %/day slope for "still flat"
+    sma_require_volume: bool = False,     # confirm cross-up bar with volume
+    sma_volume_mult: float = 1.20,        # cross-bar vol ≥ N × 20d avg
     as_of_offset: int = 0,
 ) -> ScreenHit | None:
     if as_of_offset < 0:
@@ -1216,7 +1319,8 @@ def evaluate_ticker(
     if as_of_offset > MAX_AS_OF_OFFSET:
         as_of_offset = MAX_AS_OF_OFFSET
 
-    df = _cached_history(ticker, period="6mo", need_shares=apply_turnover)
+    df = _cached_history(ticker, period="6mo",
+                         need_shares=apply_turnover or apply_market_cap)
     needed = max(
         high_lookback + 2, rsi_period + 5, rvol_lookback + 2,
         ema_period + 2, ema_long_period + 2,
@@ -1317,58 +1421,81 @@ def evaluate_ticker(
         v = float(v)
         return v if np.isfinite(v) else None
 
-    # RSI(14)
+    # RSI(14). Only hard-reject when the corresponding filter is on —
+    # see the snapshot-path comment for the rationale (a missing
+    # indicator scalar shouldn't drop a ticker from a screen that
+    # doesn't gate on that indicator).
     rsi_val = _scalar("rsi14")
-    if rsi_val is None:
+    if rsi_val is None and apply_rsi:
         return None
     if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
         return None
 
     # 9-day SMA of RSI(14) and RSI's deviation from it.
     rsi_sma_val = _scalar("rsi_sma9")
-    if rsi_sma_val is None or rsi_sma_val == 0:
+    if apply_rsi_dev and (rsi_val is None or rsi_sma_val is None or rsi_sma_val == 0):
         return None
-    rsi_dev_pct = (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+    rsi_dev_pct = (
+        (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+        if (rsi_val is not None and rsi_sma_val) else None
+    )
     if apply_rsi_dev and not (rsi_dev_min_pct <= rsi_dev_pct <= rsi_dev_max_pct):
         return None
 
     # EMA(21) + price deviation.
     ema_val = _scalar("ema21")
-    if ema_val is None or ema_val == 0:
+    if (apply_price_dev or apply_ema_dev) and (ema_val is None or ema_val == 0):
         return None
-    price_ema21_dev_pct = (prev_close - ema_val) / ema_val * 100.0
+    price_ema21_dev_pct = (
+        (prev_close - ema_val) / ema_val * 100.0 if ema_val else None
+    )
     if apply_price_dev and not (price_dev_min_pct <= price_ema21_dev_pct <= price_dev_max_pct):
         return None
 
     # EMA(50) + EMA21-vs-EMA50 deviation.
     ema_long_val = _scalar("ema50")
-    if ema_long_val is None or ema_long_val == 0:
+    if apply_ema_dev and (ema_long_val is None or ema_long_val == 0):
         return None
-    ema21_ema50_dev_pct = (ema_val - ema_long_val) / ema_long_val * 100.0
+    ema21_ema50_dev_pct = (
+        (ema_val - ema_long_val) / ema_long_val * 100.0
+        if (ema_val and ema_long_val) else None
+    )
     if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
         return None
 
-    # MACD(12, 26, 9) — histogram threshold and optional "rising" gate.
+    # MACD(12, 26, 9) — scalars used by the MACD-vs-signal gate and the
+    # momentum_score / results columns. Only hard-reject when the gate
+    # is on; missing scalars otherwise flow through as None and render
+    # as "—" in the UI.
     macd_val = _scalar("macd")
+    macd_prev_val = _scalar("macd", eval_idx - 1)
     macd_signal_val = _scalar("macd_signal")
     macd_hist_val = _scalar("macd_hist")
     macd_hist_prev = _scalar("macd_hist", eval_idx - 1)
-    if (macd_val is None or macd_signal_val is None
-            or macd_hist_val is None or macd_hist_prev is None):
+    if apply_macd_vs_signal and (macd_val is None or macd_signal_val is None
+                                  or macd_hist_val is None or macd_hist_prev is None):
         return None
-    if apply_macd:
-        if macd_hist_val < macd_hist_min:
-            return None
-        if macd_require_rising and not (macd_hist_val > macd_hist_prev):
-            return None
-    # MACD line (EMA12 - EMA26) gated by a min/max band — different from
-    # the histogram filter above: this looks at the raw line value,
-    # which is positive when EMA12 > EMA26 (bullish trend) and stays
-    # near zero in ranging tape. macd_line_min = 0 keeps only stocks
-    # in an established uptrend; raising the floor selects stronger
-    # ones, raising the max excludes runaway extensions.
-    if apply_macd_line and not (macd_line_min <= macd_val <= macd_line_max):
-        return None
+    # MACD vs signal — sub-conditions are independent checkboxes (all
+    # checked must pass, AND-semantics). Mix as needed:
+    #   within X%      — |MACD − signal| / max(|signal|, ε) × 100 ≤ X
+    #                    (close to crossover, either direction)
+    #   ≥ signal       — MACD currently at or above the signal line
+    #   line rising    — MACD line strictly higher than yesterday's
+    # E.g. "within 5%" + "≥ signal" = stock just crossed above and is
+    # still close to the signal line; "≥ signal" + "line rising" =
+    # established bullish with positive slope.
+    if apply_macd_vs_signal:
+        if macd_within_pct:
+            denom = abs(macd_signal_val) if abs(macd_signal_val) > 1e-6 else 1e-6
+            gap_pct = abs(macd_val - macd_signal_val) / denom * 100.0
+            if gap_pct > macd_vs_signal_pct:
+                return None
+        if macd_above_signal:
+            if not (macd_val >= macd_signal_val):
+                return None
+        if macd_line_rising:
+            if macd_prev_val is None or not (macd_val > macd_prev_val):
+                return None
 
     # Relative volume: eval-bar volume / mean of the prior rvol_lookback bars
     vol_window_start = eval_idx - rvol_lookback
@@ -1399,6 +1526,69 @@ def evaluate_ticker(
         if not (turnover_min_pct <= turnover_pct <= turnover_max_pct):
             return None
     market_cap = (shares_val * prev_close) if shares_val else None
+    # Market cap filter — input is in millions of dollars for nicer UX
+    # (e.g. 2000 = $2B mid-cap floor, 200000 = $200B mega-cap ceiling).
+    if apply_market_cap:
+        if market_cap is None:
+            return None
+        if not (market_cap_min_m * 1_000_000 <= market_cap <= market_cap_max_m * 1_000_000):
+            return None
+
+    # --- SMA Revival filter ----------------------------------------------
+    # Two conditions, both happening within recent bars:
+    #   1. SMA10 slope (over `sma_slope_window` bars) turned from ≤ 0 to
+    #      > `sma_min_slope_pct` within the last `sma_slope_turn_lookback` bars.
+    #   2. Close crossed above SMA10 from below within the last
+    #      `sma_cross_lookback` bars.
+    # Always populate the descriptive fields so the columns are present in
+    # the results regardless of whether the filter is on.
+    sma10_series = df["sma10"].iloc[max(-(sma_slope_turn_lookback + sma_slope_window + 2),
+                                       -len(df)):].to_numpy()
+    closes_for_cross = df["Close"].iloc[max(-(sma_cross_lookback + 2),
+                                           -len(df)):].to_numpy()
+    sma10_for_cross = df["sma10"].iloc[max(-(sma_cross_lookback + 2),
+                                          -len(df)):].to_numpy()
+    sma10_val = float(df["sma10"].iloc[eval_idx]) if np.isfinite(df["sma10"].iloc[eval_idx]) else None
+    sma10_slope = _sma_slope_pct(sma10_series, window=sma_slope_window)
+    cross_days = _cross_above_days_ago(closes_for_cross, sma10_for_cross,
+                                       max_lookback=sma_cross_lookback)
+    slope_turn_days = _slope_turn_days_ago(sma10_series,
+                                           window=sma_slope_window,
+                                           max_lookback=sma_slope_turn_lookback)
+    if apply_sma_revival:
+        if cross_days is None or slope_turn_days is None:
+            return None
+        if sma10_slope is None or sma10_slope <= sma_min_slope_pct:
+            return None
+        # Early-stage guard — require SMA20 still flat / barely rising so we
+        # catch the inflection rather than the already-running trend.
+        if sma_require_long_flat:
+            sma20_series = df["sma20"].iloc[max(-(sma_slope_window + 2),
+                                                -len(df)):].to_numpy()
+            sma20_slope = _sma_slope_pct(sma20_series, window=sma_slope_window)
+            if sma20_slope is None or sma20_slope > sma_long_flat_max_pct:
+                return None
+        # Volume confirmation on the cross-up bar (cross_days_ago = 0 means
+        # today; 1 means yesterday; etc.). Compare against the 20d avg
+        # volume *before* the cross bar.
+        if sma_require_volume:
+            cross_idx = eval_idx - cross_days
+            try:
+                cross_vol = float(volumes.iloc[cross_idx])
+                vol_window_start = cross_idx - 20
+                if vol_window_start < -len(df):
+                    return None
+                if cross_idx == -1:
+                    pre_cross_vols = volumes.iloc[vol_window_start:cross_idx]
+                else:
+                    pre_cross_vols = volumes.iloc[vol_window_start:cross_idx]
+                if len(pre_cross_vols) < 20:
+                    return None
+                avg20 = float(pre_cross_vols.mean())
+                if avg20 <= 0 or cross_vol < avg20 * sma_volume_mult:
+                    return None
+            except (IndexError, ValueError):
+                return None
 
     pct_change = (prev_close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
@@ -1429,17 +1619,17 @@ def evaluate_ticker(
         prev_close=round(prior_close, 4),
         pct_change=round(pct_change, 2),
         high_lookback=round(eval_streak_val, 4),
-        rsi=round(float(rsi_val), 2),
-        rsi_sma9=round(float(rsi_sma_val), 2),
-        rsi_dev_pct=round(rsi_dev_pct, 2),
-        ema21=round(ema_val, 4),
-        price_ema21_dev_pct=round(price_ema21_dev_pct, 2),
-        ema50=round(ema_long_val, 4),
-        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2),
-        macd=round(float(macd_val), 4),
-        macd_signal=round(float(macd_signal_val), 4),
-        macd_hist=round(float(macd_hist_val), 4),
-        macd_hist_prev=round(float(macd_hist_prev), 4),
+        rsi=round(float(rsi_val), 2) if rsi_val is not None else None,
+        rsi_sma9=round(float(rsi_sma_val), 2) if rsi_sma_val is not None else None,
+        rsi_dev_pct=round(rsi_dev_pct, 2) if rsi_dev_pct is not None else None,
+        ema21=round(ema_val, 4) if ema_val is not None else None,
+        price_ema21_dev_pct=round(price_ema21_dev_pct, 2) if price_ema21_dev_pct is not None else None,
+        ema50=round(ema_long_val, 4) if ema_long_val is not None else None,
+        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2) if ema21_ema50_dev_pct is not None else None,
+        macd=round(float(macd_val), 4) if macd_val is not None else None,
+        macd_signal=round(float(macd_signal_val), 4) if macd_signal_val is not None else None,
+        macd_hist=round(float(macd_hist_val), 4) if macd_hist_val is not None else None,
+        macd_hist_prev=round(float(macd_hist_prev), 4) if macd_hist_prev is not None else None,
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
@@ -1448,7 +1638,65 @@ def evaluate_ticker(
         turnover_pct=round(turnover_pct, 4) if turnover_pct is not None else None,
         momentum_score=momentum,
         score=round(score, 4),
+        sma10=round(sma10_val, 4) if sma10_val is not None else None,
+        sma10_slope_pct=round(sma10_slope, 4) if sma10_slope is not None else None,
+        cross_days_ago=cross_days,
+        slope_turn_days_ago=slope_turn_days,
     )
+
+
+def _df_from_snapshot_row(row: dict) -> "pd.DataFrame | None":
+    """Build a DataFrame from a snapshot row's recent_bars and overlay
+    the snapshot's stored indicator scalars onto the last row.
+
+    Use as the data source for diagnose against a past date so the
+    per-filter check results match what the snapshot-based screen
+    computed for that date — without this, diagnose reads the LIVE
+    cache (which Yahoo may have retroactively adjusted after the
+    snapshot was created), producing pass/fail mismatches like the
+    PRM case where the screen included the ticker but diagnose
+    rejected it on a stale SMA10 cross check.
+
+    Returns None if the snapshot row lacks usable bars (< 12). The
+    re-enrichment computes rolling indicators on the ~60-bar window;
+    only the LAST bar's EMA/MACD/RSI values match the live cache,
+    because EMA recursion starts from a different point on truncated
+    history. The overlay step plugs the snapshot's pre-computed
+    scalars in at the last bar so diagnose reads them verbatim."""
+    bars = (row.get("recent_bars") or {}).get("bars") or []
+    if len(bars) < 12:
+        return None
+    try:
+        df = pd.DataFrame([{
+            "Open": float(b.get("o")) if b.get("o") is not None else float("nan"),
+            "High": float(b.get("h")) if b.get("h") is not None else float("nan"),
+            "Low":  float(b.get("l")) if b.get("l") is not None else float("nan"),
+            "Close": float(b.get("c")) if b.get("c") is not None else float("nan"),
+            "Volume": float(b.get("v")) if b.get("v") is not None else float("nan"),
+        } for b in bars])
+        df.index = pd.to_datetime([b.get("d") for b in bars])
+    except Exception:
+        return None
+    df = _enrich(df)
+    # Overlay snapshot scalars onto the latest bar — these were computed
+    # with full history at snapshot time and supersede the re-enrichment's
+    # values for the last row.
+    for col in ("ema21", "ema50", "rsi14", "rsi_sma9",
+                "macd", "macd_signal", "macd_hist",
+                "sma10", "sma20", "sma30", "sma40"):
+        v = row.get(col)
+        if v is not None and col in df.columns:
+            try:
+                df.iloc[-1, df.columns.get_loc(col)] = float(v)
+            except (TypeError, ValueError):
+                pass
+    shares_val = row.get("shares")
+    if shares_val is not None:
+        try:
+            df.attrs["shares"] = float(shares_val)
+        except (TypeError, ValueError):
+            pass
+    return df
 
 
 def _evaluate_from_snapshot(
@@ -1471,12 +1719,14 @@ def _evaluate_from_snapshot(
     price_dev_max_pct: float,
     ema_dev_min_pct: float,
     ema_dev_max_pct: float,
-    macd_hist_min: float,
-    macd_require_rising: bool,
-    macd_line_min: float,
-    macd_line_max: float,
+    macd_within_pct: bool,
+    macd_vs_signal_pct: float,
+    macd_above_signal: bool,
+    macd_line_rising: bool,
     turnover_min_pct: float,
     turnover_max_pct: float,
+    market_cap_min_m: float,
+    market_cap_max_m: float,
     pct_change_min: float,
     apply_high: bool,
     apply_rsi: bool,
@@ -1486,10 +1736,20 @@ def _evaluate_from_snapshot(
     apply_price: bool,
     apply_price_dev: bool,
     apply_ema_dev: bool,
-    apply_macd: bool,
-    apply_macd_line: bool,
+    apply_macd_vs_signal: bool,
     apply_turnover: bool,
+    apply_market_cap: bool,
     apply_pct_change: bool,
+    # SMA-revival filter — mirror of the evaluate_ticker signature.
+    apply_sma_revival: bool = False,
+    sma_cross_lookback: int = 3,
+    sma_slope_turn_lookback: int = 5,
+    sma_slope_window: int = 3,
+    sma_min_slope_pct: float = 0.10,
+    sma_require_long_flat: bool = False,
+    sma_long_flat_max_pct: float = 0.30,
+    sma_require_volume: bool = False,
+    sma_volume_mult: float = 1.20,
 ) -> ScreenHit | None:
     """Apply every filter against a single snapshot row + its trailing bars.
     Mirrors evaluate_ticker's gates but reads from a dict instead of a
@@ -1570,51 +1830,69 @@ def _evaluate_from_snapshot(
         return None
 
     rsi_val = row.get("rsi14")
-    if rsi_val is None:
+    # Only hard-reject when the corresponding filter is on. The snapshot
+    # writer may emit None for indicator scalars on freshly-listed names
+    # where the rolling window hasn't fully populated yet — silently
+    # dropping those tickers from EVERY screen, even ones that don't gate
+    # on the missing value, was the bug behind "diagnose says PASS but
+    # screen drops the ticker."
+    if rsi_val is None and apply_rsi:
         return None
     if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
         return None
 
     rsi_sma_val = row.get("rsi_sma9")
-    if rsi_sma_val is None or rsi_sma_val == 0:
+    if apply_rsi_dev and (rsi_val is None or rsi_sma_val is None or rsi_sma_val == 0):
         return None
-    rsi_dev_pct = (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+    rsi_dev_pct = (
+        (rsi_val - rsi_sma_val) / rsi_sma_val * 100.0
+        if (rsi_val is not None and rsi_sma_val) else None
+    )
     if apply_rsi_dev and not (rsi_dev_min_pct <= rsi_dev_pct <= rsi_dev_max_pct):
         return None
 
     ema_val = row.get("ema21")
-    if ema_val is None or ema_val == 0:
+    if (apply_price_dev or apply_ema_dev) and (ema_val is None or ema_val == 0):
         return None
-    price_ema21_dev_pct = (close - ema_val) / ema_val * 100.0
+    price_ema21_dev_pct = (
+        (close - ema_val) / ema_val * 100.0 if ema_val else None
+    )
     if apply_price_dev and not (price_dev_min_pct <= price_ema21_dev_pct <= price_dev_max_pct):
         return None
 
     ema_long_val = row.get("ema50")
-    if ema_long_val is None or ema_long_val == 0:
+    if apply_ema_dev and (ema_long_val is None or ema_long_val == 0):
         return None
-    ema21_ema50_dev_pct = (ema_val - ema_long_val) / ema_long_val * 100.0
+    ema21_ema50_dev_pct = (
+        (ema_val - ema_long_val) / ema_long_val * 100.0
+        if (ema_val and ema_long_val) else None
+    )
     if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
         return None
 
     macd_hist_val = row.get("macd_hist")
     macd_hist_prev = row.get("macd_hist_prev")
     macd_val = row.get("macd")
+    macd_prev_val = row.get("macd_prev")
     macd_signal_val = row.get("macd_signal")
-    if macd_hist_val is None or macd_hist_prev is None:
+    # Only hard-reject on missing MACD scalars when the MACD-vs-signal
+    # filter is on. The legacy MACD-histogram filter has been removed
+    # (PR #62), so unconditional rejection was orphaned.
+    if apply_macd_vs_signal and (macd_hist_val is None or macd_hist_prev is None
+                                  or macd_val is None or macd_signal_val is None):
         return None
-    if apply_macd:
-        if macd_hist_val < macd_hist_min:
-            return None
-        if macd_require_rising and not (macd_hist_val > macd_hist_prev):
-            return None
-    # MACD line (EMA12 - EMA26) gated by a min/max band — different from
-    # the histogram filter above: this looks at the raw line value,
-    # which is positive when EMA12 > EMA26 (bullish trend) and stays
-    # near zero in ranging tape. macd_line_min = 0 keeps only stocks
-    # in an established uptrend; raising the floor selects stronger
-    # ones, raising the max excludes runaway extensions.
-    if apply_macd_line and not (macd_line_min <= macd_val <= macd_line_max):
-        return None
+    if apply_macd_vs_signal:
+        if macd_within_pct:
+            denom = abs(macd_signal_val) if abs(macd_signal_val) > 1e-6 else 1e-6
+            gap_pct = abs(macd_val - macd_signal_val) / denom * 100.0
+            if gap_pct > macd_vs_signal_pct:
+                return None
+        if macd_above_signal:
+            if not (macd_val >= macd_signal_val):
+                return None
+        if macd_line_rising:
+            if macd_prev_val is None or not (macd_val > macd_prev_val):
+                return None
 
     # Relative volume — recompute against the user-specified lookback (the
     # `avg_volume` column in the snapshot is fixed to 10d; we need the
@@ -1648,6 +1926,81 @@ def _evaluate_from_snapshot(
         if not (turnover_min_pct <= turnover_pct <= turnover_max_pct):
             return None
     market_cap = (shares_val * close) if shares_val else None
+    if apply_market_cap:
+        if market_cap is None:
+            return None
+        if not (market_cap_min_m * 1_000_000 <= market_cap <= market_cap_max_m * 1_000_000):
+            return None
+
+    # --- SMA Revival (snapshot path) -------------------------------------
+    # The snapshot row carries sma10/20/30/40 scalars and a recent_bars
+    # window (≤60 bars of OHLCV). Build closes + sma10 arrays from the bars
+    # so the inflection / cross detection runs on the same shape of data
+    # as the live path. SMA10 at each historical bar is recomputed from the
+    # bars closes — cheap (≤60 entries) and avoids needing per-bar SMA in
+    # the JSONB payload.
+    sma10_val = row.get("sma10")
+    sma10_slope = None
+    cross_days = None
+    slope_turn_days = None
+    if bars and len(bars) >= 12:
+        try:
+            bar_closes = np.array([float(b["c"]) for b in bars
+                                   if b.get("c") is not None], dtype="float64")
+        except (TypeError, ValueError):
+            bar_closes = np.array([], dtype="float64")
+        if len(bar_closes) >= 11:
+            # Rolling 10-day SMA over the bars window; leading 9 entries
+            # are NaN by design so _sma_slope_pct / _cross_above_days_ago
+            # treat them as not-yet-available.
+            kernel = np.full(10, 1.0 / 10.0)
+            sma10_arr = np.full(len(bar_closes), np.nan, dtype="float64")
+            if len(bar_closes) >= 10:
+                conv = np.convolve(bar_closes, kernel, mode="valid")
+                sma10_arr[9:] = conv
+            sma10_slope = _sma_slope_pct(sma10_arr, window=sma_slope_window)
+            cross_days = _cross_above_days_ago(bar_closes, sma10_arr,
+                                               max_lookback=sma_cross_lookback)
+            slope_turn_days = _slope_turn_days_ago(sma10_arr,
+                                                   window=sma_slope_window,
+                                                   max_lookback=sma_slope_turn_lookback)
+    if apply_sma_revival:
+        if cross_days is None or slope_turn_days is None:
+            return None
+        if sma10_slope is None or sma10_slope <= sma_min_slope_pct:
+            return None
+        if sma_require_long_flat:
+            # Same trick for SMA20 over the bars window.
+            try:
+                bar_closes2 = bar_closes
+            except NameError:
+                return None
+            if len(bar_closes2) < 21:
+                return None
+            kernel20 = np.full(20, 1.0 / 20.0)
+            sma20_arr = np.full(len(bar_closes2), np.nan, dtype="float64")
+            sma20_arr[19:] = np.convolve(bar_closes2, kernel20, mode="valid")
+            sma20_slope = _sma_slope_pct(sma20_arr, window=sma_slope_window)
+            if sma20_slope is None or sma20_slope > sma_long_flat_max_pct:
+                return None
+        if sma_require_volume:
+            if cross_days is None:
+                return None
+            # bars are oldest→newest; cross-bar is at index (len - 1 - cross_days)
+            cross_idx_b = len(bars) - 1 - cross_days
+            window_start = cross_idx_b - 20
+            if window_start < 0:
+                return None
+            try:
+                cross_vol = float(bars[cross_idx_b].get("v") or 0)
+                pre_vols = [float(b.get("v") or 0) for b in bars[window_start:cross_idx_b]]
+            except (TypeError, ValueError):
+                return None
+            if len(pre_vols) < 20:
+                return None
+            avg20 = sum(pre_vols) / len(pre_vols)
+            if avg20 <= 0 or cross_vol < avg20 * sma_volume_mult:
+                return None
 
     pct_change = (close - prior_close) / prior_close * 100.0 if prior_close else 0.0
     exchange = "TSX" if ticker.endswith(".TO") else "US"
@@ -1678,17 +2031,17 @@ def _evaluate_from_snapshot(
         prev_close=round(prior_close, 4),
         pct_change=round(pct_change, 2),
         high_lookback=round(eval_streak_val, 4),
-        rsi=round(float(rsi_val), 2),
-        rsi_sma9=round(float(rsi_sma_val), 2),
-        rsi_dev_pct=round(rsi_dev_pct, 2),
-        ema21=round(ema_val, 4),
-        price_ema21_dev_pct=round(price_ema21_dev_pct, 2),
-        ema50=round(ema_long_val, 4),
-        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2),
-        macd=round(float(macd_val), 4) if macd_val is not None else 0.0,
-        macd_signal=round(float(macd_signal_val), 4) if macd_signal_val is not None else 0.0,
-        macd_hist=round(float(macd_hist_val), 4),
-        macd_hist_prev=round(float(macd_hist_prev), 4),
+        rsi=round(float(rsi_val), 2) if rsi_val is not None else None,
+        rsi_sma9=round(float(rsi_sma_val), 2) if rsi_sma_val is not None else None,
+        rsi_dev_pct=round(rsi_dev_pct, 2) if rsi_dev_pct is not None else None,
+        ema21=round(ema_val, 4) if ema_val is not None else None,
+        price_ema21_dev_pct=round(price_ema21_dev_pct, 2) if price_ema21_dev_pct is not None else None,
+        ema50=round(ema_long_val, 4) if ema_long_val is not None else None,
+        ema21_ema50_dev_pct=round(ema21_ema50_dev_pct, 2) if ema21_ema50_dev_pct is not None else None,
+        macd=round(float(macd_val), 4) if macd_val is not None else None,
+        macd_signal=round(float(macd_signal_val), 4) if macd_signal_val is not None else None,
+        macd_hist=round(float(macd_hist_val), 4) if macd_hist_val is not None else None,
+        macd_hist_prev=round(float(macd_hist_prev), 4) if macd_hist_prev is not None else None,
         rel_volume=round(rel_vol, 2),
         avg_volume=round(avg_volume, 0),
         volume=round(volume, 0),
@@ -1697,6 +2050,10 @@ def _evaluate_from_snapshot(
         turnover_pct=round(turnover_pct, 4) if turnover_pct is not None else None,
         momentum_score=momentum,
         score=round(score, 4),
+        sma10=round(float(sma10_val), 4) if sma10_val is not None else None,
+        sma10_slope_pct=round(sma10_slope, 4) if sma10_slope is not None else None,
+        cross_days_ago=cross_days,
+        slope_turn_days_ago=slope_turn_days,
     )
 
 
@@ -1716,12 +2073,14 @@ def run_screen(
     price_dev_max_pct: float = 4.0,
     ema_dev_min_pct: float = -3.0,
     ema_dev_max_pct: float = 3.0,
-    macd_hist_min: float = 0.0,
-    macd_require_rising: bool = True,
-    macd_line_min: float = 0.0,
-    macd_line_max: float = 10.0,
+    macd_within_pct: bool = True,
+    macd_vs_signal_pct: float = 5.0,
+    macd_above_signal: bool = False,
+    macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
+    market_cap_min_m: float = 0.0,
+    market_cap_max_m: float = 10_000_000.0,
     pct_change_min: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
@@ -1731,11 +2090,28 @@ def run_screen(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
-    apply_macd: bool = True,
-    apply_macd_line: bool = False,
+    apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
+    apply_market_cap: bool = False,
     apply_pct_change: bool = False,
+    # SMA Revival — see evaluate_ticker for semantics.
+    apply_sma_revival: bool = False,
+    sma_cross_lookback: int = 3,
+    sma_slope_turn_lookback: int = 5,
+    sma_slope_window: int = 3,
+    sma_min_slope_pct: float = 0.10,
+    sma_require_long_flat: bool = False,
+    sma_long_flat_max_pct: float = 0.30,
+    sma_require_volume: bool = False,
+    sma_volume_mult: float = 1.20,
     as_of_offset: int = 0,
+    # When the caller resolved the user's chosen date up front (see
+    # app._parse_params), pass it through so the snapshot path uses
+    # it directly instead of re-resolving the offset against whatever
+    # calendar happens to be current right now. Eliminates the race
+    # where a new SPY bar landing mid-request shifts the dataset one
+    # day forward of what the user picked.
+    as_of_date: str | None = None,
     lists: list[str] | None = None,
     extras: list[str] | None = None,
     universe: Iterable[str] | None = None,
@@ -1764,7 +2140,9 @@ def run_screen(
     # the 7,800-row result set OOMs the worker (each row carries a ~5KB
     # JSONB recent_bars blob → ~100MB+ in Python dicts).
     if snapshots.enabled():
-        target_date = _resolve_as_of_date(as_of_offset)
+        # Prefer the caller-supplied date over re-resolving the offset
+        # (see kwarg comment above for the drift race this avoids).
+        target_date = as_of_date or _resolve_as_of_date(as_of_offset)
         if target_date and snapshots.has_date(target_date):
             ticker_set = set(tickers)
             snap_hits: list[ScreenHit] = []
@@ -1787,12 +2165,14 @@ def run_screen(
                         price_dev_max_pct=price_dev_max_pct,
                         ema_dev_min_pct=ema_dev_min_pct,
                         ema_dev_max_pct=ema_dev_max_pct,
-                        macd_hist_min=macd_hist_min,
-                        macd_require_rising=macd_require_rising,
-                        macd_line_min=macd_line_min,
-                        macd_line_max=macd_line_max,
+                        macd_within_pct=macd_within_pct,
+                        macd_vs_signal_pct=macd_vs_signal_pct,
+                        macd_above_signal=macd_above_signal,
+                        macd_line_rising=macd_line_rising,
                         turnover_min_pct=turnover_min_pct,
                         turnover_max_pct=turnover_max_pct,
+                        market_cap_min_m=market_cap_min_m,
+                        market_cap_max_m=market_cap_max_m,
                         pct_change_min=pct_change_min,
                         apply_high=apply_high, apply_rsi=apply_rsi,
                         apply_rsi_dev=apply_rsi_dev,
@@ -1801,10 +2181,19 @@ def run_screen(
                         apply_price=apply_price,
                         apply_price_dev=apply_price_dev,
                         apply_ema_dev=apply_ema_dev,
-                        apply_macd=apply_macd,
-                        apply_macd_line=apply_macd_line,
+                        apply_macd_vs_signal=apply_macd_vs_signal,
                         apply_turnover=apply_turnover,
+                        apply_market_cap=apply_market_cap,
                         apply_pct_change=apply_pct_change,
+                        apply_sma_revival=apply_sma_revival,
+                        sma_cross_lookback=sma_cross_lookback,
+                        sma_slope_turn_lookback=sma_slope_turn_lookback,
+                        sma_slope_window=sma_slope_window,
+                        sma_min_slope_pct=sma_min_slope_pct,
+                        sma_require_long_flat=sma_require_long_flat,
+                        sma_long_flat_max_pct=sma_long_flat_max_pct,
+                        sma_require_volume=sma_require_volume,
+                        sma_volume_mult=sma_volume_mult,
                     )
                 except Exception as exc:
                     log.warning("snapshot evaluate failed for %s: %s", tk_name, exc)
@@ -1837,12 +2226,14 @@ def run_screen(
                 price_dev_max_pct=price_dev_max_pct,
                 ema_dev_min_pct=ema_dev_min_pct,
                 ema_dev_max_pct=ema_dev_max_pct,
-                macd_hist_min=macd_hist_min,
-                macd_require_rising=macd_require_rising,
-                macd_line_min=macd_line_min,
-                macd_line_max=macd_line_max,
+                macd_within_pct=macd_within_pct,
+                macd_vs_signal_pct=macd_vs_signal_pct,
+                macd_above_signal=macd_above_signal,
+                macd_line_rising=macd_line_rising,
                 turnover_min_pct=turnover_min_pct,
                 turnover_max_pct=turnover_max_pct,
+                market_cap_min_m=market_cap_min_m,
+                market_cap_max_m=market_cap_max_m,
                 pct_change_min=pct_change_min,
                 apply_high=apply_high,
                 apply_rsi=apply_rsi,
@@ -1852,10 +2243,19 @@ def run_screen(
                 apply_price=apply_price,
                 apply_price_dev=apply_price_dev,
                 apply_ema_dev=apply_ema_dev,
-                apply_macd=apply_macd,
-                apply_macd_line=apply_macd_line,
+                apply_macd_vs_signal=apply_macd_vs_signal,
                 apply_turnover=apply_turnover,
+                apply_market_cap=apply_market_cap,
                 apply_pct_change=apply_pct_change,
+                apply_sma_revival=apply_sma_revival,
+                sma_cross_lookback=sma_cross_lookback,
+                sma_slope_turn_lookback=sma_slope_turn_lookback,
+                sma_slope_window=sma_slope_window,
+                sma_min_slope_pct=sma_min_slope_pct,
+                sma_require_long_flat=sma_require_long_flat,
+                sma_long_flat_max_pct=sma_long_flat_max_pct,
+                sma_require_volume=sma_require_volume,
+                sma_volume_mult=sma_volume_mult,
                 as_of_offset=as_of_offset,
             )
         except Exception as exc:
@@ -1872,53 +2272,72 @@ def run_screen(
     return hits
 
 
-def reference_dates(n: int = 21) -> list[dict]:
-    """Last `n` US trading-day dates for the as-of date picker.
+def _calendar_dates(n: int) -> list[str]:
+    """Calendar of recent trading days, most-recent first, capped at `n`.
 
-    Returns a list of {"offset": k, "date": "YYYY-MM-DD"} most recent first.
-    Tries several liquid reference tickers, then falls back to any ticker
-    already in the price cache (warm after a screen run) so the picker still
-    populates even if the reference fetches fail. Per-ticker actual dates may
-    differ on Canadian holidays (each row's `as_of_date` reports the real one).
-    """
-    df = None
+    Source = UNION of (SPY's live price cache, the snapshot table's
+    available dates). The snapshot side matters when SPY's pickle is
+    stale (Yahoo rate-limit, weekend deploy hiccup, etc.) — without it
+    a freshly-written snapshot date wouldn't appear in the date picker
+    even though the screener can serve that date. The SPY side matters
+    when the snapshot's retention window is shorter than the date
+    picker's lookback.
+
+    Used by both `reference_dates()` (the dropdown's offset→date map)
+    and `_resolve_as_of_date()` (the reverse), so a click on offset 0
+    always lands on the genuine latest date regardless of which source
+    has it."""
+    # Live cache side.
+    spy_dates: list[str] = []
     for ref in ("SPY", "QQQ", "DIA", "AAPL", "MSFT"):
         df = _cached_history(ref, period="6mo")
         if df is not None and not df.empty:
+            spy_dates = [idx.strftime("%Y-%m-%d") for idx in df.index]
             break
-    if df is None or df.empty:
-        # Fall back to any cached ticker — US trading calendars match.
+    if not spy_dates:
         for _, (_, cached_df) in list(_PRICE_CACHE.items()):
             if cached_df is not None and not cached_df.empty:
-                df = cached_df
+                spy_dates = [idx.strftime("%Y-%m-%d") for idx in cached_df.index]
                 break
-    if df is None or df.empty:
-        return []
-    dates = [idx.strftime("%Y-%m-%d") for idx in df.index][-n:]
-    # most recent first, with offset 0 = latest
-    return [{"offset": i, "date": d} for i, d in enumerate(reversed(dates))]
+    # Snapshot side. Pull a generous window so we still merge older
+    # snapshot dates that SPY also has (the union dedup handles them).
+    snap_dates: list[str] = []
+    try:
+        if snapshots.enabled():
+            snap_dates = list(snapshots.available_dates(max(n, 50)) or [])
+    except Exception:
+        snap_dates = []
+    # Union, most-recent first, dedup. Sorting lexicographically works
+    # because dates are YYYY-MM-DD.
+    merged = sorted(set(spy_dates) | set(snap_dates), reverse=True)
+    return merged[:n]
+
+
+def reference_dates(n: int = 21) -> list[dict]:
+    """Last `n` US trading-day dates for the as-of date picker.
+
+    Returns a list of {"offset": k, "date": "YYYY-MM-DD"} most recent
+    first, with offset 0 = the most recent date the app can serve
+    (snapshot OR live cache). See `_calendar_dates` for the source mix.
+    """
+    dates = _calendar_dates(n)
+    return [{"offset": i, "date": d} for i, d in enumerate(dates)]
 
 
 # --- chart payload ---------------------------------------------------------
 
 def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
-    """Daily OHLCV + EMA(21)/EMA(50) + RSI(14)/9d-SMA-of-RSI +
-    MACD(12, 26, 9) — line, signal, histogram — for the hover chart."""
+    """Daily OHLCV + SMA(10/20/30/40) + RSI(14)/9d-SMA-of-RSI for the
+    hover chart. Indicators are read from the enriched cache columns
+    (see `_enrich`) so they match what the screener computed."""
     df = _cached_history(ticker, period=period)
     if df is None or df.empty:
         return None
 
-    df = df.copy()
-    df["EMA21"] = ema(df["Close"], 21)
-    df["EMA50"] = ema(df["Close"], 50)
-    df["RSI"] = rsi_wilder(df["Close"], 14)
-    df["RSI_SMA9"] = df["RSI"].rolling(window=9, min_periods=9).mean()
-    # MACD(12, 26, 9) — same recipe used in the snapshot builder / screener.
-    macd_line = ema(df["Close"], 12) - ema(df["Close"], 26)
-    macd_signal = ema(macd_line, 9)
-    df["MACD"] = macd_line
-    df["MACD_SIGNAL"] = macd_signal
-    df["MACD_HIST"] = macd_line - macd_signal
+    # Belt-and-suspenders: if the cache predates the SMA10/20/30/40 fields
+    # for any reason, enrich on demand so the chart still has lines to draw.
+    if "sma10" not in df.columns:
+        df = _enrich(df.copy())
 
     rows = []
     for idx, r in df.iterrows():
@@ -1929,13 +2348,12 @@ def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
             "low": _safe(r["Low"]),
             "close": _safe(r["Close"]),
             "volume": _safe(r["Volume"]),
-            "ema21": _safe(r["EMA21"]),
-            "ema50": _safe(r["EMA50"]),
-            "rsi": _safe(r["RSI"]),
-            "rsi_sma9": _safe(r["RSI_SMA9"]),
-            "macd": _safe(r["MACD"]),
-            "macd_signal": _safe(r["MACD_SIGNAL"]),
-            "macd_hist": _safe(r["MACD_HIST"]),
+            "sma10": _safe(r.get("sma10")),
+            "sma20": _safe(r.get("sma20")),
+            "sma30": _safe(r.get("sma30")),
+            "sma40": _safe(r.get("sma40")),
+            "rsi": _safe(r.get("rsi14")),
+            "rsi_sma9": _safe(r.get("rsi_sma9")),
         })
     return {
         "ticker": display_symbol(ticker),
@@ -1980,12 +2398,14 @@ def diagnose_ticker(
     price_dev_max_pct: float = 4.0,
     ema_dev_min_pct: float = -3.0,
     ema_dev_max_pct: float = 3.0,
-    macd_hist_min: float = 0.0,
-    macd_require_rising: bool = True,
-    macd_line_min: float = 0.0,
-    macd_line_max: float = 10.0,
+    macd_within_pct: bool = True,
+    macd_vs_signal_pct: float = 5.0,
+    macd_above_signal: bool = False,
+    macd_line_rising: bool = False,
     turnover_min_pct: float = 0.0,
     turnover_max_pct: float = 100.0,
+    market_cap_min_m: float = 0.0,
+    market_cap_max_m: float = 10_000_000.0,
     pct_change_min: float = 5.0,
     apply_high: bool = True,
     apply_rsi: bool = True,
@@ -1995,11 +2415,28 @@ def diagnose_ticker(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
-    apply_macd: bool = True,
-    apply_macd_line: bool = False,
+    apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
+    apply_market_cap: bool = False,
     apply_pct_change: bool = False,
+    apply_sma_revival: bool = False,
+    sma_cross_lookback: int = 3,
+    sma_slope_turn_lookback: int = 5,
+    sma_slope_window: int = 3,
+    sma_min_slope_pct: float = 0.10,
+    sma_require_long_flat: bool = False,
+    sma_long_flat_max_pct: float = 0.30,
+    sma_require_volume: bool = False,
+    sma_volume_mult: float = 1.20,
     as_of_offset: int = 0,
+    # Same drift-proofing kwarg as run_screen — when the caller already
+    # resolved the user's chosen date in _parse_params, pass it through
+    # so we don't re-resolve the offset here (which could land on a
+    # different date if the calendar advanced in the meantime). Without
+    # this, Diagnose can report "as of June 18" for a ticker that the
+    # screen reported under "as of June 17" — defeating the panel's
+    # whole purpose of explaining why a row did or didn't match.
+    as_of_date: str | None = None,
 ) -> dict:
     """Run each filter independently and return a per-filter pass/fail
     breakdown. Mirrors evaluate_ticker but without short-circuiting so the
@@ -2018,11 +2455,41 @@ def diagnose_ticker(
         "error": None,
     }
 
-    df = _cached_history(ticker, period="6mo", need_shares=True)
+    # Route diagnose through the SNAPSHOT when one exists for the
+    # requested as-of date. The screen uses the snapshot path for past
+    # dates, and Yahoo can retroactively adjust historical bars after
+    # the snapshot was created — so reading the live cache here would
+    # silently produce a different SMA10/RSI/EMA series and flip
+    # pass/fail on the SMA Revival check (the PRM case: screen saw a
+    # cross-up using snapshot bars, diagnose missed it on adjusted
+    # live-cache bars). When the snapshot ends at target_date, we treat
+    # the last row as the evaluation bar regardless of the user's
+    # as_of_offset value.
+    df = None
+    used_snapshot = False
+    # Prefer the caller-supplied date over re-resolving the offset (see
+    # kwarg comment above for the drift race this avoids).
+    target_date = as_of_date or (_resolve_as_of_date(as_of_offset) if as_of_offset >= 0 else None)
+    if target_date and snapshots.enabled() and snapshots.has_date(target_date):
+        for tk, row in snapshots.iter_for_date(target_date, [ticker.upper()]):
+            if tk.upper() != ticker.upper():
+                continue
+            df = _df_from_snapshot_row(row)
+            if df is not None:
+                used_snapshot = True
+                # Snapshot ends AT target_date, so any as_of_offset
+                # value is already baked into the source data. The
+                # remaining diagnose logic should treat the last row
+                # as the eval bar.
+                as_of_offset = 0
+            break
+    if df is None:
+        df = _cached_history(ticker, period="6mo", need_shares=True)
     if df is None or df.empty:
         out["error"] = "yfinance returned no data for this ticker"
         return out
     out["data_bars"] = int(len(df))
+    out["data_source"] = "snapshot" if used_snapshot else "live"
 
     needed = max(
         high_lookback + 2, rsi_period + 5, rvol_lookback + 2,
@@ -2181,31 +2648,42 @@ def diagnose_ticker(
         apply_ema_dev, ed_ok, [ema_dev_min_pct, ema_dev_max_pct],
         {"ema50": round(ema_long_val, 4) if ema_long_val is not None else None})
 
-    # 7. MACD histogram
+    # 7. MACD scalars — read once so 7b (MACD vs signal) and the rest of
+    # the report can reference macd_hist without re-fetching.
     macd_hist_val = _scalar("macd_hist")
     macd_hist_prev = _scalar("macd_hist", eval_idx - 1)
-    macd_ok = True
-    if macd_hist_val is None:
-        macd_ok = False
-    else:
-        if macd_hist_val < macd_hist_min:
-            macd_ok = False
-        if macd_require_rising and macd_hist_prev is not None and not (macd_hist_val > macd_hist_prev):
-            macd_ok = False
-    add("macd", f"MACD hist ≥ {macd_hist_min}" + (" and rising" if macd_require_rising else ""),
-        round(macd_hist_val, 4) if macd_hist_val is not None else None,
-        apply_macd, macd_ok, None,
-        {"prev_hist": round(macd_hist_prev, 4) if macd_hist_prev is not None else None,
-         "rising": macd_hist_val is not None and macd_hist_prev is not None and macd_hist_val > macd_hist_prev})
 
-    # 7b. MACD line (EMA12 - EMA26) range
+    # 7b. MACD vs signal — independent sub-conditions, all checked must
+    # pass (AND-semantics). Same shape as the actual filter so the audit
+    # report tracks what the screener did.
     macd_line_val = _scalar("macd")
-    macd_line_ok = (macd_line_val is not None
-                    and macd_line_min <= macd_line_val <= macd_line_max)
-    add("macd_line",
-        f"MACD(12, 26) line ∈ [{macd_line_min}, {macd_line_max}]",
-        round(macd_line_val, 4) if macd_line_val is not None else None,
-        apply_macd_line, macd_line_ok, [macd_line_min, macd_line_max], None)
+    macd_line_prev_val = _scalar("macd", eval_idx - 1)
+    macd_sig_val_audit = _scalar("macd_signal")
+    gap_pct_val = None
+    if macd_line_val is not None and macd_sig_val_audit is not None:
+        denom = abs(macd_sig_val_audit) if abs(macd_sig_val_audit) > 1e-6 else 1e-6
+        gap_pct_val = abs(macd_line_val - macd_sig_val_audit) / denom * 100.0
+    within_ok = (not macd_within_pct
+                 or (gap_pct_val is not None and gap_pct_val <= macd_vs_signal_pct))
+    above_ok = (not macd_above_signal
+                or (macd_line_val is not None and macd_sig_val_audit is not None
+                    and macd_line_val >= macd_sig_val_audit))
+    rising_ok = (not macd_line_rising
+                 or (macd_line_val is not None and macd_line_prev_val is not None
+                     and macd_line_val > macd_line_prev_val))
+    macd_vs_sig_ok = within_ok and above_ok and rising_ok
+    parts = []
+    if macd_within_pct: parts.append(f"within {macd_vs_signal_pct}%")
+    if macd_above_signal: parts.append("≥ signal")
+    if macd_line_rising: parts.append("rising")
+    desc = "MACD " + (" + ".join(parts) if parts else "(no condition)")
+    obs = round(gap_pct_val, 2) if gap_pct_val is not None else None
+    add("macd_vs_signal", desc, obs, apply_macd_vs_signal, macd_vs_sig_ok,
+        [macd_within_pct, macd_vs_signal_pct, macd_above_signal, macd_line_rising],
+        {"macd": round(macd_line_val, 4) if macd_line_val is not None else None,
+         "signal": round(macd_sig_val_audit, 4) if macd_sig_val_audit is not None else None,
+         "macd_prev": round(macd_line_prev_val, 4) if macd_line_prev_val is not None else None,
+         "rising": macd_line_val is not None and macd_line_prev_val is not None and macd_line_val > macd_line_prev_val})
 
     # 8. Relative volume
     vol_window_start = eval_idx - rvol_lookback
@@ -2242,6 +2720,51 @@ def diagnose_ticker(
         apply_turnover, turnover_ok, [turnover_min_pct, turnover_max_pct],
         {"shares": round(shares_val, 0) if shares_val else None,
          "market_cap": round(market_cap, 0) if market_cap else None})
+
+    # 11. Market cap in millions of dollars
+    mc_m = (market_cap / 1_000_000) if market_cap is not None else None
+    market_cap_ok = (mc_m is not None and
+                     market_cap_min_m <= mc_m <= market_cap_max_m)
+    add("market_cap",
+        f"Market cap ∈ [${market_cap_min_m:,.0f}M, ${market_cap_max_m:,.0f}M]",
+        round(mc_m, 1) if mc_m is not None else None,
+        apply_market_cap, market_cap_ok,
+        [market_cap_min_m, market_cap_max_m])
+
+    # 12. SMA Revival — slope turn-up + recent cross from below
+    sma10_series = df["sma10"].iloc[max(-(sma_slope_turn_lookback + sma_slope_window + 2),
+                                       -len(df)):].to_numpy()
+    closes_for_cross = df["Close"].iloc[max(-(sma_cross_lookback + 2),
+                                           -len(df)):].to_numpy()
+    sma10_for_cross = df["sma10"].iloc[max(-(sma_cross_lookback + 2),
+                                          -len(df)):].to_numpy()
+    sma10_slope = _sma_slope_pct(sma10_series, window=sma_slope_window)
+    cross_days = _cross_above_days_ago(closes_for_cross, sma10_for_cross,
+                                       max_lookback=sma_cross_lookback)
+    slope_turn_days = _slope_turn_days_ago(sma10_series,
+                                           window=sma_slope_window,
+                                           max_lookback=sma_slope_turn_lookback)
+    sma_ok = (cross_days is not None and slope_turn_days is not None
+              and sma10_slope is not None and sma10_slope > sma_min_slope_pct)
+    # Value summarises the three sub-checks as a readable string so the
+    # diagnose UI displays "slope=0.42%/d · cross 2d ago · turn 1d ago"
+    # instead of "[object Object]". Structured data goes in `extra`.
+    sma_value = (
+        f"slope={sma10_slope:.3f}%/d · "
+        f"cross {'—' if cross_days is None else f'{cross_days}d ago'} · "
+        f"turn {'—' if slope_turn_days is None else f'{slope_turn_days}d ago'}"
+        if sma10_slope is not None else "—"
+    )
+    add("sma_revival",
+        f"10-SMA slope > {sma_min_slope_pct:.2f}%/day "
+        f"& cross-up within {sma_cross_lookback}d "
+        f"& slope-turn within {sma_slope_turn_lookback}d",
+        sma_value,
+        apply_sma_revival, sma_ok,
+        [sma_min_slope_pct, sma_cross_lookback, sma_slope_turn_lookback],
+        {"slope_pct": round(sma10_slope, 4) if sma10_slope is not None else None,
+         "cross_days_ago": cross_days,
+         "slope_turn_days_ago": slope_turn_days})
 
     out["all_pass"] = all(c["pass"] for c in out["checks"])
     return out

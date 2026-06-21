@@ -1,5 +1,104 @@
 const $ = (sel) => document.querySelector(sel);
 
+// --- UI prefs adapter (cross-device) -------------------------------------
+// Drop-in replacement for the per-device localStorage calls that used to
+// remember column layout, collapsed sections, active tab, and the options-
+// history view mode. The Flask template injects the current values into
+// window.__UI_PREFS__ at render time so reads are synchronous (no flash
+// of defaults before hydration). Writes update the in-memory cache and
+// fire-and-forget POST /api/ui-prefs to persist.
+//
+// localStorage stays as a degradation backstop: if the network is down
+// when we try to write, the value still sits in window.__UI_PREFS__ for
+// the rest of the session, and we mirror to localStorage so the next
+// page load can re-attempt the upload (see hydrateUiPrefs migration).
+const uiPrefs = (() => {
+  const cache = (typeof window !== 'undefined' && window.__UI_PREFS__) || {};
+  const inflight = new Set();
+  function get(key, fallback) {
+    if (cache[key] !== undefined) return cache[key];
+    // Fall back to legacy localStorage on a per-key basis so the
+    // pre-migration value still hydrates the UI until the upload
+    // succeeds in hydrateUiPrefs().
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw === null || raw === undefined) return fallback;
+      try { return JSON.parse(raw); } catch (_) { return raw; }
+    } catch (_) { return fallback; }
+  }
+  function set(key, value) {
+    cache[key] = value;
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* ignore */ }
+    // De-dupe concurrent writes for the same key.
+    if (inflight.has(key)) return;
+    inflight.add(key);
+    fetch('/api/ui-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value }),
+    }).catch(() => { /* network down — value already in cache + localStorage */ })
+      .finally(() => inflight.delete(key));
+  }
+  function batchUpload(prefs) {
+    return fetch('/api/ui-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefs }),
+    }).catch(() => ({ ok: false }));
+  }
+  return { get, set, batchUpload, _cache: cache };
+})();
+
+// One-time migration: copy known legacy localStorage keys to the server
+// (if the server-rendered cache didn't already have them), then trim
+// localStorage so future writes flow only through the cache+server path.
+// Called once at script init below.
+function hydrateUiPrefs() {
+  // Keys with prefixes from the old _v1 / hard-coded names get normalised
+  // to their server-side counterparts here so the migration is invisible.
+  const aliases = {
+    'match_columns_order_v1':  'match_columns_order',
+    'match_columns_hidden_v1': 'match_columns_hidden',
+  };
+  const knownLegacy = [
+    'match_columns_order_v1', 'match_columns_hidden_v1',
+    'collapse_filters', 'collapse_diagnose', 'collapse_rules',
+    'collapse_picks', 'collapse_momentum', 'collapse_momentum_diagnose',
+    'collapse_setups', 'collapse_options_history', 'collapse_options_scan',
+    'app_tab', 'options_history_view',
+  ];
+  const toUpload = {};
+  for (const legacyKey of knownLegacy) {
+    const serverKey = aliases[legacyKey] || legacyKey;
+    if (uiPrefs._cache[serverKey] !== undefined) {
+      // Server already has it — drop the local copy.
+      try { localStorage.removeItem(legacyKey); } catch (_) {}
+      continue;
+    }
+    let raw;
+    try { raw = localStorage.getItem(legacyKey); } catch (_) { raw = null; }
+    if (raw == null) continue;
+    // Legacy collapse booleans are stored as '0' / '1' strings, not JSON.
+    // Tab + options-history-view are bare strings. Columns are JSON arrays.
+    let parsed;
+    if (raw === '0' || raw === '1') parsed = (raw === '1');
+    else {
+      try { parsed = JSON.parse(raw); } catch (_) { parsed = raw; }
+    }
+    toUpload[serverKey] = parsed;
+    uiPrefs._cache[serverKey] = parsed;
+  }
+  if (Object.keys(toUpload).length) {
+    uiPrefs.batchUpload(toUpload).then(() => {
+      // On success: drop legacy localStorage entries.
+      for (const legacyKey of Object.keys(toUpload)) {
+        try { localStorage.removeItem(legacyKey); } catch (_) {}
+        try { localStorage.removeItem(Object.keys(aliases).find((k) => aliases[k] === legacyKey) || legacyKey); } catch (_) {}
+      }
+    });
+  }
+}
+
 const els = {
   runBtn: $('#run-btn'),
   warmBtn: $('#warm-btn'),
@@ -56,7 +155,9 @@ const els = {
   diagnoseToggle: $('#diagnose-toggle'),
   filtersSection: $('#filters-section'),
   filtersToggle: $('#filters-toggle'),
-  saveDefaultsBtn: $('#save-defaults-btn'),
+  presetsSelect: $('#presets-select'),
+  presetSaveBtn: $('#preset-save-btn'),
+  presetDeleteBtn: $('#preset-delete-btn'),
   resetDefaultsBtn: $('#reset-defaults-btn'),
   defaultsMsg: $('#defaults-msg'),
   setupsToggle: $('#setups-toggle'),
@@ -75,13 +176,17 @@ const els = {
   picksWva: $('#picks-w-va'),
   picksWmt: $('#picks-w-mt'),
   picksWdp: $('#picks-w-dp'),
+  picksWsr: $('#picks-w-sr'),
   picksWvcOut: $('#picks-w-vc-out'),
   picksWrsOut: $('#picks-w-rs-out'),
   picksWvaOut: $('#picks-w-va-out'),
   picksWmtOut: $('#picks-w-mt-out'),
   picksWdpOut: $('#picks-w-dp-out'),
+  picksWsrOut: $('#picks-w-sr-out'),
   picksPriceMin: $('#picks-price-min'),
   picksPriceMax: $('#picks-price-max'),
+  picksLimit: $('#picks-limit'),
+  picksCountLabel: $('#picks-count-label'),
   momentumToggle: $('#momentum-toggle'),
   momentumBody: $('#momentum-body'),
   momentumList: $('#momentum-list'),
@@ -122,10 +227,23 @@ const els = {
   optionsHistoryStatus: $('#options-history-status'),
   optionsHistoryToggle: $('#options-history-toggle'),
   optionsHistoryBody: $('#options-history-body'),
+  optionsHistoryDate: $('#options-history-date'),
+  optionsHistoryRefresh: $('#options-history-refresh'),
   optionsScanBtn: $('#options-scan-btn'),
+  optionsScanCancelBtn: $('#options-scan-cancel-btn'),
   optionsScanTopN: $('#options-scan-topn'),
   optionsScanPanel: $('#options-scan-panel'),
   optionsScanList: $('#options-scan-list'),
+  optionsScanPreviewText: $('#options-scan-preview-text'),
+  optionsScanPreviewRefresh: $('#options-scan-preview-refresh'),
+  optionsScanAdvToggle: $('#options-scan-advanced-toggle'),
+  optionsScanAdvBody: $('#options-scan-advanced-body'),
+  optionsAdvPriceFloor: $('#options-adv-price-floor'),
+  optionsAdvVolFloor: $('#options-adv-vol-floor'),
+  optionsAdvMinDistance: $('#options-adv-min-distance'),
+  optionsAdvSave: $('#options-adv-save'),
+  optionsAdvReset: $('#options-adv-reset'),
+  optionsAdvStatus: $('#options-adv-status'),
   optionsScanSummary: $('#options-scan-summary'),
   optionsScanToggle: $('#options-scan-toggle'),
   optionsScanBody: $('#options-scan-body'),
@@ -152,6 +270,9 @@ const els = {
   setupsMinPrice: $('#setups-min-price'),
   setupsMaxPrice: $('#setups-max-price'),
   setupsMinDollarVol: $('#setups-min-dollar-vol'),
+  setupsBaseMin: $('#setups-base-min'),
+  setupsIgnitionMin: $('#setups-ignition-min'),
+  setupsEarlinessMin: $('#setups-earliness-min'),
   setupsLimit: $('#setups-limit'),
   setupsRunBtn: $('#setups-run-btn'),
   setupsSelectionToolbar: $('#setups-selection-toolbar'),
@@ -190,12 +311,18 @@ const inputs = {
   price_dev_max_pct: $('#price_dev_max_pct'),
   ema_dev_min_pct: $('#ema_dev_min_pct'),
   ema_dev_max_pct: $('#ema_dev_max_pct'),
-  macd_hist_min: $('#macd_hist_min'),
-  macd_line_min: $('#macd_line_min'),
-  macd_line_max: $('#macd_line_max'),
+  macd_vs_signal_pct: $('#macd_vs_signal_pct'),
   turnover_min_pct: $('#turnover_min_pct'),
   turnover_max_pct: $('#turnover_max_pct'),
+  market_cap_min_m: $('#market_cap_min_m'),
+  market_cap_max_m: $('#market_cap_max_m'),
   pct_change_min: $('#pct_change_min'),
+  sma_cross_lookback: $('#sma_cross_lookback'),
+  sma_slope_turn_lookback: $('#sma_slope_turn_lookback'),
+  sma_slope_window: $('#sma_slope_window'),
+  sma_min_slope_pct: $('#sma_min_slope_pct'),
+  sma_long_flat_max_pct: $('#sma_long_flat_max_pct'),
+  sma_volume_mult: $('#sma_volume_mult'),
 };
 
 const refreshUniverseBtn = $('#refresh-universe-btn');
@@ -209,11 +336,16 @@ const toggles = {
   apply_price: $('#apply_price'),
   apply_price_dev: $('#apply_price_dev'),
   apply_ema_dev: $('#apply_ema_dev'),
-  apply_macd: $('#apply_macd'),
-  macd_require_rising: $('#macd_require_rising'),
-  apply_macd_line: $('#apply_macd_line'),
+  apply_macd_vs_signal: $('#apply_macd_vs_signal'),
+  macd_within_pct: $('#macd_within_pct'),
+  macd_above_signal: $('#macd_above_signal'),
+  macd_line_rising: $('#macd_line_rising'),
   apply_turnover: $('#apply_turnover'),
+  apply_market_cap: $('#apply_market_cap'),
   apply_pct_change: $('#apply_pct_change'),
+  apply_sma_revival: $('#apply_sma_revival'),
+  sma_require_long_flat: $('#sma_require_long_flat'),
+  sma_require_volume: $('#sma_require_volume'),
 };
 
 // Parallel inputs/toggles for the screener-rule criteria modal — same keys
@@ -234,12 +366,18 @@ const modalInputs = {
   price_dev_max_pct: $('#cm_price_dev_max_pct'),
   ema_dev_min_pct: $('#cm_ema_dev_min_pct'),
   ema_dev_max_pct: $('#cm_ema_dev_max_pct'),
-  macd_hist_min: $('#cm_macd_hist_min'),
-  macd_line_min: $('#cm_macd_line_min'),
-  macd_line_max: $('#cm_macd_line_max'),
+  macd_vs_signal_pct: $('#cm_macd_vs_signal_pct'),
   turnover_min_pct: $('#cm_turnover_min_pct'),
   turnover_max_pct: $('#cm_turnover_max_pct'),
+  market_cap_min_m: $('#cm_market_cap_min_m'),
+  market_cap_max_m: $('#cm_market_cap_max_m'),
   pct_change_min: $('#cm_pct_change_min'),
+  sma_cross_lookback: $('#cm_sma_cross_lookback'),
+  sma_slope_turn_lookback: $('#cm_sma_slope_turn_lookback'),
+  sma_slope_window: $('#cm_sma_slope_window'),
+  sma_min_slope_pct: $('#cm_sma_min_slope_pct'),
+  sma_long_flat_max_pct: $('#cm_sma_long_flat_max_pct'),
+  sma_volume_mult: $('#cm_sma_volume_mult'),
 };
 const modalToggles = {
   apply_high: $('#cm_apply_high'),
@@ -250,11 +388,16 @@ const modalToggles = {
   apply_price: $('#cm_apply_price'),
   apply_price_dev: $('#cm_apply_price_dev'),
   apply_ema_dev: $('#cm_apply_ema_dev'),
-  apply_macd: $('#cm_apply_macd'),
-  macd_require_rising: $('#cm_macd_require_rising'),
-  apply_macd_line: $('#cm_apply_macd_line'),
+  apply_macd_vs_signal: $('#cm_apply_macd_vs_signal'),
+  macd_within_pct: $('#cm_macd_within_pct'),
+  macd_above_signal: $('#cm_macd_above_signal'),
+  macd_line_rising: $('#cm_macd_line_rising'),
   apply_turnover: $('#cm_apply_turnover'),
+  apply_market_cap: $('#cm_apply_market_cap'),
   apply_pct_change: $('#cm_apply_pct_change'),
+  apply_sma_revival: $('#cm_apply_sma_revival'),
+  sma_require_long_flat: $('#cm_sma_require_long_flat'),
+  sma_require_volume: $('#cm_sma_require_volume'),
 };
 
 // Setup-rule criteria fields inside the same modal (shown when rule
@@ -264,6 +407,13 @@ const setupModalInputs = {
   min_price: $('#cm_setup_min_price'),
   max_price: $('#cm_setup_max_price'),
   min_dollar_vol: $('#cm_setup_min_dollar_vol'),
+  // Optional per-sub-score floors (0–100, 0 = ignored). AND-stack with
+  // score_min so a rule can require e.g. base ≥ 70 + ignition ≥ 50
+  // without raising the composite gate (which would lose any setup
+  // strong in one dimension but mid overall).
+  base_min: $('#cm_setup_base_min'),
+  ignition_min: $('#cm_setup_ignition_min'),
+  earliness_min: $('#cm_setup_earliness_min'),
 };
 
 const listAllCb = $('#list_all');
@@ -488,7 +638,14 @@ function buildQuery() {
     params.set('lists', selectedLists.join(','));
   }
   if (asOfSelect) {
-    params.set('as_of_offset', asOfSelect.value || '0');
+    // Send the literal date (drift-proof). Server still accepts
+    // as_of_offset as a fallback for any legacy bookmark/link.
+    const v = asOfSelect.value || '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      params.set('as_of', v);
+    } else {
+      params.set('as_of_offset', v || '0');
+    }
   }
   return params.toString();
 }
@@ -538,10 +695,11 @@ function syncDisabledStates() {
     apply_price: 'price',
     apply_price_dev: 'price_dev',
     apply_ema_dev: 'ema_dev',
-    apply_macd: 'macd',
-    apply_macd_line: 'macd_line',
+    apply_macd_vs_signal: 'macd_vs_signal',
     apply_turnover: 'turnover',
+    apply_market_cap: 'market_cap',
     apply_pct_change: 'pct_change',
+    apply_sma_revival: 'sma_revival',
   };
   for (const [toggleId, groupKey] of Object.entries(map)) {
     const t = toggles[toggleId];
@@ -551,12 +709,28 @@ function syncDisabledStates() {
   }
 }
 
-// --- saved filter defaults ------------------------------------------------
-// Snapshot the current filter values, group toggles and exchange selection
-// so they auto-load on the next visit. Stored in localStorage — the app
-// has no per-user server account.
+// --- saved filter presets ------------------------------------------------
+// Named filter presets persisted SERVER-SIDE in Postgres so the same
+// setups appear from every device and survive a browser refresh. The
+// previous version stored them in localStorage which (a) was per-device
+// and (b) could be evicted by Safari ITP / private mode.
+//
+// API contract:
+//   GET  /api/filter-presets
+//     → { presets: [{name, state, last_used_at}], last_used, max }
+//   POST /api/filter-presets   body: {action, name?, state?}
+//     actions: save | delete | select | reset
+//     → same shape as GET, plus {ok, error?}
+//
+// The client keeps a small in-memory cache `_presetCache` so dropdown
+// renders don't re-fetch. We refresh it on every mutation by reading
+// the response body the server already returned.
 
-const FILTER_DEFAULTS_KEY = 'filter_defaults_v1';
+const FILTER_PRESETS_KEY = 'filter_presets_v1';   // legacy localStorage
+const FILTER_DEFAULTS_KEY = 'filter_defaults_v1'; // legacy single-default
+const MAX_PRESETS = 5;
+let _presetCache = { presets: [], last_used: null, max: MAX_PRESETS };
+let _presetsHydrated = false;
 
 function setDefaultsMsg(text, kind) {
   if (!els.defaultsMsg) return;
@@ -594,27 +768,187 @@ function applyFilterState(state) {
   updateHighHeader();
 }
 
-function saveFilterDefaults() {
-  try {
-    localStorage.setItem(FILTER_DEFAULTS_KEY, JSON.stringify(collectFilterState()));
-    setDefaultsMsg('Saved — these filters will load automatically next visit.', 'ok');
-  } catch (_) {
-    setDefaultsMsg('Could not save (browser storage unavailable).', 'error');
+// --- server-backed preset store -----------------------------------------
+
+async function fetchPresets() {
+  const res = await fetch('/api/filter-presets');
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+async function mutatePresets(action, body) {
+  const res = await fetch('/api/filter-presets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...(body || {}) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+function renderPresetOptions(store, selectedName) {
+  if (!els.presetsSelect) return;
+  const sel = selectedName != null ? selectedName : els.presetsSelect.value;
+  els.presetsSelect.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = store.presets.length ? '— select —' : '— none saved —';
+  els.presetsSelect.appendChild(placeholder);
+  store.presets.forEach((p) => {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = p.name;
+    els.presetsSelect.appendChild(opt);
+  });
+  els.presetsSelect.value = store.presets.some((p) => p.name === sel) ? sel : '';
+  updatePresetButtonState(store);
+}
+
+function updatePresetButtonState(store) {
+  const count = store.presets.length;
+  const hasSelection = els.presetsSelect && !!els.presetsSelect.value;
+  if (els.presetDeleteBtn) els.presetDeleteBtn.disabled = !hasSelection;
+  if (els.presetSaveBtn) {
+    els.presetSaveBtn.title = count >= (store.max || MAX_PRESETS)
+      ? `You have ${count} saved (the max). Saving will overwrite an existing name.`
+      : `Save the current filters under a name (up to ${store.max || MAX_PRESETS}). Re-using a name overwrites it.`;
   }
 }
 
-function loadFilterDefaults() {
-  try {
-    const raw = localStorage.getItem(FILTER_DEFAULTS_KEY);
-    if (!raw) return;
-    applyFilterState(JSON.parse(raw));
-  } catch (_) { /* ignore corrupt saved state */ }
+function _applyStoreFromResponse(data, selectedName) {
+  if (data && Array.isArray(data.presets)) {
+    _presetCache = {
+      presets: data.presets,
+      last_used: data.last_used || null,
+      max: typeof data.max === 'number' ? data.max : MAX_PRESETS,
+    };
+    renderPresetOptions(_presetCache, selectedName);
+  }
 }
 
-function resetFilterDefaults() {
-  try { localStorage.removeItem(FILTER_DEFAULTS_KEY); } catch (_) {}
-  // The built-in defaults are the HTML `value=` attributes — a reload
-  // restores them cleanly.
+async function savePreset() {
+  const current = (els.presetsSelect && els.presetsSelect.value) || '';
+  let name = window.prompt(
+    `Name this filter setup (up to ${_presetCache.max || MAX_PRESETS} saved). ` +
+    `Re-use a name to overwrite it.`, current);
+  if (name == null) return;
+  name = name.trim();
+  if (!name) { setDefaultsMsg('Enter a name to save.', 'error'); return; }
+
+  setDefaultsMsg('Saving…', '');
+  const { ok, status, data } = await mutatePresets('save', { name, state: collectFilterState() });
+  if (ok) {
+    _applyStoreFromResponse(data, data.name || name);
+    setDefaultsMsg(`Saved "${data.name || name}".`, 'ok');
+  } else if (status === 409 && data.error === 'cap_reached') {
+    setDefaultsMsg(
+      `Limit is ${data.max || MAX_PRESETS} setups. Delete one, or re-use an existing name to overwrite.`,
+      'error');
+  } else if (data && data.error === 'no_db') {
+    setDefaultsMsg('Could not save — server has no database configured.', 'error');
+  } else {
+    setDefaultsMsg('Could not save (server error). Try again in a moment.', 'error');
+  }
+}
+
+async function onPresetSelect() {
+  const name = (els.presetsSelect && els.presetsSelect.value) || '';
+  updatePresetButtonState(_presetCache);
+  if (!name) return;
+  const preset = _presetCache.presets.find((p) => p.name === name);
+  if (!preset) return;
+  applyFilterState(preset.state);
+  setDefaultsMsg(`Loaded "${name}".`, 'ok');
+  // Best-effort touch — failure is fine, the values are already loaded.
+  mutatePresets('select', { name }).then(({ data, ok }) => {
+    if (ok) _presetCache.last_used = (data && data.last_used) || name;
+  }).catch(() => { /* ignore */ });
+}
+
+async function deletePreset() {
+  const name = (els.presetsSelect && els.presetsSelect.value) || '';
+  if (!name) return;
+  setDefaultsMsg('Deleting…', '');
+  const { ok, data } = await mutatePresets('delete', { name });
+  if (ok) {
+    _applyStoreFromResponse(data, '');
+    setDefaultsMsg(`Deleted "${name}".`, '');
+  } else {
+    setDefaultsMsg('Could not delete (server error).', 'error');
+  }
+}
+
+// --- one-time migration from legacy localStorage to the server --------
+async function _migrateLegacyLocalstoragePresets() {
+  let migrated = 0;
+  // (1) New-format localStorage from PR #71 → server.
+  try {
+    const raw = localStorage.getItem(FILTER_PRESETS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) || {};
+      const presets = Array.isArray(parsed.presets) ? parsed.presets : [];
+      for (const p of presets.slice(0, MAX_PRESETS)) {
+        if (p && typeof p.name === 'string' && p.state) {
+          await mutatePresets('save', { name: p.name, state: p.state }).catch(() => {});
+          migrated++;
+        }
+      }
+      if (parsed.lastUsed) {
+        await mutatePresets('select', { name: parsed.lastUsed }).catch(() => {});
+      }
+      localStorage.removeItem(FILTER_PRESETS_KEY);
+    }
+  } catch (_) { /* ignore */ }
+  // (2) Older single-default localStorage → "Default" preset.
+  try {
+    const legacy = localStorage.getItem(FILTER_DEFAULTS_KEY);
+    if (legacy) {
+      const state = JSON.parse(legacy);
+      if (state && typeof state === 'object') {
+        await mutatePresets('save', { name: 'Default', state }).catch(() => {});
+        migrated++;
+      }
+      localStorage.removeItem(FILTER_DEFAULTS_KEY);
+    }
+  } catch (_) { /* ignore */ }
+  return migrated;
+}
+
+// On page load: fetch presets from the server and auto-apply last-used.
+async function loadFilterDefaults() {
+  let data;
+  try {
+    data = await fetchPresets();
+  } catch (err) {
+    setDefaultsMsg('Saved filters unavailable (server unreachable).', 'error');
+    return;
+  }
+  // First-run migration: server is empty AND something old lives in
+  // localStorage → push it up so users don't lose their saved setups
+  // from the PR #71 release.
+  const hasLegacy = !!(localStorage.getItem(FILTER_PRESETS_KEY)
+                       || localStorage.getItem(FILTER_DEFAULTS_KEY));
+  if ((!data.presets || data.presets.length === 0) && hasLegacy) {
+    await _migrateLegacyLocalstoragePresets();
+    try { data = await fetchPresets(); } catch (_) { /* keep stale data */ }
+  } else if (hasLegacy) {
+    // Server already has presets — the user adopted server storage on
+    // another device. Drop the local copies to avoid future confusion.
+    try { localStorage.removeItem(FILTER_PRESETS_KEY); } catch (_) {}
+    try { localStorage.removeItem(FILTER_DEFAULTS_KEY); } catch (_) {}
+  }
+  _applyStoreFromResponse(data, data.last_used || '');
+  if (data.last_used) {
+    const preset = (data.presets || []).find((p) => p.name === data.last_used);
+    if (preset) applyFilterState(preset.state);
+  }
+  _presetsHydrated = true;
+}
+
+async function resetFilterDefaults() {
+  // Clear server-side last_used (keeps saved presets) and reload to
+  // restore the HTML `value=` defaults.
+  try { await mutatePresets('reset', {}); } catch (_) { /* ignore */ }
   location.reload();
 }
 
@@ -628,7 +962,13 @@ async function loadDates() {
     asOfSelect.innerHTML = '';
     dates.forEach((d, i) => {
       const opt = document.createElement('option');
-      opt.value = String(d.offset);
+      // Value is the date string (not the offset) so submission carries
+      // the user's literal choice. If the server's calendar advances
+      // between page load and submit, the user still gets the date they
+      // picked instead of "whatever offset 1 means now". `dataset.offset`
+      // stays for any reader that still wants the index.
+      opt.value = d.date;
+      opt.dataset.offset = String(d.offset);
       const head = i === 0 ? `${d.date} (latest)` : d.date;
       // Only flag snapshot-backed dates explicitly — historical dates
       // outside the snapshot window just show the bare date.
@@ -789,6 +1129,18 @@ const COLUMN_DEFS = [
   { key: 'macd_hist', label: 'MACD hist', type: 'num',
     title: 'MACD histogram: the MACD line (EMA12 - EMA26) minus its 9-day signal line. Positive and rising signals strengthening upward momentum.',
     render: (r) => `<td class="num ${r.macd_hist >= 0 ? 'pos' : 'neg'}">${fmtNum(r.macd_hist, 4)}</td>` },
+  { key: 'sma10', label: 'SMA(10)', type: 'num',
+    title: '10-day simple moving average of close.',
+    render: (r) => `<td class="num">${r.sma10 == null ? '—' : fmtNum(r.sma10)}</td>` },
+  { key: 'sma10_slope_pct', label: '10-SMA slope', type: 'num',
+    title: '10-SMA slope as %/day, measured over the slope-window bars. Positive and rising means the trend is turning up.',
+    render: (r) => `<td class="num ${r.sma10_slope_pct == null ? '' : (r.sma10_slope_pct >= 0 ? 'pos' : 'neg')}">${r.sma10_slope_pct == null ? '—' : ((r.sma10_slope_pct >= 0 ? '+' : '') + fmtNum(r.sma10_slope_pct, 3) + '%/d')}</td>` },
+  { key: 'cross_days_ago', label: 'Cross↑', type: 'num',
+    title: 'Days since the close crossed above the 10-SMA from below. 0 = today, 1 = yesterday. Empty = no cross within the lookback window.',
+    render: (r) => `<td class="num">${r.cross_days_ago == null ? '—' : (r.cross_days_ago === 0 ? 'today' : r.cross_days_ago + 'd ago')}</td>` },
+  { key: 'slope_turn_days_ago', label: 'Turn↑', type: 'num',
+    title: 'Days since the 10-SMA slope crossed from ≤ 0 to > 0 — the inflection where the downtrend ended. Empty = no inflection in the lookback window.',
+    render: (r) => `<td class="num">${r.slope_turn_days_ago == null ? '—' : (r.slope_turn_days_ago === 0 ? 'today' : r.slope_turn_days_ago + 'd ago')}</td>` },
   { key: 'rel_volume', label: 'RVol', type: 'num',
     title: "Relative volume: the day's volume divided by the average volume of the prior N days. Above 1× means the stock traded busier than usual.",
     render: (r) => `<td class="num">${fmtNum(r.rel_volume)}×</td>` },
@@ -801,35 +1153,31 @@ const COLUMN_DEFS = [
 ];
 const COLUMN_BY_KEY = Object.fromEntries(COLUMN_DEFS.map((d) => [d.key, d]));
 const ALL_COLUMN_KEYS = COLUMN_DEFS.map((d) => d.key);
-const COLS_ORDER_KEY = 'match_columns_order_v1';
-const COLS_HIDDEN_KEY = 'match_columns_hidden_v1';
+// Server-side pref keys — see ui_prefs.py KNOWN_KEYS. The legacy v1
+// localStorage keys are aliased to these names in hydrateUiPrefs().
+const COLS_ORDER_PREF  = 'match_columns_order';
+const COLS_HIDDEN_PREF = 'match_columns_hidden';
 
 function loadColumnOrder() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(COLS_ORDER_KEY) || '[]');
-    if (Array.isArray(saved)) {
-      const valid = saved.filter((k) => COLUMN_BY_KEY[k]);
-      for (const k of ALL_COLUMN_KEYS) if (!valid.includes(k)) valid.push(k);
-      if (valid.length) return valid;
-    }
-  } catch (_) { /* fall through */ }
+  const saved = uiPrefs.get(COLS_ORDER_PREF, null);
+  if (Array.isArray(saved)) {
+    const valid = saved.filter((k) => COLUMN_BY_KEY[k]);
+    for (const k of ALL_COLUMN_KEYS) if (!valid.includes(k)) valid.push(k);
+    if (valid.length) return valid;
+  }
   return ALL_COLUMN_KEYS.slice();
 }
 function loadHiddenColumns() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(COLS_HIDDEN_KEY) || '[]');
-    if (Array.isArray(saved)) return new Set(saved.filter((k) => COLUMN_BY_KEY[k]));
-  } catch (_) { /* fall through */ }
+  const saved = uiPrefs.get(COLS_HIDDEN_PREF, null);
+  if (Array.isArray(saved)) return new Set(saved.filter((k) => COLUMN_BY_KEY[k]));
   return new Set();
 }
 let columnOrder = loadColumnOrder();
 let hiddenColumns = loadHiddenColumns();
 
 function saveColumnState() {
-  try {
-    localStorage.setItem(COLS_ORDER_KEY, JSON.stringify(columnOrder));
-    localStorage.setItem(COLS_HIDDEN_KEY, JSON.stringify(Array.from(hiddenColumns)));
-  } catch (_) { /* ignore */ }
+  uiPrefs.set(COLS_ORDER_PREF, columnOrder);
+  uiPrefs.set(COLS_HIDDEN_PREF, Array.from(hiddenColumns));
 }
 function visibleColumns() {
   return columnOrder.map((k) => COLUMN_BY_KEY[k]).filter((d) => d && !hiddenColumns.has(d.key));
@@ -1139,11 +1487,13 @@ function wireCollapse(toggleBtn, targets, storageKey) {
     toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     arr.forEach((el) => el.classList.toggle('collapsed-section', collapsed));
   };
-  apply(localStorage.getItem(storageKey) === '1');
+  // Server-stored as a JSON boolean; the legacy '0'/'1' strings are
+  // normalised in hydrateUiPrefs() so === true / === false works here.
+  apply(uiPrefs.get(storageKey, false) === true);
   toggleBtn.addEventListener('click', () => {
     const next = !toggleBtn.classList.contains('collapsed');
     apply(next);
-    try { localStorage.setItem(storageKey, next ? '1' : '0'); } catch (_) {}
+    uiPrefs.set(storageKey, next);
   });
 }
 
@@ -1345,14 +1695,19 @@ function escapeHtml(s) {
 }
 
 // --- hover chart popover --------------------------------------------------
-// Hovering a ticker cell opens a small daily chart (price + EMAs + volume on
-// pane 0, RSI(14) + 9d SMA on pane 1) anchored next to the cell. Fetched
-// payloads are cached per ticker for the session so a second hover is
-// instant.
+// Hovering a ticker cell opens a small daily chart anchored next to the
+// cell. Pane 0 = candles + SMA(10/20/30/40) + volume bars overlaid in the
+// bottom strip of the same pane (so volume reads as part of the price
+// context). Pane 1 = RSI(14) + 9d SMA of RSI. Fetched payloads are cached
+// per ticker for the session so a second hover is instant.
 
 const HOVER_DELAY_MS = 220;
-const HOVER_W = 820;
-const HOVER_H = 520;
+const HOVER_W = 900;
+const HOVER_H = 600;
+// Volume sits inside the price pane via an overlay scale; these margins
+// reserve the bottom 18% of pane 0 for the volume histogram.
+const VOL_SCALE_TOP_MARGIN = 0.82;
+const HOVER_PANE_RSI_H = 180;
 const _chartCache = new Map();
 let _hoverChart = null;
 let _hoverShowTimer = null;
@@ -1440,38 +1795,58 @@ function drawHoverChart(data) {
     autoSize: true,
   });
 
-  // Pane 0 — candles + EMA21 + EMA50 + volume overlay
+  // Pane 0 — candles + SMA(10/20/30/40) + volume bars overlaid in the
+  // bottom strip of the same pane (volume uses a separate "volume"
+  // price scale so the candles aren't dragged into the bar range).
   const candle = _hoverChart.addSeries(LightweightCharts.CandlestickSeries, {
     upColor: '#3fb950', downColor: '#f85149',
     wickUpColor: '#3fb950', wickDownColor: '#f85149',
     borderVisible: false,
   }, 0);
-  const ema21 = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#d2a8ff', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-  }, 0);
-  const ema50 = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#ffa657', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-  }, 0);
+  // Price scale margins reserve a band at the bottom for the volume
+  // histogram so SMAs/candles don't collide with the bars.
+  candle.priceScale().applyOptions({
+    scaleMargins: { top: 0.05, bottom: 1 - VOL_SCALE_TOP_MARGIN + 0.02 },
+  });
+  // Four SMAs — colours match the legend chips in the pane label, ordered
+  // shortest → longest so the eye reads them as a fan.
+  const smaSeries = [
+    { key: 'sma10', color: '#58a6ff' },
+    { key: 'sma20', color: '#d2a8ff' },
+    { key: 'sma30', color: '#ffa657' },
+    { key: 'sma40', color: '#7ee787' },
+  ].map(({ key, color }) => {
+    const s = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+      color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+    }, 0);
+    s.setData(rows.filter((r) => r[key] != null).map((r) => ({ time: r.time, value: r[key] })));
+    return s;
+  });
+  candle.setData(rows.map((r) => ({
+    time: r.time, open: r.open, high: r.high, low: r.low, close: r.close,
+  })));
+
+  // Volume overlay — same pane as candles, separate "volume" price scale
+  // anchored to the bottom 18% of the pane. Bars coloured by day
+  // direction (green up-day, red down-day).
   const vol = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
     priceFormat: { type: 'volume' },
-    priceScaleId: '',
+    priceScaleId: 'volume',
     color: '#30363d',
     lastValueVisible: false,
     priceLineVisible: false,
   }, 0);
-  vol.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
-
-  candle.setData(rows.map((r) => ({
-    time: r.time, open: r.open, high: r.high, low: r.low, close: r.close,
-  })));
-  ema21.setData(rows.filter((r) => r.ema21 != null).map((r) => ({ time: r.time, value: r.ema21 })));
-  ema50.setData(rows.filter((r) => r.ema50 != null).map((r) => ({ time: r.time, value: r.ema50 })));
+  _hoverChart.priceScale('volume').applyOptions({
+    scaleMargins: { top: VOL_SCALE_TOP_MARGIN, bottom: 0 },
+    visible: false,
+  });
   vol.setData(rows.map((r) => ({
     time: r.time, value: r.volume || 0,
-    color: r.close >= r.open ? 'rgba(63,185,80,0.4)' : 'rgba(248,81,73,0.4)',
+    color: r.close >= r.open ? 'rgba(63,185,80,0.55)' : 'rgba(248,81,73,0.55)',
   })));
 
-  // Pane 1 — RSI(14) + 9d SMA of RSI
+  // Pane 1 — RSI(14) + 9d SMA of RSI. 30/70 bands dashed for the
+  // classic oversold/overbought reference points.
   const rsi = _hoverChart.addSeries(LightweightCharts.LineSeries, {
     color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
   }, 1);
@@ -1483,44 +1858,40 @@ function drawHoverChart(data) {
   rsi.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
   rsi.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 
-  // Pane 2 — MACD(12, 26, 9): line + signal + histogram. The histogram
-  // is the diff between the two lines (MACD − signal); positive bars
-  // green / negative bars red. Zero line dashed grey so the
-  // crossover point is visible at a glance.
-  const macdHist = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
-    priceLineVisible: false, lastValueVisible: false,
-  }, 2);
-  const macdLine = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#58a6ff', lineWidth: 2, priceLineVisible: false,
-  }, 2);
-  const macdSignal = _hoverChart.addSeries(LightweightCharts.LineSeries, {
-    color: '#f0883e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-  }, 2);
-  macdHist.setData(rows.filter((r) => r.macd_hist != null).map((r) => ({
-    time: r.time, value: r.macd_hist,
-    color: r.macd_hist >= 0 ? 'rgba(63,185,80,0.6)' : 'rgba(248,81,73,0.6)',
-  })));
-  macdLine.setData(rows.filter((r) => r.macd != null).map((r) => ({ time: r.time, value: r.macd })));
-  macdSignal.setData(rows.filter((r) => r.macd_signal != null).map((r) => ({ time: r.time, value: r.macd_signal })));
-  macdLine.createPriceLine({ price: 0, color: '#6e7681', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
-
-  // Compress the two oscillator panes (~80px each); the price pane
-  // absorbs the rest. Aligning their right-side scale widths keeps the
-  // time axis straight across all three panes.
+  // RSI pane gets a fixed compact height; the price pane absorbs the rest.
+  // Aligning right-side scale widths keeps the time axis straight across
+  // both panes. Pane labels are absolutely positioned over the chart
+  // container in CSS — their top offsets depend on the RSI height.
   const apply = () => {
     try {
       const panes = _hoverChart.panes() || [];
       panes.forEach((p) => {
         try { p.priceScale('right').applyOptions({ minimumWidth: 56 }); } catch (_) {}
       });
-      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(80);
-      if (panes.length >= 3 && panes[2].setHeight) panes[2].setHeight(80);
+      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(HOVER_PANE_RSI_H);
     } catch (_) { /* ignore */ }
     try { _hoverChart.timeScale().fitContent(); } catch (_) {}
+    positionPaneLabels();
   };
   apply();
   requestAnimationFrame(apply);
   setTimeout(apply, 80);
+}
+
+// Each pane gets a small label in its top-left corner. Lightweight-charts
+// has no native title support and wipes its container on dispose — so the
+// label spans live as siblings of #hover-chart-container (inside
+// #hover-chart) and are positioned relative to the popup wrapper. Pane 0
+// (Price + SMAs + Volume) sits at the top of the container; pane 1 (RSI)
+// is the bottom strip.
+function positionPaneLabels() {
+  if (!els.hoverChartContainer) return;
+  const containerH = els.hoverChartContainer.clientHeight;
+  if (!containerH) return;
+  const top = els.hoverChartContainer.offsetTop;
+  const labels = [0, 1].map((i) => document.getElementById('hover-pane-label-' + i));
+  if (labels[0]) labels[0].style.top = (top + 6) + 'px';
+  if (labels[1]) labels[1].style.top = (top + containerH - HOVER_PANE_RSI_H + 4) + 'px';
 }
 
 function onTickerEnter(ev) {
@@ -1814,6 +2185,12 @@ function summarizeRuleParams(p, ruleType) {
       out.push(`Price $${n(p.min_price)}–$${n(p.max_price)}`);
     }
     if (p.min_dollar_vol != null) out.push(`$-vol/day ≥ $${n(p.min_dollar_vol)}`);
+    // Surface active sub-score floors so an at-a-glance look at the rule
+    // list makes it obvious whether Base/Ignition/Earliness gates are
+    // contributing. Zero = off and stays hidden to avoid noise.
+    if (Number(p.base_min) > 0) out.push(`Base ≥ ${n(p.base_min)}`);
+    if (Number(p.ignition_min) > 0) out.push(`Ignition ≥ ${n(p.ignition_min)}`);
+    if (Number(p.earliness_min) > 0) out.push(`Earliness ≥ ${n(p.earliness_min)}`);
     return out;
   }
   const out = [];
@@ -1823,11 +2200,17 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_rsi_dev) out.push(`RSI dev ${n(p.rsi_dev_min_pct)}–${n(p.rsi_dev_max_pct)}%`);
   if (p.apply_price_dev) out.push(`vs EMA21 ${n(p.price_dev_min_pct)}–${n(p.price_dev_max_pct)}%`);
   if (p.apply_ema_dev) out.push(`EMA21 vs EMA50 ${n(p.ema_dev_min_pct)}–${n(p.ema_dev_max_pct)}%`);
-  if (p.apply_macd) out.push(`MACD hist ≥ ${n(p.macd_hist_min)}${p.macd_require_rising ? ' & rising' : ''}`);
-  if (p.apply_macd_line) out.push(`MACD line ${n(p.macd_line_min)}–${n(p.macd_line_max)}`);
+  if (p.apply_macd_vs_signal) {
+    const parts = [];
+    if (p.macd_within_pct) parts.push(`within ${n(p.macd_vs_signal_pct)}% of signal`);
+    if (p.macd_above_signal) parts.push('≥ signal');
+    if (p.macd_line_rising) parts.push('rising');
+    out.push('MACD ' + (parts.join(' + ') || '(no condition)'));
+  }
   if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
   if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
   if (p.apply_turnover) out.push(`Turnover ${n(p.turnover_min_pct)}–${n(p.turnover_max_pct)}%`);
+  if (p.apply_market_cap) out.push(`Mcap $${n(p.market_cap_min_m)}M–$${n(p.market_cap_max_m)}M`);
   if (p.apply_pct_change) out.push(`Latest % change ≥ ${n(p.pct_change_min)}%`);
   return out;
 }
@@ -2119,6 +2502,15 @@ function readSetupToolbarAsParams() {
     min_price: Number(els.setupsMinPrice && els.setupsMinPrice.value) || 0,
     max_price: Number(els.setupsMaxPrice && els.setupsMaxPrice.value) || 1000,
     min_dollar_vol: Number(els.setupsMinDollarVol && els.setupsMinDollarVol.value) || 0,
+    // Sub-score floors flow from toolbar into the create-rule modal so a
+    // rule created right after dialling-in the live filter inherits all
+    // of the user's intent. Omitting these was the bug behind alerts
+    // ignoring Base/Ignition/Earliness post-PR-75: applySetupParamsToModal
+    // only overwrites fields whose source value is defined, so the modal's
+    // HTML defaults (0) won and rules persisted with floors disabled.
+    base_min: Number(els.setupsBaseMin && els.setupsBaseMin.value) || 0,
+    ignition_min: Number(els.setupsIgnitionMin && els.setupsIgnitionMin.value) || 0,
+    earliness_min: Number(els.setupsEarlinessMin && els.setupsEarlinessMin.value) || 0,
   };
 }
 
@@ -2166,10 +2558,11 @@ function syncModalDisabled() {
     apply_price: 'cm_price',
     apply_price_dev: 'cm_price_dev',
     apply_ema_dev: 'cm_ema_dev',
-    apply_macd: 'cm_macd',
-    apply_macd_line: 'cm_macd_line',
+    apply_macd_vs_signal: 'cm_macd_vs_signal',
     apply_turnover: 'cm_turnover',
+    apply_market_cap: 'cm_market_cap',
     apply_pct_change: 'cm_pct_change',
+    apply_sma_revival: 'cm_sma_revival',
   };
   for (const [toggleKey, groupKey] of Object.entries(map)) {
     const t = modalToggles[toggleKey];
@@ -2320,7 +2713,7 @@ startRulesPolling();
 // weights + price range, and re-ranks live via /api/picks/run. Saved
 // settings are picked up by the nightly cron at close+1hr.
 
-const _PICKS_WEIGHT_KEYS = ['vc', 'rs', 'va', 'mt', 'dp'];
+const _PICKS_WEIGHT_KEYS = ['vc', 'rs', 'va', 'mt', 'dp', 'sr'];
 
 function picksWeightFromUI() {
   const out = {};
@@ -2389,7 +2782,12 @@ function renderPicks(data) {
     picksApplyWeightsToUI(cfg.weights);
     if (els.picksPriceMin && cfg.price_min != null) els.picksPriceMin.value = String(cfg.price_min);
     if (els.picksPriceMax && cfg.price_max != null) els.picksPriceMax.value = String(cfg.price_max);
+    if (els.picksLimit && cfg.pick_limit != null) els.picksLimit.value = String(cfg.pick_limit);
     _picksTuningHydrated = true;
+  }
+  // Count label always reflects the latest saved limit (re-ranks change it).
+  if (cfg && els.picksCountLabel && cfg.pick_limit != null) {
+    els.picksCountLabel.textContent = String(cfg.pick_limit);
   }
   if (!els.picksList) return;
   if (!picks.length) {
@@ -2402,10 +2800,10 @@ function renderPicks(data) {
   }
   const rows = picks.map((p) => {
     const close = p.close != null ? `$${Number(p.close).toFixed(2)}` : '';
-    const ret = p.ret_20d != null ? `${(p.ret_20d * 100).toFixed(1)}%` : '';
+    const ret = p.ret_20d != null ? `${(p.ret_20d * 100).toFixed(1)}% / 60d` : '';
     const dist = p.dist_pivot != null ? `${p.dist_pivot.toFixed(1)}% from pivot` : '';
     const atr = p.atr_ratio != null ? `ATR20/60 ${p.atr_ratio.toFixed(2)}` : '';
-    const dvol = p.dvol_ratio != null ? `dvol 10/60 ${p.dvol_ratio.toFixed(2)}` : '';
+    const dvol = p.dvol_ratio != null ? `vol 10/60 ${p.dvol_ratio.toFixed(2)}` : '';
     const metaParts = [ret, dist, atr, dvol].filter(Boolean);
     const badges = renderPickTriggerBadges(p.ticker);
     return `
@@ -2420,6 +2818,7 @@ function renderPicks(data) {
           ${picksMiniBar('VA', p.va_score)}
           ${picksMiniBar('MT', p.mt_score)}
           ${picksMiniBar('DP', p.dp_score)}
+          ${picksMiniBar('SR', p.sr_score)}
         </span>
         <span class="pick-meta muted">${escapeHtml(metaParts.join(' · '))}</span>
         ${badges ? `<span class="pick-triggers">${badges}</span>` : ''}
@@ -2516,6 +2915,7 @@ async function runPicks() {
       weights:   picksWeightFromUI(),
       price_min: Number(els.picksPriceMin && els.picksPriceMin.value) || 0,
       price_max: Number(els.picksPriceMax && els.picksPriceMax.value) || 1000,
+      pick_limit: Number(els.picksLimit && els.picksLimit.value) || 25,
       save: true,
     };
     const res = await fetch('/api/picks/run', {
@@ -3180,6 +3580,9 @@ async function runSetupsScan() {
   const minPrice = Number(els.setupsMinPrice && els.setupsMinPrice.value) || 0;
   const maxPrice = Number(els.setupsMaxPrice && els.setupsMaxPrice.value) || 1000;
   const minDollarVol = Number(els.setupsMinDollarVol && els.setupsMinDollarVol.value) || 0;
+  const baseMin = Number(els.setupsBaseMin && els.setupsBaseMin.value) || 0;
+  const ignitionMin = Number(els.setupsIgnitionMin && els.setupsIgnitionMin.value) || 0;
+  const earlinessMin = Number(els.setupsEarlinessMin && els.setupsEarlinessMin.value) || 0;
   const limit = Number(els.setupsLimit && els.setupsLimit.value) || 20;
   els.setupsRunBtn.disabled = true;
   if (els.setupsStatus) els.setupsStatus.textContent = 'scanning… (5-15s)';
@@ -3196,6 +3599,10 @@ async function runSetupsScan() {
       min_dollar_vol: String(minDollarVol),
       limit: String(limit),
     });
+    // Only send sub-score floors when set (omit zeros so the URL stays short).
+    if (baseMin > 0) qs.set('base_min', String(baseMin));
+    if (ignitionMin > 0) qs.set('ignition_min', String(ignitionMin));
+    if (earlinessMin > 0) qs.set('earliness_min', String(earlinessMin));
     const res = await fetch('/api/setups?' + qs.toString());
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -3252,11 +3659,27 @@ if (els.setupsShareBtn) {
 if (els.setupsCreateAlertBtn) {
   els.setupsCreateAlertBtn.addEventListener('click', () => {
     // Pre-populate the rule-create row with setup type + 'all' scope, then
-    // scroll the user to it so they can name the rule and submit.
+    // scroll the user to it so they can name the rule and submit. Also
+    // copy the toolbar values (score, price, $-vol, sub-score floors) into
+    // the criteria modal's cm_setup_* inputs so the user doesn't have to
+    // re-type what they just dialed in.
     if (els.ruleType) els.ruleType.value = 'setup';
     if (els.ruleScopeType) {
       els.ruleScopeType.value = 'all';
       populateScopeValues();
+    }
+    const seed = [
+      ['cm_setup_score_min',     els.setupsMinScore],
+      ['cm_setup_min_price',     els.setupsMinPrice],
+      ['cm_setup_max_price',     els.setupsMaxPrice],
+      ['cm_setup_min_dollar_vol',els.setupsMinDollarVol],
+      ['cm_setup_base_min',      els.setupsBaseMin],
+      ['cm_setup_ignition_min',  els.setupsIgnitionMin],
+      ['cm_setup_earliness_min', els.setupsEarlinessMin],
+    ];
+    for (const [modalId, srcEl] of seed) {
+      const target = document.getElementById(modalId);
+      if (target && srcEl && srcEl.value !== '') target.value = srcEl.value;
     }
     syncRuleTypeUI();
     if (els.ruleName) {
@@ -3294,6 +3717,32 @@ if (els.ruleType) els.ruleType.addEventListener('change', syncRuleTypeUI);
 syncRuleTypeUI();
 
 wireCollapse(els.setupsToggle, els.setupsBody, 'collapse_setups');
+
+// Persist every Setups toolbar value through uiPrefs so a refresh
+// doesn't reset the panel. Hydrates from the server-rendered cache
+// on init, then writes back on `change` (commit, not per-keystroke,
+// so the spinner / typing flow doesn't spam POSTs). Empty input →
+// null, which uiPrefs.get will then ignore on next load and leave
+// the HTML default in place.
+function wirePersistedSetupsInput(el, key) {
+  if (!el) return;
+  const saved = uiPrefs.get(key, undefined);
+  if (saved !== undefined && saved !== null && saved !== '') {
+    el.value = String(saved);
+  }
+  el.addEventListener('change', () => {
+    const raw = el.value;
+    uiPrefs.set(key, raw === '' ? null : Number(raw));
+  });
+}
+wirePersistedSetupsInput(els.setupsMinScore,     'setups_min_score');
+wirePersistedSetupsInput(els.setupsMinPrice,     'setups_min_price');
+wirePersistedSetupsInput(els.setupsMaxPrice,     'setups_max_price');
+wirePersistedSetupsInput(els.setupsMinDollarVol, 'setups_min_dollar_vol');
+wirePersistedSetupsInput(els.setupsBaseMin,      'setups_base_min');
+wirePersistedSetupsInput(els.setupsIgnitionMin,  'setups_ignition_min');
+wirePersistedSetupsInput(els.setupsEarlinessMin, 'setups_earliness_min');
+wirePersistedSetupsInput(els.setupsLimit,        'setups_limit');
 
 
 // --- options recommender (composite-score) -------------------------------
@@ -3454,35 +3903,78 @@ function renderOptionsResult(rec) {
     header + compositeBar + prose + contractCard + layerBreakdown + ivLine + earningsLine + reasons + partialNote + disclaimer;
 }
 
-function renderOptionsHistory(items) {
+// Pinned recs index keyed by `${ticker}|${as_of}` so the row renderer
+// can decorate pinned entries with the filled button + note input. Also
+// stores the pin id, needed for PATCH/DELETE. Rebuilt on every poll of
+// /api/options/pinned.
+const _pinnedIndex = new Map();
+
+// Currently-selected view ("all" | "pinned") for the history panel.
+// Driven by the radio buttons; persisted to localStorage so it survives
+// reloads.
+const _OH_VIEW_KEY = 'options_history_view';
+let _ohView = uiPrefs.get(_OH_VIEW_KEY, 'all');
+
+function _ohPinKey(ticker, as_of) {
+  return `${(ticker || '').toUpperCase()}|${as_of || ''}`;
+}
+
+function _renderOptionsHistoryRow(r, opts) {
+  opts = opts || {};
+  const verdict = r.verdict || 'PASS';
+  const glyph = _OPTIONS_VERDICT_GLYPH[verdict] || '⚪';
+  const dir = (r.direction || '').toUpperCase();
+  const dirGlyph = _OPTIONS_DIR_GLYPH[r.direction] || '·';
+  const strikeStr = r.strike != null ? `$${fmtNum(r.strike, 2)}` : '';
+  const midStr = r.mid_price != null ? `mid $${fmtNum(r.mid_price, 2)}` : '';
+  const compositeStr = r.composite_score != null
+    ? `composite ${Math.round(r.composite_score)}` : '';
+  const ticker = r.ticker || '';
+  const as_of = r.as_of || '';
+  const pinKey = _ohPinKey(ticker, as_of);
+  const pin = _pinnedIndex.get(pinKey);
+  const isPinned = !!pin;
+  // Always include the date alongside the rec — when viewing pinned-only
+  // (which spans dates), the date is the main thing telling rows apart.
+  const dateStr = as_of ? `<span class="muted">${escapeHtml(as_of)}</span>` : '';
+  const pinBtn = `<button type="button" class="pin-btn ${isPinned ? 'pinned' : ''}" data-action="pin" data-ticker="${escapeHtml(ticker)}" data-as-of="${escapeHtml(as_of)}" data-pin-id="${pin ? pin.id : ''}" title="${isPinned ? 'Unpin this recommendation' : 'Pin so it stays accessible across days'}">📌${isPinned ? ' Pinned' : ' Pin'}</button>`;
+  const pinnedMeta = isPinned && pin && pin.pinned_at
+    ? `<span class="pinned-meta">📌 pinned ${escapeHtml(pin.pinned_at.slice(0, 16).replace('T', ' '))}</span>`
+    : '';
+  const noteInput = isPinned
+    ? `<input type="text" class="pin-note" data-action="note" data-pin-id="${pin.id}" placeholder="Add a note…" value="${escapeHtml(pin.note || '')}" />`
+    : '';
+  return `
+    <div class="options-history-row verdict-${verdict.toLowerCase()}" data-ticker="${escapeHtml(ticker)}" data-as-of="${escapeHtml(as_of)}">
+      <span class="options-history-verdict">${glyph} <b>${verdict}</b></span>
+      <span class="options-history-dir">${dirGlyph} ${dir}</span>
+      <span class="options-history-ticker"><b>${escapeHtml(ticker)}</b></span>
+      ${dateStr}
+      <span class="muted">${escapeHtml(r.expiration || '')} ${strikeStr}</span>
+      <span class="muted">${midStr}</span>
+      <span class="muted">${compositeStr}</span>
+      ${pinBtn}
+      ${pinnedMeta}
+      ${noteInput}
+    </div>`;
+}
+
+function renderOptionsHistory(items, opts) {
   if (!els.optionsHistoryList) return;
   items = items || [];
-  if (els.optionsHistoryStatus)
+  opts = opts || {};
+  const view = opts.view || _ohView;
+  const dateLabel = opts.dateLabel || (items.length ? items[0].as_of : '?');
+  if (els.optionsHistoryStatus) {
     els.optionsHistoryStatus.textContent = items.length
-      ? `(${items.length} for ${items[0].as_of || '?'})`
-      : '(none yet — analyze a ticker above)';
-  if (!items.length) {
-    els.optionsHistoryList.innerHTML = '';
-    return;
+      ? (view === 'pinned'
+          ? `(${items.length} pinned)`
+          : `(${items.length} for ${dateLabel})`)
+      : (view === 'pinned'
+          ? '(no pinned recs yet — click 📌 on any row to keep it here)'
+          : '(none yet — run a scan or analyze a ticker)');
   }
-  els.optionsHistoryList.innerHTML = items.map((r) => {
-    const verdict = r.verdict || 'PASS';
-    const glyph = _OPTIONS_VERDICT_GLYPH[verdict] || '⚪';
-    const dir = (r.direction || '').toUpperCase();
-    const dirGlyph = _OPTIONS_DIR_GLYPH[r.direction] || '·';
-    const strikeStr = r.strike != null ? `$${fmtNum(r.strike, 2)}` : '';
-    const midStr = r.mid_price != null ? `mid $${fmtNum(r.mid_price, 2)}` : '';
-    const compositeStr = r.composite_score != null ? `composite ${Math.round(r.composite_score)}` : '';
-    return `
-      <div class="options-history-row verdict-${verdict.toLowerCase()}" data-ticker="${escapeHtml(r.ticker)}">
-        <span class="options-history-verdict">${glyph} <b>${verdict}</b></span>
-        <span class="options-history-dir">${dirGlyph} ${dir}</span>
-        <span class="options-history-ticker"><b>${escapeHtml(r.ticker)}</b></span>
-        <span class="muted">${escapeHtml(r.expiration || '')} ${strikeStr}</span>
-        <span class="muted">${midStr}</span>
-        <span class="muted">${compositeStr}</span>
-      </div>`;
-  }).join('');
+  els.optionsHistoryList.innerHTML = items.map((r) => _renderOptionsHistoryRow(r)).join('');
 }
 
 function _readDteRange() {
@@ -3538,12 +4030,76 @@ function resetDteRange() {
   if (els.optionsDteMax) els.optionsDteMax.value = '60';
 }
 
-async function loadOptionsHistory() {
+async function _fetchPinned() {
+  // Refreshes _pinnedIndex from the server. Always called before
+  // rendering so pin button state + note values stay in sync.
   try {
-    const res = await fetch('/api/options/recommendations', { cache: 'no-store' });
+    const res = await fetch('/api/options/pinned', { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
-    renderOptionsHistory(data.recommendations || []);
+    _pinnedIndex.clear();
+    for (const pin of data.pinned || []) {
+      // Each pin's full snapshot is also a complete rec dict — index
+      // by (ticker, as_of) so we can decorate matching rows in the
+      // by-date view AND list them in the pinned-only view.
+      _pinnedIndex.set(_ohPinKey(pin.ticker, pin.as_of), pin);
+    }
+  } catch (_) { /* silent */ }
+}
+
+async function _fetchDates() {
+  try {
+    const res = await fetch('/api/options/recommendation_dates', { cache: 'no-store' });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.dates || [];
+  } catch (_) { return []; }
+}
+
+function _populateDatePicker(dates, selectedDate) {
+  if (!els.optionsHistoryDate) return;
+  const prev = selectedDate || els.optionsHistoryDate.value;
+  els.optionsHistoryDate.innerHTML = dates.map(
+    (d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`
+  ).join('') || `<option value="">(no dates)</option>`;
+  // Restore selection if still present; else fall back to most recent.
+  if (prev && dates.indexOf(prev) >= 0) {
+    els.optionsHistoryDate.value = prev;
+  } else if (dates.length) {
+    els.optionsHistoryDate.value = dates[0];
+  }
+}
+
+async function loadOptionsHistory(opts) {
+  // Two-mode loader. View "all": pull recs for the selected date and
+  // render with the pinned overlay. View "pinned": render directly
+  // from _pinnedIndex (no date fetch — pins span dates).
+  opts = opts || {};
+  await _fetchPinned();   // always — so pin decorations stay fresh
+  if (_ohView === 'pinned') {
+    // List the frozen snapshots in pinned_at-desc order (server already
+    // returns them that way). Show the date column so cross-date pins
+    // are easy to tell apart.
+    const items = Array.from(_pinnedIndex.values())
+      .sort((a, b) => (b.pinned_at || '').localeCompare(a.pinned_at || ''))
+      .map((pin) => ({ ...pin.snapshot, as_of: pin.as_of, ticker: pin.ticker }));
+    renderOptionsHistory(items, { view: 'pinned' });
+    return;
+  }
+  // View "all": refresh date list (cheap), pick a date, fetch its recs.
+  const dates = await _fetchDates();
+  _populateDatePicker(dates, opts.selectDate);
+  const picked = (els.optionsHistoryDate && els.optionsHistoryDate.value) || '';
+  if (!picked) {
+    renderOptionsHistory([], { view: 'all', dateLabel: '?' });
+    return;
+  }
+  try {
+    const res = await fetch(`/api/options/recommendations?date=${encodeURIComponent(picked)}`,
+                            { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderOptionsHistory(data.recommendations || [], { view: 'all', dateLabel: picked });
   } catch (_) { /* silent */ }
 }
 
@@ -3574,7 +4130,7 @@ function activateTab(name, persist = true) {
   if (runBtn)  runBtn.classList.toggle('hidden', !isStockScreener);
   if (warmBtn) warmBtn.classList.toggle('hidden', !isStockScreener);
   if (persist) {
-    try { localStorage.setItem('app_tab', name); } catch (_) {}
+    uiPrefs.set('app_tab', name);
     if (history && history.replaceState) {
       const hash = '#' + name;
       if (location.hash !== hash) history.replaceState(null, '', hash);
@@ -3588,11 +4144,8 @@ function activateTab(name, persist = true) {
 function _initialTab() {
   const fromHash = (location.hash || '').replace('#', '');
   if (TAB_NAMES.includes(fromHash)) return fromHash;
-  try {
-    const saved = localStorage.getItem('app_tab');
-    if (TAB_NAMES.includes(saved)) return saved;
-  } catch (_) {}
-  return 'stock';
+  const saved = uiPrefs.get('app_tab', 'stock');
+  return TAB_NAMES.includes(saved) ? saved : 'stock';
 }
 
 if (els.tabBtnStock)         els.tabBtnStock        .addEventListener('click', () => activateTab('stock'));
@@ -3812,15 +4365,92 @@ if (els.optionsDteMax) {
     if (ev.key === 'Enter') { ev.preventDefault(); runOptionsLookup(); }
   });
 }
+async function _togglePin(ticker, as_of, currentPinId) {
+  if (currentPinId) {
+    // Unpin
+    try {
+      await fetch(`/api/options/pinned/${currentPinId}`, { method: 'DELETE' });
+    } catch (_) { /* silent */ }
+  } else {
+    // Pin (snapshot the rec server-side)
+    try {
+      await fetch('/api/options/pinned', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker, as_of }),
+      });
+    } catch (_) { /* silent */ }
+  }
+  await loadOptionsHistory();   // refresh both index + render
+}
+
+// Debounce note updates so we PATCH once after the user stops typing.
+const _noteDebounces = new Map();
+function _savePinNote(pinId, note) {
+  clearTimeout(_noteDebounces.get(pinId));
+  _noteDebounces.set(pinId, setTimeout(async () => {
+    try {
+      await fetch(`/api/options/pinned/${pinId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note }),
+      });
+      // Refresh the index so a subsequent re-render keeps the value.
+      // No re-render needed — the input the user is typing in stays as-is.
+      await _fetchPinned();
+    } catch (_) { /* silent */ }
+  }, 600));
+}
+
 if (els.optionsHistoryList) {
   els.optionsHistoryList.addEventListener('click', (ev) => {
+    // Pin/unpin button — handle before the row-click → analyze path.
+    const pinBtn = ev.target.closest('button[data-action="pin"]');
+    if (pinBtn) {
+      ev.stopPropagation();
+      const id = pinBtn.dataset.pinId ? parseInt(pinBtn.dataset.pinId, 10) : null;
+      _togglePin(pinBtn.dataset.ticker, pinBtn.dataset.asOf, id);
+      return;
+    }
+    // Clicking the note input shouldn't trigger the row-level analyze.
+    if (ev.target.closest('input.pin-note')) return;
     const row = ev.target.closest('.options-history-row');
     if (row && row.dataset.ticker && els.optionsTicker) {
       els.optionsTicker.value = row.dataset.ticker;
       runOptionsLookup();
     }
   });
+  // Debounced note PATCH on input.
+  els.optionsHistoryList.addEventListener('input', (ev) => {
+    const inp = ev.target.closest('input.pin-note');
+    if (!inp) return;
+    const id = parseInt(inp.dataset.pinId, 10);
+    if (Number.isFinite(id)) _savePinNote(id, inp.value);
+  });
 }
+
+if (els.optionsHistoryDate) {
+  els.optionsHistoryDate.addEventListener('change', () => loadOptionsHistory());
+}
+if (els.optionsHistoryRefresh) {
+  els.optionsHistoryRefresh.addEventListener('click', () => loadOptionsHistory());
+}
+document.querySelectorAll('input[name="options-history-view"]').forEach((r) => {
+  // Initialise from persisted state.
+  if (r.value === _ohView) r.checked = true;
+  r.addEventListener('change', () => {
+    if (!r.checked) return;
+    _ohView = r.value;
+    uiPrefs.set(_OH_VIEW_KEY, _ohView);
+    // Date picker is only relevant in "all" view.
+    if (els.optionsHistoryDate) els.optionsHistoryDate.disabled = (_ohView === 'pinned');
+    loadOptionsHistory();
+  });
+});
+if (els.optionsHistoryDate) {
+  els.optionsHistoryDate.disabled = (_ohView === 'pinned');
+}
+
 wireCollapse(els.optionsHistoryToggle, els.optionsHistoryBody, 'collapse_options_history');
 loadOptionsHistory();
 
@@ -3877,63 +4507,400 @@ function renderScanResults(result) {
       : `(${all.length} scanned, none cleared BUY or high-conviction WATCH)`;
   }
   if (!digest.length) {
-    els.optionsScanList.innerHTML = `<div class="muted scan-empty">No setups stacked enough across the 5 layers — sit out, or relax the DTE window and re-scan.</div>`;
+    if (all.length) {
+      // Empty digest doesn't mean the scan found nothing — every
+      // ticker that ran the full pipeline produced a composite. Show
+      // the top 10 by |composite − 50| so the user sees what almost
+      // crossed the BUY / high-WATCH thresholds. Helpful for tuning
+      // (e.g. "everything clustered at 60-64 — gates may be too
+      // strict") and for spotting setups that fell just short.
+      const top = all.slice(0, 10);
+      const banner = `<div class="muted scan-empty">
+        No BUY or high-conviction WATCH today.
+        Highest composites scanned (informational — not actionable signals):
+      </div>`;
+      els.optionsScanList.innerHTML = banner + top.map(renderScanCard).join('');
+    } else {
+      els.optionsScanList.innerHTML = `<div class="muted scan-empty">
+        No setups stacked enough across the 5 layers — sit out, or relax the DTE window and re-scan.
+      </div>`;
+    }
     return;
   }
   els.optionsScanList.innerHTML = digest.map(renderScanCard).join('');
 }
 
+// The scan runs server-side in a background thread; the UI kicks it
+// off then polls /api/options/scan/status every few seconds for
+// progress and a final result. Top 200 can run ~40 min, so the page
+// stays usable throughout (you can navigate away and come back; the
+// poll picks up wherever the server is).
+
+const SCAN_POLL_MS = 2500;
+let _scanPollTimer = null;
+let _scanRunPrevBtnTxt = null;
+
+function _setScanRunning(running) {
+  if (els.optionsScanBtn) els.optionsScanBtn.disabled = running;
+  if (els.optionsScanTopN) els.optionsScanTopN.disabled = running;
+  if (els.optionsLookupBtn) els.optionsLookupBtn.disabled = running;
+  if (els.optionsScanCancelBtn) els.optionsScanCancelBtn.classList.toggle('hidden', !running);
+}
+
+function _renderScanProgress(state) {
+  const { done = 0, total = 0, current_ticker, started_at, phase,
+          rate_limited_count = 0 } = state || {};
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const elapsed = started_at ? Math.max(0, Date.now() / 1000 - started_at) : 0;
+  const elapsedTxt = elapsed >= 60
+    ? `${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`
+    : `${Math.floor(elapsed)}s`;
+  let etaTxt = '';
+  if (done > 0 && total > done && elapsed > 0) {
+    const remainingSec = (elapsed / done) * (total - done);
+    etaTxt = remainingSec >= 60
+      ? ` · ~${Math.ceil(remainingSec / 60)}m remaining`
+      : ` · ~${Math.ceil(remainingSec)}s remaining`;
+  }
+  const isPreflight = phase === 'preflight' || (!current_ticker && done === 0);
+  let statusLine, listMsg;
+  if (isPreflight) {
+    statusLine = `Pre-scoring universe · elapsed ${elapsedTxt}`;
+    listMsg = `Pre-scoring the liquid snapshot universe. The per-ticker pipeline starts once this finishes (usually a few seconds; can take longer if Yahoo is throttling). Page updates every ${SCAN_POLL_MS / 1000}s.`;
+  } else {
+    statusLine = `Scanning ${done}/${total} (${pct}%) · elapsed ${elapsedTxt}${etaTxt}`;
+    const ticker = current_ticker ? ` <strong>${escapeHtml(current_ticker)}</strong>` : '';
+    listMsg = `Running the 5-layer pipeline on${ticker}. Page updates every ${SCAN_POLL_MS / 1000}s.`;
+  }
+  // Show a prominent banner when Yahoo is throttling us — surfaces the
+  // root cause when the scan would otherwise look mysteriously slow
+  // (each rate-limited ticker either times out at 60s or fails fast,
+  // both of which produce no useful recommendation).
+  if (rate_limited_count > 0) {
+    listMsg = `<div class="scan-ratelimit-banner"><strong>⚠️ Yahoo Finance is rate-limiting us</strong> — ${rate_limited_count} ticker${rate_limited_count === 1 ? '' : 's'} affected so far. The scan will continue but most tickers will be skipped. Try again in 5-10 minutes, or run after market close when traffic is lower.</div>` + listMsg;
+  }
+  if (els.optionsStatus) els.optionsStatus.innerHTML = statusLine;
+  if (els.optionsScanList)
+    els.optionsScanList.innerHTML = `<div class="muted scan-running">${listMsg}</div>`;
+}
+
+async function _pollScanStatus() {
+  try {
+    const res = await fetch('/api/options/scan/status');
+    const state = await res.json().catch(() => ({}));
+    if (state.running) {
+      _renderScanProgress(state);
+      _scanPollTimer = setTimeout(_pollScanStatus, SCAN_POLL_MS);
+      return;
+    }
+    // Finished. Render whatever the server has — last_result if the
+    // scan completed (or was cancelled mid-flight with partial recs),
+    // last_error if it crashed, or an empty-state message otherwise.
+    _setScanRunning(false);
+    if (els.optionsScanBtn && _scanRunPrevBtnTxt != null) {
+      els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
+    }
+    if (state.last_error) {
+      if (els.optionsStatus) els.optionsStatus.textContent = state.last_error;
+      if (els.optionsScanList)
+        els.optionsScanList.innerHTML = `<div class="muted">Scan failed: ${escapeHtml(state.last_error)}</div>`;
+      return;
+    }
+    if (state.last_result) {
+      renderScanResults(state.last_result);
+      if (els.optionsStatus) {
+        const cancelled = state.cancelled ? ' (cancelled — partial results)' : '';
+        els.optionsStatus.textContent = `Done · ${state.done}/${state.total} tickers${cancelled}`;
+      }
+      loadOptionsHistory();
+    }
+  } catch (err) {
+    _setScanRunning(false);
+    if (els.optionsScanBtn && _scanRunPrevBtnTxt != null) {
+      els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
+    }
+    if (els.optionsStatus) els.optionsStatus.textContent = (err && err.message) || 'network error';
+  }
+}
+
 async function runOptionsScan() {
   if (!els.optionsScanBtn) return;
-  const topN = parseInt((els.optionsScanTopN && els.optionsScanTopN.value) || '8', 10);
+  const topN = parseInt((els.optionsScanTopN && els.optionsScanTopN.value) || '25', 10);
   const [dteMin, dteMax] = _readDteRange();
-  const prevTxt = els.optionsScanBtn.textContent;
-  els.optionsScanBtn.disabled = true;
+  if (_scanRunPrevBtnTxt == null) _scanRunPrevBtnTxt = els.optionsScanBtn.textContent;
+  _setScanRunning(true);
   els.optionsScanBtn.textContent = `Scanning ${topN}…`;
-  if (els.optionsLookupBtn) els.optionsLookupBtn.disabled = true;
-  if (els.optionsStatus)
-    els.optionsStatus.textContent = `Running composite-score pipeline on top ${topN} candidates — may take 1-3 minutes…`;
   if (els.optionsScanPanel) els.optionsScanPanel.classList.remove('hidden');
-  if (els.optionsScanList)
-    els.optionsScanList.innerHTML = `<div class="muted scan-running">Pre-scoring the liquid universe, then running the 5-layer pipeline on the top ${topN}. The page will update when the scan completes.</div>`;
+  if (els.optionsStatus) els.optionsStatus.textContent = 'Starting scan…';
   try {
     const res = await fetch('/api/options/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ top_n: topN, dte_min: dteMin, dte_max: dteMax }),
+      body: JSON.stringify({
+        top_n: topN, dte_min: dteMin, dte_max: dteMax,
+        ..._readAdvancedFilters(),
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      _setScanRunning(false);
+      els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
       if (els.optionsStatus) els.optionsStatus.textContent = data.error || ('HTTP ' + res.status);
-      if (els.optionsScanList)
-        els.optionsScanList.innerHTML = `<div class="muted">Scan failed: ${escapeHtml(data.error || res.status)}</div>`;
       return;
     }
-    renderScanResults(data);
-    if (els.optionsStatus) els.optionsStatus.textContent = '';
-    loadOptionsHistory();
+    if (data.started === false && !data.running) {
+      // Server refused but state is also "not running". With the
+      // zombie-thread recovery in start_scan, this should only happen
+      // in genuinely unexpected cases — surface the response so it's
+      // debuggable rather than silently retrying.
+      _setScanRunning(false);
+      els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
+      if (els.optionsStatus) {
+        els.optionsStatus.textContent = data.thread_alive
+          ? 'Previous scan still finishing — try again in a few seconds.'
+          : 'Scan did not start (server refused). Check the server log.';
+      }
+      return;
+    }
+    // started=true OR another scan was already in flight — either
+    // way, poll for progress.
+    if (_scanPollTimer) clearTimeout(_scanPollTimer);
+    _pollScanStatus();
   } catch (err) {
+    _setScanRunning(false);
+    els.optionsScanBtn.textContent = _scanRunPrevBtnTxt;
     if (els.optionsStatus) els.optionsStatus.textContent = (err && err.message) || 'network error';
-    if (els.optionsScanList)
-      els.optionsScanList.innerHTML = `<div class="muted">Scan failed: ${escapeHtml((err && err.message) || 'network error')}</div>`;
-  } finally {
-    els.optionsScanBtn.disabled = false;
-    els.optionsScanBtn.textContent = prevTxt;
-    if (els.optionsLookupBtn) els.optionsLookupBtn.disabled = false;
+  }
+}
+
+async function cancelOptionsScan() {
+  if (els.optionsScanCancelBtn) els.optionsScanCancelBtn.disabled = true;
+  try {
+    await fetch('/api/options/scan/cancel', { method: 'POST' });
+    if (els.optionsStatus) els.optionsStatus.textContent = 'Cancelling…';
+  } catch (_) { /* poll will surface the next state */ }
+  finally {
+    if (els.optionsScanCancelBtn) els.optionsScanCancelBtn.disabled = false;
   }
 }
 
 if (els.optionsScanBtn) els.optionsScanBtn.addEventListener('click', runOptionsScan);
+if (els.optionsScanCancelBtn) els.optionsScanCancelBtn.addEventListener('click', cancelOptionsScan);
+
+// On page load, ask the server if a scan is already running (e.g. the
+// user kicked one off and reloaded). If so, jump straight to polling
+// so progress picks up where they left it.
+(async () => {
+  try {
+    const res = await fetch('/api/options/scan/status');
+    const state = await res.json();
+    if (state && state.running) {
+      if (els.optionsScanPanel) els.optionsScanPanel.classList.remove('hidden');
+      _setScanRunning(true);
+      _scanRunPrevBtnTxt = els.optionsScanBtn ? els.optionsScanBtn.textContent : 'Scan universe';
+      if (els.optionsScanBtn) els.optionsScanBtn.textContent = `Scanning ${state.top_n}…`;
+      _pollScanStatus();
+    }
+  } catch (_) { /* idle — ignore */ }
+})();
 if (els.optionsScanList) {
   els.optionsScanList.addEventListener('click', (ev) => {
     const card = ev.target.closest('.scan-card');
     if (card && card.dataset.ticker && els.optionsTicker) {
       els.optionsTicker.value = card.dataset.ticker;
       runOptionsLookup();
+      // The result panel renders ABOVE the scan list and is tall (prose,
+      // layer breakdown, IV context). Without this scroll the scan list
+      // gets pushed below the fold and the user thinks the other cards
+      // disappeared. Scroll the result into view so the click visibly
+      // does something — the scan list stays mounted, just scroll back
+      // down to see it.
+      if (els.optionsResult) {
+        // Wait a tick so the panel has rendered and has a height.
+        setTimeout(() => els.optionsResult.scrollIntoView({
+          behavior: 'smooth', block: 'start',
+        }), 50);
+      }
     }
   });
 }
 wireCollapse(els.optionsScanToggle, els.optionsScanBody, 'collapse_options_scan');
+
+
+// --- Advanced filters + pool preview --------------------------------------
+
+function _readAdvancedFilters() {
+  // Read current values from the Advanced filter dropdowns. Returns
+  // an object suitable for spreading into the scan POST body.
+  const out = {};
+  if (els.optionsAdvPriceFloor && els.optionsAdvPriceFloor.value)
+    out.price_floor = parseFloat(els.optionsAdvPriceFloor.value);
+  if (els.optionsAdvVolFloor && els.optionsAdvVolFloor.value)
+    out.volume_floor = parseFloat(els.optionsAdvVolFloor.value);
+  if (els.optionsAdvMinDistance && els.optionsAdvMinDistance.value)
+    out.min_directional_distance = parseFloat(els.optionsAdvMinDistance.value);
+  return out;
+}
+
+function _applySettingsToUI(settings) {
+  // Sync the dropdowns + top_n select to the supplied settings dict
+  // (typically the GET /settings response). For each select, pick the
+  // option whose value matches; if none, leave the current selection.
+  if (!settings) return;
+  const pickClosest = (sel, target) => {
+    if (!sel || target == null) return;
+    let best = null, bestDiff = Infinity;
+    for (const opt of sel.options) {
+      const v = parseFloat(opt.value);
+      if (Number.isNaN(v)) continue;
+      const d = Math.abs(v - target);
+      if (d < bestDiff) { best = opt; bestDiff = d; }
+    }
+    if (best) sel.value = best.value;
+  };
+  pickClosest(els.optionsAdvPriceFloor, settings.price_floor);
+  pickClosest(els.optionsAdvVolFloor,   settings.volume_floor);
+  pickClosest(els.optionsAdvMinDistance, settings.min_directional_distance);
+  pickClosest(els.optionsScanTopN,      settings.top_n);
+}
+
+function _renderPreview(data) {
+  if (!els.optionsScanPreviewText) return;
+  if (!data || data.scanned === 0) {
+    els.optionsScanPreviewText.textContent = 'Pool preview unavailable (no snapshot loaded yet).';
+    return;
+  }
+  const topNVal = parseInt((els.optionsScanTopN && els.optionsScanTopN.value) || '25', 10);
+  const pct = data.qualifying > 0
+    ? Math.round((Math.min(topNVal, data.qualifying) / data.qualifying) * 100)
+    : 0;
+  const dateTxt = data.snap_date ? ` (${data.snap_date})` : '';
+  const cached = data.cached ? ' · cached' : '';
+  els.optionsScanPreviewText.innerHTML =
+    `<strong>${data.qualifying}</strong> stocks qualify${dateTxt} ` +
+    `· <strong>${data.call_bias}</strong> bull / <strong>${data.put_bias}</strong> bear ` +
+    `· Top ${topNVal} captures ${pct}%${cached}`;
+}
+
+async function refreshPreview(force = false) {
+  if (!els.optionsScanPreviewText) return;
+  if (els.optionsScanPreviewRefresh) els.optionsScanPreviewRefresh.disabled = true;
+  if (force) els.optionsScanPreviewText.textContent = 'Re-running pre-score…';
+  try {
+    const qs = new URLSearchParams(_readAdvancedFilters());
+    if (force) qs.set('force', '1');
+    const res = await fetch('/api/options/scan/preview?' + qs.toString());
+    const data = await res.json();
+    _renderPreview(data);
+  } catch (err) {
+    els.optionsScanPreviewText.textContent =
+      'Preview failed: ' + ((err && err.message) || 'network error');
+  } finally {
+    if (els.optionsScanPreviewRefresh) els.optionsScanPreviewRefresh.disabled = false;
+  }
+}
+
+async function loadSavedSettings() {
+  try {
+    const res = await fetch('/api/options/scan/settings');
+    const data = await res.json();
+    _applySettingsToUI(data.settings);
+  } catch (_) { /* ignore — defaults already in DOM */ }
+}
+
+async function saveAdvSettings() {
+  if (!els.optionsAdvSave) return;
+  const payload = {
+    ..._readAdvancedFilters(),
+    top_n: parseInt(els.optionsScanTopN.value, 10),
+    ...(_readDteRangePayload()),
+  };
+  els.optionsAdvSave.disabled = true;
+  if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/options/scan/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    _applySettingsToUI(data.settings);
+    if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Saved · alerts will use these';
+    refreshPreview(false);  // gates may have changed → cache key differs; will recompute
+  } catch (err) {
+    if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Save failed';
+  } finally {
+    els.optionsAdvSave.disabled = false;
+    setTimeout(() => {
+      if (els.optionsAdvStatus && els.optionsAdvStatus.textContent.startsWith('Saved'))
+        els.optionsAdvStatus.textContent = '';
+    }, 4000);
+  }
+}
+
+async function resetAdvSettings() {
+  // Send an empty body — the server clamps missing fields to its
+  // DEFAULT_SETTINGS, so this is the canonical "go back to factory"
+  // operation regardless of what the UI currently shows. Whatever the
+  // server returns becomes the new UI state.
+  if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Reverting…';
+  try {
+    const res = await fetch('/api/options/scan/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    _applySettingsToUI(data.settings);
+    if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Reset to defaults';
+    refreshPreview(false);
+  } catch (_) {
+    if (els.optionsAdvStatus) els.optionsAdvStatus.textContent = 'Reset failed';
+  }
+  setTimeout(() => {
+    if (els.optionsAdvStatus && els.optionsAdvStatus.textContent === 'Reset to defaults')
+      els.optionsAdvStatus.textContent = '';
+  }, 4000);
+}
+
+function _readDteRangePayload() {
+  // Same as _readDteRange but as an object so it can be spread into payloads.
+  const [dte_min, dte_max] = _readDteRange();
+  return { dte_min, dte_max };
+}
+
+// Advanced filters collapsible toggle (independent of wireCollapse since it
+// doesn't persist — power-user feature, default collapsed).
+if (els.optionsScanAdvToggle && els.optionsScanAdvBody) {
+  els.optionsScanAdvToggle.addEventListener('click', () => {
+    const isHidden = els.optionsScanAdvBody.classList.toggle('hidden');
+    els.optionsScanAdvToggle.setAttribute('aria-expanded', String(!isHidden));
+    const chev = els.optionsScanAdvToggle.querySelector('.chevron');
+    if (chev) chev.textContent = isHidden ? '▸' : '▾';
+  });
+}
+
+// Wire the Save / Reset buttons and the dropdown change handlers.
+// Changing a dropdown immediately refreshes the preview (so the user
+// sees the impact of relaxing/tightening before committing to Save).
+if (els.optionsAdvSave) els.optionsAdvSave.addEventListener('click', saveAdvSettings);
+if (els.optionsAdvReset) els.optionsAdvReset.addEventListener('click', resetAdvSettings);
+['optionsAdvPriceFloor', 'optionsAdvVolFloor', 'optionsAdvMinDistance', 'optionsScanTopN']
+  .forEach((k) => {
+    const el = els[k];
+    if (el) el.addEventListener('change', () => refreshPreview(false));
+  });
+if (els.optionsScanPreviewRefresh)
+  els.optionsScanPreviewRefresh.addEventListener('click', () => refreshPreview(true));
+
+// On page load: pull saved settings, populate the UI, then fetch the
+// preview. Both calls are cheap (settings is a single DB read, preview
+// is server-side cached). If the scan-running bootstrap below also
+// kicks in, that's fine — they run in parallel.
+(async () => {
+  await loadSavedSettings();
+  refreshPreview(false);
+})();
 
 
 // --- bootstrap -------------------------------------------------------------
@@ -3941,9 +4908,12 @@ wireCollapse(els.optionsScanToggle, els.optionsScanBody, 'collapse_options_scan'
 els.runBtn.addEventListener('click', runScreen);
 
 Object.values(toggles).forEach((t) => t && t.addEventListener('change', syncDisabledStates));
+hydrateUiPrefs();      // one-time push of legacy localStorage UI prefs to the server
 loadFilterDefaults();  // apply the user's saved filter defaults, if any
 syncDisabledStates();
-if (els.saveDefaultsBtn) els.saveDefaultsBtn.addEventListener('click', saveFilterDefaults);
+if (els.presetSaveBtn) els.presetSaveBtn.addEventListener('click', savePreset);
+if (els.presetDeleteBtn) els.presetDeleteBtn.addEventListener('click', deletePreset);
+if (els.presetsSelect) els.presetsSelect.addEventListener('change', onPresetSelect);
 if (els.resetDefaultsBtn) els.resetDefaultsBtn.addEventListener('click', resetFilterDefaults);
 
 if (els.thead) els.thead.addEventListener('click', onSortHeaderClick);

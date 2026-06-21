@@ -75,13 +75,34 @@ DEFAULT_ALERT_PARAMS: dict = {
     "price_min": 1.0, "price_max": 1000.0,
     "price_dev_min_pct": -1.0, "price_dev_max_pct": 4.0,
     "ema_dev_min_pct": -3.0, "ema_dev_max_pct": 3.0,
-    "macd_hist_min": 0.0, "macd_require_rising": True,
     "turnover_min_pct": 0.5, "turnover_max_pct": 100.0,
     "apply_high": True, "apply_rsi": True, "apply_rsi_dev": True,
     "apply_rvol": True, "apply_avg_volume": False,
     "apply_price": True, "apply_price_dev": True,
-    "apply_ema_dev": True, "apply_macd": True,
+    "apply_ema_dev": True,
     "apply_turnover": False,
+    # Latest-bar % gain.
+    "apply_pct_change": False, "pct_change_min": 5.0,
+    # MACD vs signal line — 5 knobs (gate + 4 sub-conditions).
+    "apply_macd_vs_signal": False,
+    "macd_within_pct": True, "macd_vs_signal_pct": 5.0,
+    "macd_above_signal": False, "macd_line_rising": False,
+    # Market cap filter — input is $M.
+    "apply_market_cap": False,
+    "market_cap_min_m": 0.0, "market_cap_max_m": 10_000_000.0,
+    # SMA Revival (10-SMA turn-up + price cross). Defaults match
+    # app.py:DEFAULT_PARAMS and screener.evaluate_ticker so a rule
+    # created with the filter toggled on but other knobs untouched
+    # behaves the same as the same screen in the main UI.
+    "apply_sma_revival": False,
+    "sma_cross_lookback": 3,
+    "sma_slope_turn_lookback": 5,
+    "sma_slope_window": 3,
+    "sma_min_slope_pct": 0.10,
+    "sma_require_long_flat": False,
+    "sma_long_flat_max_pct": 0.30,
+    "sma_require_volume": False,
+    "sma_volume_mult": 1.20,
 }
 
 # Only these keys are valid kwargs for screener.evaluate_ticker.
@@ -94,6 +115,12 @@ SETUP_DEFAULT_PARAMS: dict = {
     "min_price": 3.0,
     "max_price": 1000.0,
     "min_dollar_vol": 1_000_000.0,
+    # Per-sub-score floors (0–100). Default 0 = off. AND-stack with
+    # score_min so a setup must clear BOTH the composite and any
+    # sub-score floors the user set.
+    "base_min": 0.0,
+    "ignition_min": 0.0,
+    "earliness_min": 0.0,
 }
 _SETUP_PARAM_KEYS = frozenset(SETUP_DEFAULT_PARAMS.keys())
 
@@ -937,6 +964,9 @@ def run() -> int:
                         min_price=float(p.get("min_price", 3.0)),
                         max_price=float(p.get("max_price", 1000.0)),
                         min_dollar_vol=float(p.get("min_dollar_vol", 1_000_000.0)),
+                        base_min=float(p.get("base_min", 0.0)),
+                        ignition_min=float(p.get("ignition_min", 0.0)),
+                        earliness_min=float(p.get("earliness_min", 0.0)),
                     )
                 except Exception as exc:
                     log.warning("setup rule %d scan failed: %s", rule["id"], exc)

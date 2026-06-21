@@ -2,7 +2,7 @@
 Flask web app exposing:
   GET   /                    -> single page UI
   GET   /api/screen          -> run screener (cached for the trading session)
-  GET   /api/chart/<tkr>     -> daily OHLCV + EMA21/50 + RSI(14)/9d-SMA
+  GET   /api/chart/<tkr>     -> daily OHLCV + SMA(10/20/30/40) + RSI(14)/9d-SMA
   GET   /api/lists           -> available list keys / labels
   GET   /api/dates           -> last N trading-day dates for the date picker
   POST  /api/export/xlsx     -> download selected rows as an Excel workbook
@@ -24,6 +24,8 @@ import snapshots
 import alerts
 import pattern_scan
 import picker
+import filter_presets
+import ui_prefs
 import scanner_momentum
 from tickers import LIST_LABELS, refresh_universe, last_fetch_errors
 
@@ -59,12 +61,14 @@ DEFAULT_PARAMS: dict = {
     "price_dev_max_pct": 4.0,
     "ema_dev_min_pct": -3.0,
     "ema_dev_max_pct": 3.0,
-    "macd_hist_min": 0.0,
-    "macd_require_rising": True,
-    "macd_line_min": 0.0,
-    "macd_line_max": 10.0,
+    "macd_within_pct": True,
+    "macd_vs_signal_pct": 5.0,
+    "macd_above_signal": False,
+    "macd_line_rising": False,
     "turnover_min_pct": 0.5,
     "turnover_max_pct": 100.0,
+    "market_cap_min_m": 0.0,
+    "market_cap_max_m": 10_000_000.0,   # $10T = effectively no ceiling
     "pct_change_min": 5.0,
     "apply_high": True,
     "apply_rsi": True,
@@ -74,10 +78,20 @@ DEFAULT_PARAMS: dict = {
     "apply_price": True,
     "apply_price_dev": True,
     "apply_ema_dev": True,
-    "apply_macd": True,
-    "apply_macd_line": False,
+    "apply_macd_vs_signal": False,
     "apply_turnover": False,
+    "apply_market_cap": False,
     "apply_pct_change": False,
+    # SMA Revival — see screener.evaluate_ticker for semantics.
+    "apply_sma_revival": False,
+    "sma_cross_lookback": 3,
+    "sma_slope_turn_lookback": 5,
+    "sma_slope_window": 3,
+    "sma_min_slope_pct": 0.10,
+    "sma_require_long_flat": False,
+    "sma_long_flat_max_pct": 0.30,
+    "sma_require_volume": False,
+    "sma_volume_mult": 1.20,
     "as_of_offset": 0,
     "lists": tuple(sorted(_VALID_LISTS)),
 }
@@ -94,13 +108,33 @@ def _cache_key(params: dict) -> tuple:
     price = (round(float(params["price_min"]), 4), round(float(params["price_max"]), 4)) if params["apply_price"] else ("off",)
     price_dev = (round(float(params["price_dev_min_pct"]), 3), round(float(params["price_dev_max_pct"]), 3)) if params["apply_price_dev"] else ("off",)
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
-    macd = (round(float(params["macd_hist_min"]), 4), bool(params["macd_require_rising"])) if params["apply_macd"] else ("off",)
-    macd_line = (round(float(params["macd_line_min"]), 4), round(float(params["macd_line_max"]), 4)) if params["apply_macd_line"] else ("off",)
+    macd_vs_sig = (
+        bool(params["macd_within_pct"]),
+        round(float(params["macd_vs_signal_pct"]), 4),
+        bool(params["macd_above_signal"]),
+        bool(params["macd_line_rising"]),
+    ) if params["apply_macd_vs_signal"] else ("off",)
     turnover = (round(float(params["turnover_min_pct"]), 4), round(float(params["turnover_max_pct"]), 4)) if params["apply_turnover"] else ("off",)
+    market_cap = (round(float(params["market_cap_min_m"]), 2), round(float(params["market_cap_max_m"]), 2)) if params["apply_market_cap"] else ("off",)
     pct_change = (round(float(params["pct_change_min"]), 4),) if params["apply_pct_change"] else ("off",)
+    sma_rev = (
+        int(params["sma_cross_lookback"]),
+        int(params["sma_slope_turn_lookback"]),
+        int(params["sma_slope_window"]),
+        round(float(params["sma_min_slope_pct"]), 4),
+        bool(params["sma_require_long_flat"]),
+        round(float(params["sma_long_flat_max_pct"]), 4),
+        bool(params["sma_require_volume"]),
+        round(float(params["sma_volume_mult"]), 4),
+    ) if params["apply_sma_revival"] else ("off",)
     lists = tuple(sorted(params["lists"]))
-    as_of = int(params["as_of_offset"])
-    return ("v13", as_of, price, price_dev, ema_dev, macd, macd_line, turnover, pct_change, high, rsi, rsi_dev, rvol, avg_vol, lists)
+    # Cache key uses the RESOLVED as-of date (not the offset) so cache
+    # entries don't get reused across calendar drift. With offset-based
+    # keying, today's offset=1 and yesterday's offset=1 would collide
+    # but mean different calendar dates → stale rows served under the
+    # wrong date. Resolved-date keying is drift-proof.
+    as_of_key = params.get("as_of_date_resolved") or int(params["as_of_offset"])
+    return ("v19", as_of_key, price, price_dev, ema_dev, macd_vs_sig, turnover, market_cap, pct_change, sma_rev, high, rsi, rsi_dev, rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -142,12 +176,37 @@ def _parse_params() -> dict:
         wanted = sorted(_VALID_LISTS)
     if not wanted:
         wanted = sorted(_VALID_LISTS)
-    as_of_offset = _int("as_of_offset", 0)
-    if as_of_offset < 0:
-        as_of_offset = 0
-    if as_of_offset > screener.MAX_AS_OF_OFFSET:
-        as_of_offset = screener.MAX_AS_OF_OFFSET
+    # Preferred path: client sends `as_of=YYYY-MM-DD` (the actual date
+    # the user picked). Resolve to an offset against the CURRENT calendar
+    # so downstream code keeps using offset-based slicing, but the cache
+    # key (below) is the date string — drift-proof.
+    #
+    # Fallback: `as_of_offset` (legacy clients / bookmarks). Subject to
+    # calendar drift if the calendar advanced since the page loaded —
+    # the symptom users reported as "I picked June 17 but got June 18".
+    raw_as_of_date = (request.args.get("as_of") or "").strip()
+    resolved_as_of_date: str | None = None
+    if raw_as_of_date:
+        calendar = screener._calendar_dates(screener.MAX_AS_OF_OFFSET + 1)
+        try:
+            as_of_offset = calendar.index(raw_as_of_date)
+            resolved_as_of_date = raw_as_of_date
+        except ValueError:
+            # User's picked date is no longer in the calendar (e.g. the
+            # page sat open across a snapshot-retention window roll-off).
+            # Fall back to latest so the screen still returns something
+            # meaningful instead of erroring.
+            as_of_offset = 0
+            resolved_as_of_date = calendar[0] if calendar else None
+    else:
+        as_of_offset = _int("as_of_offset", 0)
+        if as_of_offset < 0:
+            as_of_offset = 0
+        if as_of_offset > screener.MAX_AS_OF_OFFSET:
+            as_of_offset = screener.MAX_AS_OF_OFFSET
+        resolved_as_of_date = screener._resolve_as_of_date(as_of_offset)
     return {
+        "as_of_date_resolved": resolved_as_of_date,
         "high_lookback": _int("high_lookback", 2),
         "streak_mode": (request.args.get("streak_mode", "high") or "high").strip().lower()
                        if (request.args.get("streak_mode", "high") or "high").strip().lower()
@@ -165,12 +224,14 @@ def _parse_params() -> dict:
         "price_dev_max_pct": _flt("price_dev_max_pct", 4),
         "ema_dev_min_pct": _flt("ema_dev_min_pct", -3),
         "ema_dev_max_pct": _flt("ema_dev_max_pct", 3),
-        "macd_hist_min": _flt("macd_hist_min", 0),
-        "macd_require_rising": _parse_bool("macd_require_rising", True),
-        "macd_line_min": _flt("macd_line_min", 0.0),
-        "macd_line_max": _flt("macd_line_max", 10.0),
+        "macd_within_pct": _parse_bool("macd_within_pct", True),
+        "macd_vs_signal_pct": _flt("macd_vs_signal_pct", 5.0),
+        "macd_above_signal": _parse_bool("macd_above_signal", False),
+        "macd_line_rising": _parse_bool("macd_line_rising", False),
         "turnover_min_pct": _flt("turnover_min_pct", 0.5),
         "turnover_max_pct": _flt("turnover_max_pct", 100.0),
+        "market_cap_min_m": _flt("market_cap_min_m", 0),
+        "market_cap_max_m": _flt("market_cap_max_m", 10_000_000),
         "pct_change_min": _flt("pct_change_min", 5.0),
         "apply_high": _parse_bool("apply_high", True),
         "apply_rsi": _parse_bool("apply_rsi", True),
@@ -180,10 +241,20 @@ def _parse_params() -> dict:
         "apply_price": _parse_bool("apply_price", True),
         "apply_price_dev": _parse_bool("apply_price_dev", True),
         "apply_ema_dev": _parse_bool("apply_ema_dev", True),
-        "apply_macd": _parse_bool("apply_macd", True),
-        "apply_macd_line": _parse_bool("apply_macd_line", False),
+        "apply_macd_vs_signal": _parse_bool("apply_macd_vs_signal", False),
         "apply_turnover": _parse_bool("apply_turnover", False),
+        "apply_market_cap": _parse_bool("apply_market_cap", False),
         "apply_pct_change": _parse_bool("apply_pct_change", False),
+        # SMA Revival
+        "apply_sma_revival": _parse_bool("apply_sma_revival", False),
+        "sma_cross_lookback": _int("sma_cross_lookback", 3),
+        "sma_slope_turn_lookback": _int("sma_slope_turn_lookback", 5),
+        "sma_slope_window": _int("sma_slope_window", 3),
+        "sma_min_slope_pct": _flt("sma_min_slope_pct", 0.10),
+        "sma_require_long_flat": _parse_bool("sma_require_long_flat", False),
+        "sma_long_flat_max_pct": _flt("sma_long_flat_max_pct", 0.30),
+        "sma_require_volume": _parse_bool("sma_require_volume", False),
+        "sma_volume_mult": _flt("sma_volume_mult", 1.20),
         "as_of_offset": as_of_offset,
         "lists": tuple(wanted),
     }
@@ -193,7 +264,10 @@ def _parse_params() -> dict:
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # Inject server-stored UI prefs into the page so the JS can read
+    # them synchronously at boot (avoids a flash where collapsed
+    # sections / column layout briefly show defaults before hydrating).
+    return render_template("index.html", ui_prefs=ui_prefs.get_all())
 
 
 @app.route("/api/screen")
@@ -239,12 +313,14 @@ def _api_screen_impl():
         price_dev_max_pct=params["price_dev_max_pct"],
         ema_dev_min_pct=params["ema_dev_min_pct"],
         ema_dev_max_pct=params["ema_dev_max_pct"],
-        macd_hist_min=params["macd_hist_min"],
-        macd_require_rising=params["macd_require_rising"],
-        macd_line_min=params["macd_line_min"],
-        macd_line_max=params["macd_line_max"],
+        macd_within_pct=params["macd_within_pct"],
+        macd_above_signal=params["macd_above_signal"],
+        macd_vs_signal_pct=params["macd_vs_signal_pct"],
+        macd_line_rising=params["macd_line_rising"],
         turnover_min_pct=params["turnover_min_pct"],
         turnover_max_pct=params["turnover_max_pct"],
+        market_cap_min_m=params["market_cap_min_m"],
+        market_cap_max_m=params["market_cap_max_m"],
         pct_change_min=params["pct_change_min"],
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
@@ -254,11 +330,21 @@ def _api_screen_impl():
         apply_price=params["apply_price"],
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
-        apply_macd=params["apply_macd"],
-        apply_macd_line=params["apply_macd_line"],
+        apply_macd_vs_signal=params["apply_macd_vs_signal"],
         apply_turnover=params["apply_turnover"],
+        apply_market_cap=params["apply_market_cap"],
         apply_pct_change=params["apply_pct_change"],
+        apply_sma_revival=params["apply_sma_revival"],
+        sma_cross_lookback=params["sma_cross_lookback"],
+        sma_slope_turn_lookback=params["sma_slope_turn_lookback"],
+        sma_slope_window=params["sma_slope_window"],
+        sma_min_slope_pct=params["sma_min_slope_pct"],
+        sma_require_long_flat=params["sma_require_long_flat"],
+        sma_long_flat_max_pct=params["sma_long_flat_max_pct"],
+        sma_require_volume=params["sma_require_volume"],
+        sma_volume_mult=params["sma_volume_mult"],
         as_of_offset=params["as_of_offset"],
+        as_of_date=params.get("as_of_date_resolved"),
         lists=list(params["lists"]),
     )
     payload = [h.to_dict() for h in hits]
@@ -440,11 +526,23 @@ def api_setups():
         min_dollar_vol = float(request.args.get("min_dollar_vol", "1000000"))
     except (TypeError, ValueError):
         min_dollar_vol = 1_000_000.0
+    # Optional per-sub-score floors (0–100, default 0 = off). Used by
+    # the Setup criteria modal so a rule can require e.g. base_min=70 +
+    # ignition_min=50 on top of the overall score_min.
+    def _flt_arg(name: str) -> float:
+        try:
+            return float(request.args.get(name, "0"))
+        except (TypeError, ValueError):
+            return 0.0
+    base_min     = _flt_arg("base_min")
+    ignition_min = _flt_arg("ignition_min")
+    earliness_min = _flt_arg("earliness_min")
     started = time.time()
     results = pattern_scan.scan_setups(
         as_of, min_score=min_score, limit=limit,
         min_price=min_price, max_price=max_price,
         min_dollar_vol=min_dollar_vol,
+        base_min=base_min, ignition_min=ignition_min, earliness_min=earliness_min,
     )
     elapsed = round(time.time() - started, 1)
     return jsonify({
@@ -580,12 +678,14 @@ def api_debug(ticker: str):
         price_dev_max_pct=params["price_dev_max_pct"],
         ema_dev_min_pct=params["ema_dev_min_pct"],
         ema_dev_max_pct=params["ema_dev_max_pct"],
-        macd_hist_min=params["macd_hist_min"],
-        macd_require_rising=params["macd_require_rising"],
-        macd_line_min=params["macd_line_min"],
-        macd_line_max=params["macd_line_max"],
+        macd_within_pct=params["macd_within_pct"],
+        macd_above_signal=params["macd_above_signal"],
+        macd_vs_signal_pct=params["macd_vs_signal_pct"],
+        macd_line_rising=params["macd_line_rising"],
         turnover_min_pct=params["turnover_min_pct"],
         turnover_max_pct=params["turnover_max_pct"],
+        market_cap_min_m=params["market_cap_min_m"],
+        market_cap_max_m=params["market_cap_max_m"],
         pct_change_min=params["pct_change_min"],
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
@@ -595,11 +695,21 @@ def api_debug(ticker: str):
         apply_price=params["apply_price"],
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
-        apply_macd=params["apply_macd"],
-        apply_macd_line=params["apply_macd_line"],
+        apply_macd_vs_signal=params["apply_macd_vs_signal"],
         apply_turnover=params["apply_turnover"],
+        apply_market_cap=params["apply_market_cap"],
         apply_pct_change=params["apply_pct_change"],
+        apply_sma_revival=params["apply_sma_revival"],
+        sma_cross_lookback=params["sma_cross_lookback"],
+        sma_slope_turn_lookback=params["sma_slope_turn_lookback"],
+        sma_slope_window=params["sma_slope_window"],
+        sma_min_slope_pct=params["sma_min_slope_pct"],
+        sma_require_long_flat=params["sma_require_long_flat"],
+        sma_long_flat_max_pct=params["sma_long_flat_max_pct"],
+        sma_require_volume=params["sma_require_volume"],
+        sma_volume_mult=params["sma_volume_mult"],
         as_of_offset=params["as_of_offset"],
+        as_of_date=params.get("as_of_date_resolved"),
     )
     return jsonify(result)
 
@@ -717,8 +827,10 @@ def api_alerts_rule_create():
     rule_type, setup_params?}.
       - rule_type='screener' (default): criteria taken from screener
         filters in the query string (same params /api/screen accepts).
-      - rule_type='setup': criteria from `setup_params` in the JSON body
-        — {score_min, min_price, max_price, min_dollar_vol}.
+      - rule_type='setup': criteria from `setup_params` in the JSON
+        body — see alerts.SETUP_DEFAULT_PARAMS for the accepted keys
+        (score_min, the price / dollar-volume band, and the optional
+        per-sub-score floors base_min / ignition_min / earliness_min).
     """
     if not alerts.enabled():
         return jsonify({"error": "DATABASE_URL not set"}), 400
@@ -739,10 +851,11 @@ def api_alerts_rule_create():
         return jsonify({"error": "scope_value required for sector/industry rules"}), 400
     if rule_type == "setup":
         sp = payload.get("setup_params") or {}
-        params = {
-            k: sp[k] for k in ("score_min", "min_price", "max_price", "min_dollar_vol")
-            if k in sp
-        }
+        # Drive the whitelist off alerts._SETUP_PARAM_KEYS (the canonical
+        # set derived from SETUP_DEFAULT_PARAMS) so new floor keys added
+        # there flow through here automatically. A previous hand-rolled
+        # 4-tuple silently dropped base_min/ignition_min/earliness_min.
+        params = {k: sp[k] for k in alerts._SETUP_PARAM_KEYS if k in sp}
     else:
         params = _parse_params()
         params.pop("lists", None)  # not an evaluate_ticker kwarg
@@ -781,10 +894,8 @@ def api_alerts_rule_update_criteria():
     rule_id = int(payload.get("id", 0))
     sp = payload.get("setup_params")
     if sp:
-        params = {
-            k: sp[k] for k in ("score_min", "min_price", "max_price", "min_dollar_vol")
-            if k in sp
-        }
+        # Same single-source-of-truth pattern as api_alerts_rule_create.
+        params = {k: sp[k] for k in alerts._SETUP_PARAM_KEYS if k in sp}
     else:
         params = _parse_params()
         params.pop("lists", None)
@@ -835,9 +946,10 @@ def api_picks():
 @app.route("/api/picks/run", methods=["POST"])
 def api_picks_run():
     """Re-rank the universe now. Synchronous — expect 5-30s depending
-    on universe size. Body: {weights?, price_min?, price_max?, save?}.
-    `save=true` (default) overwrites the latest persisted picks and
-    saves the config so the next nightly cron uses these settings."""
+    on universe size. Body: {weights?, price_min?, price_max?,
+    pick_limit?, save?}. `save=true` (default) overwrites the latest
+    persisted picks and saves the config so the next nightly cron uses
+    these settings."""
     payload = request.get_json(silent=True) or {}
     cfg = picker.get_config()
     weights = payload.get("weights")
@@ -848,14 +960,15 @@ def api_picks_run():
         price_max = float(payload.get("price_max", cfg["price_max"]))
     except (TypeError, ValueError):
         return jsonify({"error": "price_min / price_max must be numeric"}), 400
+    pick_limit = picker._clamp_limit(payload.get("pick_limit", cfg["pick_limit"]))
     save = bool(payload.get("save", True))
 
     picks, as_of = picker.rank_universe(
         weights=weights, price_min=price_min, price_max=price_max,
-        limit=picker.DEFAULT_LIMIT,
+        limit=pick_limit,
     )
     if save:
-        picker.save_config(weights, price_min, price_max)
+        picker.save_config(weights, price_min, price_max, pick_limit=pick_limit)
         if picks and as_of:
             picker.save_picks(picks, as_of)
     return jsonify({
@@ -901,6 +1014,76 @@ def api_picks_config():
         return jsonify({"error": "price_min / price_max must be numeric"}), 400
     ok = picker.save_config(weights, price_min, price_max)
     return jsonify({"saved": ok, "config": picker.get_config()})
+
+
+# --- filter presets (cross-device persistence) ----------------------------
+# Stored in Postgres so the same saved filter setups load on every device.
+# Cap is enforced server-side via filter_presets.MAX_PRESETS. Falls back
+# silently when DATABASE_URL isn't set (the UI then keeps the legacy
+# localStorage behaviour).
+
+@app.route("/api/filter-presets", methods=["GET"])
+def api_filter_presets_list():
+    return jsonify(filter_presets.list_presets())
+
+
+@app.route("/api/filter-presets", methods=["POST"])
+def api_filter_presets_mutate():
+    """Body: {action: "save"|"delete"|"select"|"reset", name?, state?}.
+    Returns the refreshed list_presets() payload so the client doesn't
+    have to round-trip."""
+    payload = request.get_json(silent=True) or {}
+    action = (payload.get("action") or "").strip().lower()
+    name = payload.get("name") or ""
+    if action == "save":
+        result = filter_presets.save_preset(name, payload.get("state") or {})
+    elif action == "delete":
+        result = filter_presets.delete_preset(name)
+    elif action == "select":
+        result = filter_presets.mark_used(name)
+    elif action == "reset":
+        result = filter_presets.clear_last_used()
+    else:
+        return jsonify({"error": "unknown action"}), 400
+    status = 200 if result.get("ok") else 409 if result.get("error") == "cap_reached" else 400
+    if not result.get("ok") and result.get("error") not in ("cap_reached",):
+        status = 500 if result.get("error") == "db_error" else 400
+    response = {**result, **filter_presets.list_presets()}
+    return jsonify(response), status
+
+
+# --- UI prefs (cross-device persistence) ----------------------------------
+# Key/value bag for things like column layout, collapsed-section state,
+# active tab, etc. — anything that used to live in browser localStorage.
+# The page render also injects these into window.__UI_PREFS__ so the JS
+# can read them synchronously; these endpoints handle writes and a fresh
+# read for clients that don't trust the server-rendered cache.
+
+@app.route("/api/ui-prefs", methods=["GET"])
+def api_ui_prefs_get():
+    return jsonify(ui_prefs.get_all())
+
+
+@app.route("/api/ui-prefs", methods=["POST"])
+def api_ui_prefs_set():
+    """Body: {key, value} for a single upsert, or {prefs: {...}} for a
+    batch (used by the one-time localStorage migration)."""
+    payload = request.get_json(silent=True) or {}
+    # Batch path — migration uploads everything in one POST.
+    if isinstance(payload.get("prefs"), dict):
+        failed = []
+        for k, v in payload["prefs"].items():
+            r = ui_prefs.set_pref(k, v)
+            if not r.get("ok"):
+                failed.append({"key": k, "error": r.get("error")})
+        return jsonify({"ok": not failed, "failed": failed, "prefs": ui_prefs.get_all()})
+    # Single-key path — typical write from a UI interaction.
+    key = payload.get("key")
+    if "value" not in payload:
+        return jsonify({"ok": False, "error": "value required"}), 400
+    result = ui_prefs.set_pref(key, payload.get("value"))
+    status = 200 if result.get("ok") else 400 if result.get("error") in ("empty_key", "key_too_long", "unserialisable_value") else 500
+    return jsonify(result), status
 
 
 # --- real-time momentum scanner -------------------------------------------
@@ -991,26 +1174,135 @@ def api_options_recommendations():
     return jsonify({"recommendations": options.load_recommendations(as_of)})
 
 
+@app.route("/api/options/recommendation_dates", methods=["GET"])
+def api_options_recommendation_dates():
+    """Distinct as_of dates with recs, most recent first. Powers the
+    date picker on the Recent recommendations panel."""
+    import options
+    return jsonify({"dates": options.available_rec_dates(limit=60)})
+
+
+@app.route("/api/options/pinned", methods=["GET", "POST"])
+def api_options_pinned():
+    """GET → list every pinned rec (full snapshot each), newest first.
+    POST body {ticker, as_of, note?} → snapshot the live rec into the
+    pin store. Re-pinning the same (ticker, as_of) updates the note."""
+    import options
+    if request.method == "GET":
+        return jsonify({"pinned": options.load_pinned()})
+    body = request.get_json(silent=True) or {}
+    ticker = (body.get("ticker") or "").strip().upper()
+    as_of  = (body.get("as_of")  or "").strip()
+    note   = body.get("note") or ""
+    if not ticker or not as_of:
+        return jsonify({"error": "ticker and as_of are required"}), 400
+    pin = options.pin_rec(ticker, as_of, note)
+    if pin is None:
+        return jsonify({"error": f"no recommendation found for {ticker} on {as_of}"}), 404
+    return jsonify({"pin": pin})
+
+
+@app.route("/api/options/pinned/<int:pin_id>", methods=["PATCH", "DELETE"])
+def api_options_pinned_item(pin_id: int):
+    """PATCH body {note} → update the note. DELETE → unpin."""
+    import options
+    if request.method == "DELETE":
+        ok = options.unpin(pin_id)
+        return jsonify({"deleted": ok}), (200 if ok else 404)
+    body = request.get_json(silent=True) or {}
+    note = body.get("note") or ""
+    ok = options.update_pinned_note(pin_id, note)
+    return jsonify({"updated": ok}), (200 if ok else 404)
+
+
 @app.route("/api/options/scan", methods=["POST"])
 def api_options_scan():
-    """Manual trigger for the options universe scanner. Synchronous —
-    request returns when the scan finishes (~1-2 min at the default
-    top_n=8). Body JSON (all optional):
-       {"top_n": 8, "dte_min": 15, "dte_max": 60}"""
+    """Kick off an async universe scan. Returns immediately — the UI
+    polls /api/options/scan/status for progress. Body JSON (all
+    optional): {"top_n": 50, "dte_min": 15, "dte_max": 60}
+
+    Cap at 200 — gunicorn's 600s timeout is irrelevant now since the
+    scan runs in a background thread, but the per-ticker work is
+    unchanged so a Top 200 run takes ~40 min wall-clock."""
     import options_scanner
     body = request.get_json(silent=True) or {}
+    # Fall back to the persisted UI settings for any field the request
+    # body doesn't specify. Lets the user save defaults once and have
+    # subsequent scans honor them without re-sending the full set.
+    saved = options_scanner.load_settings()
     try:
-        top_n   = int(body.get("top_n",   options_scanner.DEFAULT_MANUAL_TOP_N))
-        dte_min = int(body.get("dte_min", 15))
-        dte_max = int(body.get("dte_max", 60))
+        top_n   = int(body.get("top_n",   saved["top_n"]))
+        dte_min = int(body.get("dte_min", saved["dte_min"]))
+        dte_max = int(body.get("dte_max", saved["dte_max"]))
+        price_floor  = float(body.get("price_floor",  saved["price_floor"]))
+        volume_floor = float(body.get("volume_floor", saved["volume_floor"]))
+        min_dist     = float(body.get("min_directional_distance",
+                                       saved["min_directional_distance"]))
     except (TypeError, ValueError):
-        return jsonify({"error": "top_n / dte_min / dte_max must be integers"}), 400
-    # Safety cap — keep the sync request bounded; nightly cron has no cap.
-    top_n = max(1, min(top_n, 25))
-    result = options_scanner.scan_universe(
+        return jsonify({"error": "scan params must be numeric"}), 400
+    top_n = max(1, min(top_n, 200))
+    return jsonify(options_scanner.start_scan(
         top_n=top_n, dte_min=dte_min, dte_max=dte_max, persist=True,
-    )
-    return jsonify(result)
+        price_floor=price_floor, volume_floor=volume_floor,
+        min_directional_distance=min_dist,
+    ))
+
+
+@app.route("/api/options/scan/status")
+def api_options_scan_status():
+    """Poll endpoint: current scan progress + last_result once the run
+    finishes. Safe to call repeatedly while idle."""
+    import options_scanner
+    return jsonify(options_scanner.scan_status())
+
+
+@app.route("/api/options/scan/cancel", methods=["POST"])
+def api_options_scan_cancel():
+    """Cancel the in-progress scan. The worker honors the request
+    before its next ticker; partial results stay in last_result."""
+    import options_scanner
+    cancelled = options_scanner.cancel_scan()
+    return jsonify({"cancelled": cancelled, **options_scanner.scan_status()})
+
+
+@app.route("/api/options/scan/preview")
+def api_options_scan_preview():
+    """Run only the pre-score step (Gates 1 + 2) and return count
+    breakdown so the UI can show 'X stocks qualify (Y bull / Z bear)'
+    above the Scan button. Query params override saved settings for
+    a live what-if (?price_floor=10&volume_floor=100000&min_directional_distance=5).
+    `?force=1` bypasses the 5-min cache."""
+    import options_scanner
+    def _flt_param(name: str) -> float | None:
+        raw = request.args.get(name)
+        if raw is None or raw == "":
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+    force = (request.args.get("force") or "").strip() in ("1", "true", "yes")
+    return jsonify(options_scanner.preview_counts(
+        price_floor=_flt_param("price_floor"),
+        volume_floor=_flt_param("volume_floor"),
+        min_directional_distance=_flt_param("min_directional_distance"),
+        force=force,
+    ))
+
+
+@app.route("/api/options/scan/settings", methods=["GET", "PUT"])
+def api_options_scan_settings():
+    """GET — return the saved settings (or defaults if nothing saved).
+    PUT body — same dict shape; upserts the single config row. Returns
+    the post-clamp dict actually written so the UI can echo it back."""
+    import options_scanner
+    if request.method == "GET":
+        return jsonify({
+            "settings": options_scanner.load_settings(),
+            "defaults": dict(options_scanner.DEFAULT_SETTINGS),
+        })
+    body = request.get_json(silent=True) or {}
+    return jsonify({"settings": options_scanner.save_settings(body)})
 
 
 @app.route("/api/momentum/alerts/hide", methods=["POST"])
@@ -1114,6 +1406,8 @@ def api_outcomes_thumbs_up():
 snapshots.init()
 alerts.init_tables()
 picker.init_tables()
+filter_presets.init_tables()
+ui_prefs.init_tables()
 scanner_momentum.init_tables()
 import options  # imported here so init_tables runs after snapshots.init
 options.init_tables()

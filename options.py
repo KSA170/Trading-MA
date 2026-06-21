@@ -147,6 +147,39 @@ CREATE TABLE IF NOT EXISTS options_iv_history (
     captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (ticker, as_of)
 );
+
+-- Single-row config table for the universe scanner. `id` is always 1
+-- (enforced by the CHECK constraint) — the UI's "Save defaults" upserts
+-- this row, and the cron + manual scan endpoints fall back to it when
+-- a request body doesn't override.
+CREATE TABLE IF NOT EXISTS options_scan_config (
+    id                       INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    price_floor              REAL NOT NULL,
+    volume_floor             BIGINT NOT NULL,
+    min_directional_distance REAL NOT NULL,
+    top_n                    INT NOT NULL,
+    dte_min                  INT NOT NULL,
+    dte_max                  INT NOT NULL,
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- User-pinned recommendations for later review. `snapshot` freezes
+-- the full rec dict at pin time so it survives even if the
+-- underlying options_recommendations row gets overwritten by a
+-- re-scan on the same day. UNIQUE(ticker, as_of) — re-pinning the
+-- same date+ticker updates the existing pin's note + snapshot
+-- rather than creating duplicates.
+CREATE TABLE IF NOT EXISTS options_pinned_recs (
+    id          BIGSERIAL PRIMARY KEY,
+    ticker      TEXT NOT NULL,
+    as_of       DATE NOT NULL,
+    snapshot    JSONB NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    pinned_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (ticker, as_of)
+);
+CREATE INDEX IF NOT EXISTS options_pinned_recs_pinned_at_idx
+    ON options_pinned_recs (pinned_at DESC);
 """
 
 
@@ -211,7 +244,13 @@ def _to_f(v: Any) -> float | None:
 def _score_price_trajectory(snap_row: dict | None,
                             avg_vol_20: float | None) -> dict:
     """Layer 1 — Price Trajectory (30% of composite).
-    Sub-signals: RSI, MACD, EMA stack, volume spike. All normalized 0-100."""
+    Sub-signals: RSI, MACD, EMA stack, volume spike. All normalized 0-100.
+
+    A sub-signal is *skipped* (not defaulted to 50) when its raw inputs
+    are missing — the composite renormalizes over present sub-signals
+    only, so missing data doesn't drag the layer back to neutral.
+    Genuinely-neutral readings (e.g. RSI 46-55) still score 50 and
+    contribute, since that *is* a real signal."""
     subs: dict[str, float] = {}
     reasons: list[str] = []
 
@@ -225,25 +264,16 @@ def _score_price_trajectory(snap_row: dict | None,
     vol_today = _to_f((snap_row or {}).get("volume"))
 
     # RSI: oversold rebound bullish, overbought = bear exhaustion, midband mild
-    if rsi is None:
-        subs["rsi"] = 50.0
-    elif rsi <= 30:
-        subs["rsi"] = 75.0;  reasons.append(f"RSI {rsi:.0f} oversold (bullish bounce setup)")
-    elif rsi <= 45:
-        subs["rsi"] = 60.0;  reasons.append(f"RSI {rsi:.0f} (mild bull)")
-    elif rsi <= 55:
-        subs["rsi"] = 50.0
-    elif rsi <= 65:
-        subs["rsi"] = 55.0
-    elif rsi <= 75:
-        subs["rsi"] = 35.0;  reasons.append(f"RSI {rsi:.0f} approaching overbought")
-    else:
-        subs["rsi"] = 20.0;  reasons.append(f"RSI {rsi:.0f} overbought")
+    if rsi is not None:
+        if   rsi <= 30: subs["rsi"] = 75.0; reasons.append(f"RSI {rsi:.0f} oversold (bullish bounce setup)")
+        elif rsi <= 45: subs["rsi"] = 60.0; reasons.append(f"RSI {rsi:.0f} (mild bull)")
+        elif rsi <= 55: subs["rsi"] = 50.0
+        elif rsi <= 65: subs["rsi"] = 55.0
+        elif rsi <= 75: subs["rsi"] = 35.0; reasons.append(f"RSI {rsi:.0f} approaching overbought")
+        else:           subs["rsi"] = 20.0; reasons.append(f"RSI {rsi:.0f} overbought")
 
     # MACD: combine line sign + histogram momentum
-    if macd_val is None and macd_hist is None:
-        subs["macd"] = 50.0
-    else:
+    if macd_val is not None or macd_hist is not None:
         m = 50.0
         if macd_val is not None:
             m += 15.0 if macd_val > 0 else -15.0
@@ -257,9 +287,7 @@ def _score_price_trajectory(snap_row: dict | None,
 
     # EMA stack — we have 21/50 from the snapshot (not 200, but the
     # short/medium relationship still captures trend direction).
-    if ema21 is None or ema50 is None or close is None:
-        subs["ma_stack"] = 50.0
-    else:
+    if ema21 is not None and ema50 is not None and close is not None:
         if close > ema21 > ema50:
             subs["ma_stack"] = 85.0; reasons.append("Price > EMA21 > EMA50 (bullish stack)")
         elif close > ema21 and ema21 > ema50:
@@ -274,9 +302,7 @@ def _score_price_trajectory(snap_row: dict | None,
             subs["ma_stack"] = 50.0
 
     # Volume spike — needs today's volume vs 20-day avg
-    if close is None or prior is None or vol_today is None or not avg_vol_20:
-        subs["volume"] = 50.0
-    else:
+    if close is not None and prior is not None and vol_today is not None and avg_vol_20:
         rel = vol_today / avg_vol_20 if avg_vol_20 > 0 else 1.0
         moved_up = close >= prior
         if rel >= 2.0 and moved_up:
@@ -292,8 +318,12 @@ def _score_price_trajectory(snap_row: dict | None,
         else:
             subs["volume"] = 55.0 if moved_up else 45.0
 
-    score = sum(subs.values()) / len(subs)
-    return {"score": round(score, 1), "sub_scores": {k: round(v, 1) for k, v in subs.items()}, "reasons": reasons}
+    score = (sum(subs.values()) / len(subs)) if subs else None
+    return {
+        "score": round(score, 1) if score is not None else None,
+        "sub_scores": {k: round(v, 1) for k, v in subs.items()},
+        "reasons": reasons,
+    }
 
 
 def _score_catalyst(news: list[dict] | None,
@@ -301,13 +331,16 @@ def _score_catalyst(news: list[dict] | None,
                     analyst_recs: dict | None,
                     dte_max: int) -> dict:
     """Layer 2 — Catalyst Events (25%).
-    Sub-signals: earnings timing, analyst upgrades/downgrades."""
+    Sub-signals: earnings timing, analyst upgrades/downgrades, news volume.
+
+    Each sub is *skipped* when its underlying data isn't available — so
+    a stock with no analyst coverage and no recent news doesn't get
+    penalized by neutral defaults; the composite renormalizes over the
+    layers that do have data."""
     subs: dict[str, float] = {}
     reasons: list[str] = []
 
-    # Earnings timing — earnings near = slightly bull tactically (long
-    # premium going in often pays); the *direction* is set by other
-    # layers. We just flag a positive contribution when one is in range.
+    # Earnings timing — earnings near = slightly bull tactically.
     if earnings_date:
         try:
             ed = datetime.strptime(earnings_date, "%Y-%m-%d").date()
@@ -321,40 +354,29 @@ def _score_catalyst(news: list[dict] | None,
             else:
                 subs["earnings_timing"] = 50.0
         except (TypeError, ValueError):
-            subs["earnings_timing"] = 50.0
-    else:
-        subs["earnings_timing"] = 50.0
+            pass   # unparseable date → no data, skip the sub-signal
 
     # Analyst upgrades / downgrades — net actions in last 30 days
     if analyst_recs and "net_30d" in analyst_recs:
         net = int(analyst_recs["net_30d"])
-        if net >= 3:
-            subs["analyst"] = 80.0; reasons.append(f"+{net} net analyst upgrades 30d")
-        elif net >= 1:
-            subs["analyst"] = 65.0; reasons.append(f"+{net} net analyst upgrade(s) 30d")
-        elif net == 0:
-            subs["analyst"] = 50.0
-        elif net >= -2:
-            subs["analyst"] = 35.0; reasons.append(f"{net} net analyst downgrade(s) 30d")
-        else:
-            subs["analyst"] = 20.0; reasons.append(f"{net} net analyst downgrades 30d")
-    else:
-        subs["analyst"] = 50.0
+        if   net >= 3:  subs["analyst"] = 80.0; reasons.append(f"+{net} net analyst upgrades 30d")
+        elif net >= 1:  subs["analyst"] = 65.0; reasons.append(f"+{net} net analyst upgrade(s) 30d")
+        elif net == 0:  subs["analyst"] = 50.0
+        elif net >= -2: subs["analyst"] = 35.0; reasons.append(f"{net} net analyst downgrade(s) 30d")
+        else:           subs["analyst"] = 20.0; reasons.append(f"{net} net analyst downgrades 30d")
 
     # News count — secondary tailwind / not directional on its own
     if news:
         n = len(news)
-        if n >= 3:
-            subs["news_volume"] = 60.0; reasons.append(f"{n} recent catalyst stories")
-        elif n >= 1:
-            subs["news_volume"] = 55.0
-        else:
-            subs["news_volume"] = 50.0
-    else:
-        subs["news_volume"] = 50.0
+        if   n >= 3: subs["news_volume"] = 60.0; reasons.append(f"{n} recent catalyst stories")
+        elif n >= 1: subs["news_volume"] = 55.0
 
-    score = sum(subs.values()) / len(subs)
-    return {"score": round(score, 1), "sub_scores": {k: round(v, 1) for k, v in subs.items()}, "reasons": reasons}
+    score = (sum(subs.values()) / len(subs)) if subs else None
+    return {
+        "score": round(score, 1) if score is not None else None,
+        "sub_scores": {k: round(v, 1) for k, v in subs.items()},
+        "reasons": reasons,
+    }
 
 
 def _score_institutional(insider: dict | None,
@@ -371,7 +393,8 @@ def _score_institutional(insider: dict | None,
     reasons: list[str] = []
     partial = True  # always partial without paid feeds; surfaces in UI
 
-    # Insider Form 4
+    # Insider Form 4 — skip the sub-signal entirely when no recent
+    # filing exists, rather than defaulting to neutral 50.
     if insider:
         code = (insider.get("code") or "").upper()
         recent = _is_recent_insider(insider, max_days=30)
@@ -383,10 +406,7 @@ def _score_institutional(insider: dict | None,
             subs["insider"] = 60.0
         elif code == "S":
             subs["insider"] = 45.0
-        else:
-            subs["insider"] = 50.0
-    else:
-        subs["insider"] = 50.0
+        # else: stale unknown-code filing — no useful signal, skip.
 
     # Analyst summary — sentiment proxy.
     # analyst_summary expected: {'strong_buy': n, 'buy': n, 'hold': n,
@@ -404,18 +424,12 @@ def _score_institutional(insider: dict | None,
             bear = (ss * 1.0 + se * 0.6) / total
             tilt = bull - bear   # -1 (full bear) .. +1 (full bull)
             subs["analyst_summary"] = _clamp(50 + tilt * 40)
-            if tilt > 0.3:
+            if tilt > 0.3 or tilt < -0.3:
                 reasons.append(f"{sb + bu} buy / {se + ss} sell across {total} analysts")
-            elif tilt < -0.3:
-                reasons.append(f"{sb + bu} buy / {se + ss} sell across {total} analysts")
-        else:
-            subs["analyst_summary"] = 50.0
-    else:
-        subs["analyst_summary"] = 50.0
 
-    score = sum(subs.values()) / len(subs)
+    score = (sum(subs.values()) / len(subs)) if subs else None
     return {
-        "score": round(score, 1),
+        "score": round(score, 1) if score is not None else None,
         "sub_scores": {k: round(v, 1) for k, v in subs.items()},
         "reasons": reasons,
         "partial_data": partial,
@@ -424,7 +438,12 @@ def _score_institutional(insider: dict | None,
 
 
 def _score_fundamentals(fund: dict | None) -> dict:
-    """Layer 4 — Fundamentals (15%). Revenue growth YoY + P/E reasonableness."""
+    """Layer 4 — Fundamentals (15%). Revenue growth YoY + P/E reasonableness.
+
+    Skips each sub-signal when its underlying data is unavailable
+    (rather than defaulting to 50). If `fund` is None entirely or
+    contains nothing usable, the layer returns score=None and the
+    composite renormalizes over the remaining layers."""
     subs: dict[str, float] = {}
     reasons: list[str] = []
 
@@ -432,45 +451,45 @@ def _score_fundamentals(fund: dict | None) -> dict:
         rev = fund.get("revenue_growth_yoy")
         if isinstance(rev, (int, float)):
             r = float(rev) * 100  # to percent
-            if   r >= 30: subs["revenue"] = 90.0; reasons.append(f"revenue +{r:.0f}% YoY")
-            elif r >= 15: subs["revenue"] = 75.0; reasons.append(f"revenue +{r:.0f}% YoY")
-            elif r >=  5: subs["revenue"] = 60.0
-            elif r >=  0: subs["revenue"] = 52.0
+            if   r >= 30:  subs["revenue"] = 90.0; reasons.append(f"revenue +{r:.0f}% YoY")
+            elif r >= 15:  subs["revenue"] = 75.0; reasons.append(f"revenue +{r:.0f}% YoY")
+            elif r >=  5:  subs["revenue"] = 60.0
+            elif r >=  0:  subs["revenue"] = 52.0
             elif r >= -10: subs["revenue"] = 40.0
             elif r >= -25: subs["revenue"] = 25.0; reasons.append(f"revenue {r:.0f}% YoY")
-            else:         subs["revenue"] = 15.0; reasons.append(f"revenue {r:.0f}% YoY")
-        else:
-            subs["revenue"] = 50.0
+            else:          subs["revenue"] = 15.0; reasons.append(f"revenue {r:.0f}% YoY")
 
         pe = fund.get("trailing_pe") or fund.get("forward_pe")
         if isinstance(pe, (int, float)) and pe > 0:
             p = float(pe)
-            if   p < 10:  subs["pe"] = 50.0
-            elif p < 25:  subs["pe"] = 62.0
-            elif p < 40:  subs["pe"] = 48.0
-            else:         subs["pe"] = 38.0; reasons.append(f"P/E {p:.0f} elevated")
-        else:
-            subs["pe"] = 50.0   # negative or unknown
-    else:
-        subs["revenue"] = 50.0
-        subs["pe"] = 50.0
+            if   p < 10: subs["pe"] = 50.0
+            elif p < 25: subs["pe"] = 62.0
+            elif p < 40: subs["pe"] = 48.0
+            else:        subs["pe"] = 38.0; reasons.append(f"P/E {p:.0f} elevated")
 
-    score = sum(subs.values()) / len(subs)
-    return {"score": round(score, 1), "sub_scores": {k: round(v, 1) for k, v in subs.items()}, "reasons": reasons}
+    score = (sum(subs.values()) / len(subs)) if subs else None
+    return {
+        "score": round(score, 1) if score is not None else None,
+        "sub_scores": {k: round(v, 1) for k, v in subs.items()},
+        "reasons": reasons,
+    }
 
 
 def _score_sector(sector: str | None,
                   sector_5d: float | None,
                   spy_5d: float | None) -> dict:
-    """Layer 5 — Sector Trend (10%). Sector ETF 5d move minus SPY 5d move."""
+    """Layer 5 — Sector Trend (10%). Sector ETF 5d move minus SPY 5d move.
+
+    Skipped (score=None) when either the sector ETF or SPY 5d-move
+    fetch failed — the composite renormalizes over the remaining
+    layers. SPY almost always resolves, so the common reason for skip
+    is a ticker with no mapped sector."""
     subs: dict[str, float] = {}
     reasons: list[str] = []
 
     etf = _SECTOR_ETFS.get(sector) if sector else None
 
-    if sector_5d is None or spy_5d is None:
-        subs["sector_vs_spy"] = 50.0
-    else:
+    if sector_5d is not None and spy_5d is not None:
         rel = sector_5d - spy_5d   # in percent
         if   rel >=  3: subs["sector_vs_spy"] = 85.0; reasons.append(f"{etf or 'sector'} +{rel:.1f}% vs SPY (strong tailwind)")
         elif rel >=  1: subs["sector_vs_spy"] = 65.0; reasons.append(f"{etf or 'sector'} +{rel:.1f}% vs SPY")
@@ -478,20 +497,48 @@ def _score_sector(sector: str | None,
         elif rel >= -3: subs["sector_vs_spy"] = 35.0; reasons.append(f"{etf or 'sector'} {rel:.1f}% vs SPY")
         else:           subs["sector_vs_spy"] = 15.0; reasons.append(f"{etf or 'sector'} {rel:.1f}% vs SPY (strong headwind)")
 
-    score = sum(subs.values()) / len(subs)
-    return {"score": round(score, 1), "sub_scores": {k: round(v, 1) for k, v in subs.items()},
-            "reasons": reasons, "sector_etf": etf}
+    score = (sum(subs.values()) / len(subs)) if subs else None
+    return {
+        "score": round(score, 1) if score is not None else None,
+        "sub_scores": {k: round(v, 1) for k, v in subs.items()},
+        "reasons": reasons,
+        "sector_etf": etf,
+    }
 
 
 # --- composite scorer -----------------------------------------------------
 
 def _composite(layers: dict) -> dict:
-    """Weighted sum of layer scores. Returns composite 0-100."""
+    """Weighted sum of layer scores, renormalized over layers with data.
+
+    A layer with score=None (i.e. all its sub-signals lacked source
+    data — common for mid/small caps with no analyst coverage or
+    sparse fundamentals) is *excluded* from both the numerator and
+    denominator. So a ticker with strong Price+Sector signals but no
+    Catalyst/Institutional/Fundamentals data is scored as
+    (0.30·price + 0.10·sector) / 0.40 instead of being dragged
+    toward 50 by three neutral defaults.
+
+    `used_weight` is also returned so the UI / digest can warn when
+    a verdict came from very thin layer coverage (e.g. only Price)."""
     total = 0.0
+    used_weight = 0.0
+    contributing: list[str] = []
     for key, w in WEIGHTS.items():
         layer = layers.get(key) or {}
-        total += w * float(layer.get("score") or 50)
-    return {"score": round(total, 1), "weights": WEIGHTS}
+        s = layer.get("score")
+        if s is None:
+            continue
+        total += w * float(s)
+        used_weight += w
+        contributing.append(key)
+    score = total / used_weight if used_weight > 0 else 50.0
+    return {
+        "score": round(score, 1),
+        "weights": WEIGHTS,
+        "used_weight": round(used_weight, 3),
+        "contributing_layers": contributing,
+    }
 
 
 def _verdict(composite_score: float, iv_rich: bool) -> tuple[str, str, str]:
@@ -520,24 +567,55 @@ def _verdict(composite_score: float, iv_rich: bool) -> tuple[str, str, str]:
 
 # --- option chain fetch + IV ---------------------------------------------
 
+class _ChainFetchError(Exception):
+    """Raised by _fetch_chains_in_window when the chain fetch failed
+    for reasons unrelated to the ticker being non-optionable. Lets
+    recommend_for_ticker distinguish 'ticker has no chain in range'
+    (PASS, expected) from 'Yahoo throttled the fetch' (surface to UI,
+    bump rate-limit counter). `rate_limited=True` when the error
+    message looks like a 429 / throttle."""
+    def __init__(self, msg: str, rate_limited: bool = False) -> None:
+        super().__init__(msg)
+        self.rate_limited = rate_limited
+
+
+def _looks_rate_limited(exc_msg: str) -> bool:
+    m = exc_msg.lower()
+    return ("too many" in m or "rate limit" in m or "429" in m
+            or "throttl" in m)
+
+
 def _fetch_chains_in_window(ticker: str,
                             dte_min: int,
                             dte_max: int) -> list[dict]:
     """Pull every chain inside [dte_min, dte_max]. Returns list of
-    {expiration, dte, calls, puts}."""
+    {expiration, dte, calls, puts}.
+
+    Raises _ChainFetchError when the fetch fails (vs. ticker has no
+    chains in range, which returns []). The two cases were
+    indistinguishable before — every yfinance failure surfaced to the
+    UI as 'no liquid option chain available... or ticker isn't
+    optionable', misleading users into thinking liquid optionable
+    names (C, BAC, etc.) had no chains."""
     try:
         import yfinance as yf
     except Exception as exc:
-        log.warning("yfinance import failed: %s", exc)
-        return []
+        raise _ChainFetchError(f"yfinance import failed: {exc}")
     try:
         yft = yf.Ticker(ticker)
         expirations = list(yft.options or ())
     except Exception as exc:
+        msg = str(exc)
         log.warning("options chain lookup failed for %s: %s", ticker, exc)
-        return []
+        raise _ChainFetchError(
+            f"chain lookup failed: {exc}",
+            rate_limited=_looks_rate_limited(msg),
+        )
     today = date.today()
     out: list[dict] = []
+    in_window_total = 0
+    in_window_failed = 0
+    last_err_msg = ""
     for exp_str in expirations:
         try:
             exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
@@ -546,13 +624,24 @@ def _fetch_chains_in_window(ticker: str,
         dte = (exp - today).days
         if not (dte_min <= dte <= dte_max):
             continue
+        in_window_total += 1
         try:
             ch = yft.option_chain(exp_str)
         except Exception as exc:
             log.warning("option_chain(%s, %s) failed: %s", ticker, exp_str, exc)
+            in_window_failed += 1
+            last_err_msg = str(exc)
             continue
         out.append({"expiration": exp_str, "dte": dte,
                     "calls": ch.calls, "puts": ch.puts})
+    # If at least one expiration was in our DTE window but EVERY single
+    # per-chain fetch failed, treat that as a fetch error (likely
+    # throttled) rather than as "no chains available".
+    if not out and in_window_total > 0 and in_window_failed == in_window_total:
+        raise _ChainFetchError(
+            f"all {in_window_failed} chain fetch(es) failed in DTE window — last error: {last_err_msg}",
+            rate_limited=_looks_rate_limited(last_err_msg),
+        )
     return out
 
 
@@ -870,14 +959,19 @@ def _prose_rationale(ticker: str, current_price: float,
         "institutional": "institutional positioning",
         "fundamentals": "fundamentals", "sector": "sector",
     }
-    layer_scores = {k: float(v.get("score") or 50) for k, v in layers.items()}
+    # Layers with score=None had no underlying data — exclude them
+    # from the "strongest layers" callout entirely instead of treating
+    # a missing reading as a neutral 50.
+    layer_scores = {k: float(v.get("score")) for k, v in layers.items()
+                    if v.get("score") is not None}
     if direction == "call":
         top = sorted(layer_scores.items(), key=lambda x: -x[1])[:2]
         case_word = "bull case"
     else:
         top = sorted(layer_scores.items(), key=lambda x: x[1])[:2]
         case_word = "bear case"
-    top_phrase = " and ".join(f"{layer_names[k]} ({v:.0f})" for k, v in top)
+    top_phrase = (" and ".join(f"{layer_names[k]} ({v:.0f})" for k, v in top)
+                  if top else "the available layers")
 
     # IV commentary
     iv_phrase = ""
@@ -1019,12 +1113,29 @@ def recommend_for_ticker(ticker: str,
         )
 
     # Option chain + IV context
-    chains = _fetch_chains_in_window(ticker, dte_min, dte_max)
+    try:
+        chains = _fetch_chains_in_window(ticker, dte_min, dte_max)
+    except _ChainFetchError as exc:
+        # Chain fetch threw — distinguish rate-limit (UI shows banner,
+        # try again later) from generic failure (likely intermittent).
+        if exc.rate_limited:
+            out["reason"] = (
+                f"chain fetch rate-limited by Yahoo — try again in a few minutes "
+                f"({dte_min}-{dte_max} DTE window)"
+            )
+            out["chain_fetch_status"] = "rate_limited"
+        else:
+            out["reason"] = (
+                f"chain fetch failed ({dte_min}-{dte_max} DTE): {exc}"
+            )
+            out["chain_fetch_status"] = "error"
+        return out
     if not chains:
         out["reason"] = (
-            f"no liquid option chain available in {dte_min}-{dte_max} DTE "
-            f"(yfinance returned nothing or ticker isn't optionable)"
+            f"ticker has no listed expirations in {dte_min}-{dte_max} DTE "
+            f"(may not be optionable, or no contracts in that window)"
         )
+        out["chain_fetch_status"] = "no_chain"
         return out
     atm_iv = _atm_iv(chains, current_price)
     iv_ctx = _iv_regime(atm_iv, realized_vol)
@@ -1138,6 +1249,45 @@ def save_recommendation(rec: dict) -> bool:
         return False
 
 
+def record_iv(ticker: str, as_of: str, atm_iv: float | None) -> bool:
+    """Append today's ATM IV reading to the rolling per-ticker history.
+    Idempotent on (ticker, as_of) — same-day reruns of the scan overwrite
+    instead of duplicating. Returns False on no-op (DB disabled or atm_iv
+    missing) without logging, True on a successful upsert.
+
+    Builds the per-ticker baseline IV rank / IV percentile signals will
+    eventually read. ~60 trading days of writes gets us to a usable
+    distribution; until then it's just accumulating quietly."""
+    if atm_iv is None:
+        return False
+    import snapshots
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO options_iv_history (ticker, as_of, atm_iv) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (ticker, as_of) DO UPDATE SET "
+                "atm_iv = EXCLUDED.atm_iv, captured_at = now()",
+                (ticker, as_of, float(atm_iv)),
+            )
+        return True
+    except Exception as exc:
+        log.warning("options.record_iv(%s) failed: %s", ticker, exc)
+        return False
+
+
+def save_recommendation_with_iv(rec: dict) -> bool:
+    """Persist the recommendation AND the ATM IV reading. The two writes
+    are independent — one failing does not skip the other. Returns the
+    recommendation write's success bit (the IV write is best-effort)."""
+    rec_ok = save_recommendation(rec)
+    iv_ctx = rec.get("iv_context") or {}
+    record_iv(rec.get("ticker"), rec.get("as_of"), iv_ctx.get("atm_iv"))
+    return rec_ok
+
+
 def _layer_scores_compact(layers: dict) -> dict:
     out = {}
     for k, v in (layers or {}).items():
@@ -1206,6 +1356,181 @@ def load_recommendations(as_of: str | None = None) -> list[dict]:
             "post_earnings_override": bool(r[19]) if r[19] is not None else False,
         })
     return out
+
+
+def available_rec_dates(limit: int = 30) -> list[str]:
+    """Distinct as_of dates that have at least one rec, most recent
+    first. Powers the date picker on the Recent recommendations
+    panel."""
+    import snapshots
+    if not snapshots.enabled():
+        return []
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT as_of FROM options_recommendations "
+                "GROUP BY as_of ORDER BY as_of DESC LIMIT %s",
+                (int(limit),),
+            )
+            rows = cur.fetchall()
+        return [r[0].isoformat() for r in rows if r[0]]
+    except Exception as exc:
+        log.warning("options.available_rec_dates failed: %s", exc)
+        return []
+
+
+# --- pinned recommendations -----------------------------------------------
+# User-bookmarked recs for later review. Snapshot-on-pin so the saved
+# copy survives even if the underlying options_recommendations row is
+# overwritten by a re-scan on the same day.
+
+def _format_suggested_contract(rec: dict) -> str:
+    """Brokers-style summary of the contract this rec recommends — used
+    as the default note when a user pins without typing their own.
+    Format: `TICKER EXPIRY $STRIKE TYPE @ $MID mid`. Returns "" if the
+    rec doesn't actually pin down a specific contract (no strike / no
+    expiration)."""
+    if not rec: return ""
+    tkr  = (rec.get("ticker") or "").upper()
+    dir_ = (rec.get("direction") or "").upper()
+    exp  = rec.get("expiration") or ""
+    strk = rec.get("strike")
+    mid  = rec.get("mid_price")
+    if not tkr or not exp or strk is None:
+        return ""
+    parts = [tkr, str(exp), f"${strk:g}"]
+    if dir_: parts.append(dir_)
+    s = " ".join(parts)
+    if mid is not None:
+        s += f" @ ${mid:g} mid"
+    return s
+
+
+def pin_rec(ticker: str, as_of: str, note: str = "") -> dict | None:
+    """Pin a rec. Looks up the live row from options_recommendations,
+    snapshots its full dict into options_pinned_recs, and returns the
+    new pin (or the updated existing one). Returns None if the source
+    rec doesn't exist or DB is disabled.
+
+    Note handling:
+    - First pin (no existing row) with blank note → default note is the
+      formatted suggested contract.
+    - Re-pin with blank note → existing note is preserved (don't clobber
+      the user's previous text just because they re-clicked Pin).
+    - Re-pin with a non-empty note → overwrite with the new note."""
+    import snapshots
+    if not snapshots.enabled():
+        log.warning("pin_rec: DB disabled, can't persist")
+        return None
+    # Look up the live rec for this (ticker, as_of) — same loader the
+    # UI uses, filtered by as_of.
+    recs = load_recommendations(as_of=as_of)
+    rec = next((r for r in recs if (r.get("ticker") or "").upper() == ticker.upper()), None)
+    if rec is None:
+        log.warning("pin_rec: no rec found for %s on %s", ticker, as_of)
+        return None
+    note_clean = (note or "").strip()
+    # Note value used for the INSERT branch only — defaulted to the
+    # suggested contract when caller didn't pass one. ON CONFLICT
+    # deliberately does NOT touch note (handled below) so existing
+    # user notes survive a re-pin.
+    insert_note = note_clean or _format_suggested_contract(rec)
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO options_pinned_recs (ticker, as_of, snapshot, note) "
+                "VALUES (%s, %s, %s::jsonb, %s) "
+                "ON CONFLICT (ticker, as_of) DO UPDATE SET "
+                "  snapshot = EXCLUDED.snapshot, "
+                "  pinned_at = now() "
+                "RETURNING id, note, pinned_at",
+                (ticker.upper(), as_of, json.dumps(rec), insert_note),
+            )
+            pin_id, db_note, pinned_at_db = cur.fetchone()
+            # If caller passed a non-empty note AND the row already
+            # existed (so ON CONFLICT skipped the note overwrite),
+            # apply the user's note now. Otherwise db_note is correct.
+            if note_clean and db_note != note_clean:
+                cur.execute(
+                    "UPDATE options_pinned_recs SET note = %s WHERE id = %s",
+                    (note_clean, pin_id),
+                )
+                db_note = note_clean
+        return {
+            "id": int(pin_id),
+            "ticker": ticker.upper(),
+            "as_of": as_of,
+            "snapshot": rec,
+            "note": db_note or "",
+            "pinned_at": pinned_at_db.isoformat() if pinned_at_db else None,
+        }
+    except Exception as exc:
+        log.warning("pin_rec(%s, %s) failed: %s", ticker, as_of, exc)
+        return None
+
+
+def load_pinned() -> list[dict]:
+    """Return every pin, most recently pinned first. Each entry has
+    the full frozen snapshot under `snapshot` so the UI can render it
+    even if the source rec has aged out."""
+    import snapshots
+    if not snapshots.enabled():
+        return []
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, ticker, as_of, snapshot, note, pinned_at "
+                "FROM options_pinned_recs "
+                "ORDER BY pinned_at DESC"
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        log.warning("load_pinned failed: %s", exc)
+        return []
+    out: list[dict] = []
+    for r in rows:
+        snap = r[3]
+        if isinstance(snap, str):
+            try: snap = json.loads(snap)
+            except Exception: snap = {}
+        out.append({
+            "id": int(r[0]),
+            "ticker": r[1],
+            "as_of": r[2].isoformat() if r[2] else None,
+            "snapshot": snap,
+            "note": r[4] or "",
+            "pinned_at": r[5].isoformat() if r[5] else None,
+        })
+    return out
+
+
+def update_pinned_note(pin_id: int, note: str) -> bool:
+    import snapshots
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE options_pinned_recs SET note = %s WHERE id = %s",
+                ((note or "").strip(), int(pin_id)),
+            )
+            return cur.rowcount > 0
+    except Exception as exc:
+        log.warning("update_pinned_note(%d) failed: %s", pin_id, exc)
+        return False
+
+
+def unpin(pin_id: int) -> bool:
+    import snapshots
+    if not snapshots.enabled():
+        return False
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM options_pinned_recs WHERE id = %s", (int(pin_id),))
+            return cur.rowcount > 0
+    except Exception as exc:
+        log.warning("unpin(%d) failed: %s", pin_id, exc)
+        return False
 
 
 # --- helpers --------------------------------------------------------------

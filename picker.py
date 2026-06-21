@@ -20,17 +20,33 @@ that describe the breakout itself):
 
   VC — Volatility contraction (20d ATR / 60d ATR). Tight range +
        compressing → coiled spring.
-  RS — Relative strength. Ticker's 20-day return percentile-ranked
-       across the eligible universe.
-  VA — Volume accumulation. 10d avg dollar volume / 60d avg.
-       Above-average sustained dollar volume = institutional
-       footprint.
+  RS — Relative strength. Ticker's **60-day** return percentile-
+       ranked across the eligible universe. The longer window catches
+       sustained leaders instead of recent gappers — a name up 40%
+       three weeks ago dominates a 20-day ranking but is exhausted,
+       not coiling.
+  VA — Volume accumulation. 10d avg **share** volume / 60d avg.
+       (Was $-volume; that conflated price moves with accumulation —
+       a stock that ran up 30% on average share volume scored high
+       VA even though nothing was being accumulated.)
   MT — Multi-timeframe trend alignment. Daily EMA stack (close >
        EMA21 > EMA50) + weekly 10w SMA support both pass = 100.
-  DP — Distance to 20-day pivot high. Bell curve peaks at 1.5%
-       below the pivot (ripe, not yet broken).
+  DP — Distance to **30-day** pivot high. Bell curve peaks at 1.5%
+       below the pivot, widened (σ=5) so stocks 5–10% off the pivot
+       (textbook cup-and-handle bases) still score meaningfully.
 
 Composite = weighted sum (default 25/25/20/15/15, tunable from UI).
+
+Universe gates (applied BEFORE scoring — keep the pool to genuine
+basing setups):
+
+  Price band: $5–$1000 (tunable from UI).
+  Liquidity:  ≥ $1M average daily $-volume over the last 60 sessions.
+  Prior trend: close ≥ 1.20 × 60d low AND 50d SMA rising. Real bases
+              form after an advance, not in dead-money names.
+  Not extended: 60d return ≤ 80%. Above that the move is the move —
+                no edge in calling a base on a parabolic.
+
 Top ranks are written to the nightly_picks Postgres table.
 """
 
@@ -53,14 +69,27 @@ log = logging.getLogger("picker")
 # --- defaults --------------------------------------------------------------
 
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "vc": 25.0, "rs": 25.0, "va": 20.0, "mt": 15.0, "dp": 15.0,
+    "vc": 20.0, "rs": 15.0, "va": 15.0, "mt": 10.0, "dp": 15.0, "sr": 25.0,
 }
 DEFAULT_PRICE_MIN: float = 5.0
 DEFAULT_PRICE_MAX: float = 1000.0
-# Stage 1 saves the top 25; Stage 2 (intraday monitor) watches all of
-# them. The UI displays all 25 too. If 25 feels noisy, slice client-side.
+# Stage 1 saves the top N; Stage 2 (intraday monitor) watches all of
+# them and the UI displays all of them. Default 25, but tunable from
+# the picks "Tune…" panel and persisted in picker_config.pick_limit.
 DEFAULT_LIMIT: int = 25
+MIN_LIMIT: int = 5
+MAX_LIMIT: int = 100
 INTRADAY_TRIGGER_TYPES: tuple[str, ...] = ("vwap_reclaim",)
+
+
+def _clamp_limit(value) -> int:
+    """Coerce a user-supplied pick limit into [MIN_LIMIT, MAX_LIMIT],
+    falling back to DEFAULT_LIMIT on garbage input."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_LIMIT
+    return max(MIN_LIMIT, min(MAX_LIMIT, n))
 
 
 # --- schema ----------------------------------------------------------------
@@ -85,6 +114,12 @@ CREATE TABLE IF NOT EXISTS nightly_picks (
     dist_pivot   REAL,
     PRIMARY KEY (pick_date, rank)
 );
+-- SR (SMA Reset) sub-score added later; backfill via ALTER ADD so the
+-- column appears on existing deployments without manual migration.
+-- Pattern: 4 SMAs converged after a downtrend and are now fanning out
+-- bullish with SMA10 leading. Captures Stage 1 → Stage 2 transitions
+-- that the original 5 IBD-style signals didn't reward.
+ALTER TABLE nightly_picks ADD COLUMN IF NOT EXISTS sr_score REAL;
 CREATE INDEX IF NOT EXISTS nightly_picks_ticker_idx
     ON nightly_picks (ticker, pick_date DESC);
 
@@ -100,6 +135,11 @@ CREATE TABLE IF NOT EXISTS picker_config (
 -- schedule, but exits immediately when this flag is FALSE.
 ALTER TABLE picker_config
     ADD COLUMN IF NOT EXISTS intraday_alerts_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+-- How many top-ranked picks Stage 1 saves (and Stage 2 watches / the UI
+-- shows). Tunable from the picks "Tune…" panel. Backfilled via ALTER ADD
+-- so existing deployments pick up the column without manual migration.
+ALTER TABLE picker_config
+    ADD COLUMN IF NOT EXISTS pick_limit INT NOT NULL DEFAULT 25;
 
 -- Stage 2: intraday triggers that fire on the nightly top-25 watchlist.
 -- One row per (date, ticker, trigger_type) — dedupes so the cron can
@@ -216,27 +256,36 @@ def _compute_raw_metrics(row: dict) -> dict | None:
         return None
     vc_ratio = atr20 / atr60   # < 1 = contracting
 
-    # --- RS: Relative Strength (20d return) ---------------------------
+    # --- RS: Relative Strength (60d return) ---------------------------
+    # Use the full 60-bar window for a "3-month return" measure. The
+    # previous 20-day version surfaced one-off gappers; 60d catches
+    # sustained leaders, which is what we want for a base setup.
     # Reject tickers climbing off a near-zero base — that's the
-    # warrant / penny-spike artifact (closes[-21] = $0.05, closes[-1] =
-    # $2 → ret_20d = 39 = 3900%, which clamps RS to 100). Require the
-    # 21-day-ago close to be at least $1 to even count.
-    if closes[-21] < 1.0:
+    # warrant / penny-spike artifact (closes[-60] = $0.05, closes[-1] =
+    # $2 → 3,900%, which clamps RS to 100). Require the start of the
+    # window to be at least $1 to even count.
+    if closes[-60] < 1.0:
         return None
-    ret_20d = float(closes[-1] / closes[-21] - 1.0)
+    ret_60d = float(closes[-1] / closes[-60] - 1.0)
 
-    # --- VA: Volume Accumulation (10d dvol / 60d dvol) ----------------
-    dvol = closes * vols
-    if not np.isfinite(dvol).any():
+    # --- VA: Volume Accumulation (10d / 60d share volume) -------------
+    # Use SHARE volume (not $-volume) so a price runup doesn't fake an
+    # accumulation read. Liquidity floor is enforced separately on
+    # dollar volume below.
+    if not np.isfinite(vols).any():
         return None
-    dvol10 = float(np.nanmean(dvol[-10:]))
-    dvol60 = float(np.nanmean(dvol[-60:]))
+    vol10 = float(np.nanmean(vols[-10:]))
+    vol60 = float(np.nanmean(vols[-60:]))
+    if vol60 <= 0 or not np.isfinite(vol10) or not np.isfinite(vol60):
+        return None
+    va_ratio = vol10 / vol60   # > 1 = accumulating
+
     # Absolute liquidity floor: at least $1M average daily dollar
     # volume over the last 60 sessions. Kills illiquid warrants and
     # micro-caps that the relative ratio alone lets slip through.
-    if dvol60 < 1_000_000 or not np.isfinite(dvol10) or not np.isfinite(dvol60):
+    dvol60 = float(np.nanmean(closes[-60:] * vols[-60:]))
+    if not np.isfinite(dvol60) or dvol60 < 1_000_000:
         return None
-    va_ratio = dvol10 / dvol60   # > 1 = accumulating
 
     # --- MT: Multi-timeframe alignment ---------------------------------
     # Daily: snapshot row already carries EMA21 / EMA50 columns.
@@ -282,19 +331,66 @@ def _compute_raw_metrics(row: dict) -> dict | None:
     if weekly_aligned:
         mt_raw += 50.0
 
-    # --- DP: Distance to 20-day pivot high -----------------------------
-    high20 = float(np.nanmax(highs[-20:])) if n >= 20 else float(np.nanmax(highs))
-    if high20 <= 0:
+    # --- DP: Distance to 30-day pivot high -----------------------------
+    # Widened from 20d to 30d so the pivot represents a real base high,
+    # not a recent 4-week swing. The DP bell-score itself (in
+    # _dp_bell_score) also widens its tail so 5–10% bases score
+    # meaningfully instead of getting trashed.
+    high30 = float(np.nanmax(highs[-30:])) if n >= 30 else float(np.nanmax(highs))
+    if high30 <= 0:
         return None
-    dp_pct = float((high20 - last_close) / high20 * 100.0)
+    dp_pct = float((high30 - last_close) / high30 * 100.0)
+
+    # --- SR: SMA Reset score ------------------------------------------
+    # Compute BEFORE the trend gates so SR-pattern names (which sit near
+    # their lows by definition) can bypass the prior-uptrend gate. See
+    # _sr_score for the pattern semantics.
+    sr_raw = _sr_score(closes)
+
+    # --- Universe gates ------------------------------------------------
+    # Applied AFTER metric extraction so individual gate failures show up
+    # in logs (return None drops the ticker silently from ranking).
+    #
+    # Gate 1 — Prior uptrend OR SR pattern. Real continuation bases form
+    # after an advance, so we require close ≥ 1.20 × 60-bar low. But
+    # SR-pattern tickers sit near their lows BY DEFINITION (the whole
+    # point is they were in a downtrend that just ended); we let them
+    # through when SR ≥ 30 (a meaningful reset signal, not just a noisy
+    # detector ping).
+    lo60 = float(np.nanmin(closes[-60:]))
+    if not np.isfinite(lo60) or lo60 <= 0:
+        return None
+    if last_close < lo60 * 1.20 and sr_raw < 30.0:
+        return None
+
+    # Gate 2 — 50-day SMA rising OR SR pattern. Same exception: an SR
+    # cluster forms while SMA50 is still flat-to-down, with the turn-up
+    # happening simultaneously with or AFTER the cluster.
+    sma50_now  = float(np.nanmean(closes[-50:]))
+    sma50_then = float(np.nanmean(closes[-60:-10]))
+    if not (np.isfinite(sma50_now) and np.isfinite(sma50_then)):
+        return None
+    if sma50_now <= sma50_then and sr_raw < 30.0:
+        return None
+
+    # Gate 3 — Not extended. A stock up 80% in 60 days is mid-move, not
+    # mid-base; calling a base on it is wishful. Hard cap at +80%
+    # (applies to SR pattern too — extension cap doesn't depend on the
+    # signal type).
+    if ret_60d > 0.80:
+        return None
 
     return {
         "close":     last_close,
         "vc_ratio":  vc_ratio,
-        "ret_20d":   ret_20d,
+        # Field name is kept as ret_20d because the nightly_picks table
+        # already has a `ret_20d` column; we store the new 60d return
+        # value there. Migration would invalidate historical rows.
+        "ret_20d":   ret_60d,
         "va_ratio":  va_ratio,
         "mt_raw":    mt_raw,
         "dp_pct":    dp_pct,
+        "sr_raw":    sr_raw,
     }
 
 
@@ -324,12 +420,135 @@ def _percentile_rank(values: list[float], ascending: bool = True) -> np.ndarray:
 
 
 def _dp_bell_score(dp_pct: float) -> float:
-    """Distance-to-pivot bell curve. Peak at 1.5% below the 20-day high
-    (ripe), drops off rapidly for "already broken" (negative dp) and
-    gradually for "still too far below" (large positive dp)."""
+    """Distance-to-pivot bell curve. Peak at 1.5% below the 30-day high
+    (ripe). σ widened from 2.5 to 5.0 so 5–10% bases still score
+    meaningfully — textbook cup-and-handle bases end in that band, and
+    the previous narrow bell (σ=2.5) trashed them (10% off → score ~0).
+    The new curve:
+      1.5% below pivot →  100   (ripe sweet spot, unchanged)
+        5% below pivot →   77
+       10% below pivot →   23
+       15% below pivot →    3
+    """
     if not np.isfinite(dp_pct):
         return float("nan")
-    return 100.0 * math.exp(-((dp_pct - 1.5) ** 2) / (2.0 * 2.5 ** 2))
+    return 100.0 * math.exp(-((dp_pct - 1.5) ** 2) / (2.0 * 5.0 ** 2))
+
+
+def _sr_score(closes_arr: np.ndarray) -> float:
+    """SMA Reset score [0, 100]. Detects the pattern where the four
+    SMAs (10/20/30/40) converged after a downtrend and are now fanning
+    out bullish with SMA10 leading — i.e. the Stage 1 → Stage 2
+    transition visible at the right edge of a "cluster then break"
+    base.
+
+    Five necessary conditions; any failure → 0.0:
+
+      (1) Came from a bearish stack ~30 bars ago — SMA40 was above
+          SMA10 then (long > short = was declining).
+      (2) Convergence in the last 20 bars — the SMA spread reached
+          a low of ≤ 3.5% of the cluster midpoint.
+      (3) SMA10 has turned up — current SMA10 > SMA10 five bars ago.
+      (4) Today's close is above all four SMAs (the break is
+          starting).
+      (5) Not yet exhausted — SMA10/SMA40 ≤ 1.10 (above that the
+          move is already in progress and the SR window has closed).
+
+    Score combines three factors when all conditions hold:
+      tightness   — exp(-min_spread / 1.5%), favours tighter clusters
+      freshness   — exp(-days_since_min_spread / 10), favours recent
+                    convergence
+      fan_out     — Gaussian centred at +3% (SMA10 over SMA40), so
+                    "just starting to fan out" scores best and
+                    "barely fanned out" / "already fanned out a lot"
+                    both fall off.
+    """
+    n = len(closes_arr)
+    if n < 60:
+        return 0.0
+
+    # Rolling SMAs over the input array. min_periods enforced by the
+    # nan-padding so we never compare against a partial window.
+    def _sma(arr: np.ndarray, w: int) -> np.ndarray:
+        out = np.full(len(arr), np.nan, dtype=float)
+        if len(arr) < w:
+            return out
+        kernel = np.full(w, 1.0 / w)
+        out[w - 1:] = np.convolve(arr, kernel, mode="valid")
+        return out
+
+    s10 = _sma(closes_arr, 10)
+    s20 = _sma(closes_arr, 20)
+    s30 = _sma(closes_arr, 30)
+    s40 = _sma(closes_arr, 40)
+
+    s10_t, s20_t, s30_t, s40_t = s10[-1], s20[-1], s30[-1], s40[-1]
+    if not (np.isfinite(s10_t) and np.isfinite(s20_t)
+            and np.isfinite(s30_t) and np.isfinite(s40_t)):
+        return 0.0
+    last_close = float(closes_arr[-1])
+
+    # (1) Came from downtrend. SMA40 isn't valid 30 bars back when the
+    # input is exactly 60 bars (s40[-30] = NaN), so the "bearish stack"
+    # version of this check would always fail at the boundary. Use raw
+    # closes instead: the early portion of the window must have a peak
+    # at least 5% above the lowest point in the cluster window. That
+    # establishes "declining into the cluster" without an SMA dependency.
+    early_high   = float(np.nanmax(closes_arr[-60:-30]))
+    cluster_low  = float(np.nanmin(closes_arr[-30:-10]))
+    if not (np.isfinite(early_high) and np.isfinite(cluster_low) and cluster_low > 0):
+        return 0.0
+    if not (early_high > cluster_low * 1.05):
+        return 0.0
+
+    # (2) Convergence in last 20 bars: find tightest SMA spread.
+    smas = np.stack([s10, s20, s30, s40], axis=0)
+    sma_max = np.nanmax(smas, axis=0)
+    sma_min = np.nanmin(smas, axis=0)
+    mid = (sma_max + sma_min) / 2.0
+    spread = np.where(mid > 0, (sma_max - sma_min) / mid, np.nan)
+    recent = spread[-20:]
+    if not np.isfinite(recent).any():
+        return 0.0
+    min_spread = float(np.nanmin(recent))
+    days_since_min = (len(recent) - 1) - int(np.nanargmin(recent))
+    if min_spread > 0.035:
+        return 0.0
+
+    # (3) SMA10 has turned up.
+    if not np.isfinite(s10[-6]):
+        return 0.0
+    if not (s10_t > s10[-6]):
+        return 0.0
+
+    # (4) Close above all four SMAs.
+    if last_close < max(s10_t, s20_t, s30_t, s40_t):
+        return 0.0
+
+    # (5) Not yet exhausted: SMA10/SMA40 ≤ 1.10.
+    if s40_t <= 0:
+        return 0.0
+    fan_ratio = s10_t / s40_t
+    if fan_ratio > 1.10:
+        return 0.0
+
+    # Scoring factors, σ values tuned to realistic price-action ranges:
+    #   tightness  σ = 2.5%   (typical real-stock cluster widths are 1-4%)
+    #   freshness  σ = 15 bars (3 weeks)
+    #   fan_out    σ = 6%     centred at +3% (sweet spot is "just starting
+    #                          to fan out" — too little = pattern unconfirmed,
+    #                          too much = move already done)
+    tightness = math.exp(-min_spread / 0.025)
+    freshness = math.exp(-days_since_min / 15.0)
+    fan_x = max(0.0, fan_ratio - 1.0)
+    fan_out = math.exp(-((fan_x - 0.03) / 0.06) ** 2)
+
+    # Weighted sum (not product). The previous multiplicative form needed
+    # every factor near 1.0 to score meaningfully — a 0.4 in any one
+    # zeroed the result, which made the signal vanish on realistic data.
+    # Sum is more forgiving: tightness leads (40%), freshness and fan-out
+    # split the remainder (30% each).
+    return float(100.0 * (0.40 * tightness + 0.30 * freshness + 0.30 * fan_out))
 
 
 def rank_universe(
@@ -393,6 +612,11 @@ def rank_universe(
     )
     mt_arr = np.array([r["mt_raw"] for r in raw_rows], dtype=float)
     dp_arr = np.array([_dp_bell_score(r["dp_pct"]) for r in raw_rows], dtype=float)
+    # SR is already absolute [0, 100] (not percentile-ranked) — using
+    # the raw bell score directly so the magnitude of the SR signal
+    # matters, not just its rank in the surviving pool. A pool of weak
+    # SR scores shouldn't get artificially promoted.
+    sr_arr = np.array([r.get("sr_raw", 0.0) for r in raw_rows], dtype=float)
 
     composites = (
         norm["vc"] * np.nan_to_num(vc_pct)
@@ -400,6 +624,7 @@ def rank_universe(
         + norm["va"] * np.nan_to_num(va_pct)
         + norm["mt"] * np.nan_to_num(mt_arr)
         + norm["dp"] * np.nan_to_num(dp_arr)
+        + norm.get("sr", 0.0) * np.nan_to_num(sr_arr)
     )
 
     for i, r in enumerate(raw_rows):
@@ -408,6 +633,7 @@ def rank_universe(
         r["va_score"]  = float(va_pct[i]) if np.isfinite(va_pct[i]) else None
         r["mt_score"]  = float(mt_arr[i]) if np.isfinite(mt_arr[i]) else None
         r["dp_score"]  = float(dp_arr[i]) if np.isfinite(dp_arr[i]) else None
+        r["sr_score"]  = float(sr_arr[i]) if np.isfinite(sr_arr[i]) else None
         r["composite"] = float(composites[i])
 
     raw_rows.sort(key=lambda r: -r["composite"])
@@ -443,12 +669,12 @@ def save_picks(picks: list[dict], as_of: str) -> int:
                 cur.execute(
                     "INSERT INTO nightly_picks ("
                     "  pick_date, rank, ticker, composite, "
-                    "  vc_score, rs_score, va_score, mt_score, dp_score, "
+                    "  vc_score, rs_score, va_score, mt_score, dp_score, sr_score, "
                     "  close, atr_ratio, ret_20d, dvol_ratio, dist_pivot"
-                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (as_of, rank, p["ticker"], p["composite"],
                      p.get("vc_score"), p.get("rs_score"), p.get("va_score"),
-                     p.get("mt_score"), p.get("dp_score"),
+                     p.get("mt_score"), p.get("dp_score"), p.get("sr_score"),
                      p.get("close"), p.get("vc_ratio"),
                      p.get("ret_20d"), p.get("va_ratio"), p.get("dp_pct")),
                 )
@@ -475,7 +701,7 @@ def load_picks(as_of: str | None = None) -> list[dict]:
             if as_of:
                 cur.execute(
                     "SELECT pick_date, rank, ticker, composite, "
-                    "vc_score, rs_score, va_score, mt_score, dp_score, "
+                    "vc_score, rs_score, va_score, mt_score, dp_score, sr_score, "
                     "close, atr_ratio, ret_20d, dvol_ratio, dist_pivot "
                     "FROM nightly_picks WHERE pick_date = %s ORDER BY rank",
                     (as_of,),
@@ -483,7 +709,7 @@ def load_picks(as_of: str | None = None) -> list[dict]:
             else:
                 cur.execute(
                     "SELECT pick_date, rank, ticker, composite, "
-                    "vc_score, rs_score, va_score, mt_score, dp_score, "
+                    "vc_score, rs_score, va_score, mt_score, dp_score, sr_score, "
                     "close, atr_ratio, ret_20d, dvol_ratio, dist_pivot "
                     "FROM nightly_picks WHERE pick_date = "
                     "(SELECT MAX(pick_date) FROM nightly_picks) ORDER BY rank"
@@ -501,11 +727,12 @@ def load_picks(as_of: str | None = None) -> list[dict]:
                 "va_score":   float(r[6]) if r[6] is not None else None,
                 "mt_score":   float(r[7]) if r[7] is not None else None,
                 "dp_score":   float(r[8]) if r[8] is not None else None,
-                "close":      float(r[9])  if r[9]  is not None else None,
-                "atr_ratio":  float(r[10]) if r[10] is not None else None,
-                "ret_20d":    float(r[11]) if r[11] is not None else None,
-                "dvol_ratio": float(r[12]) if r[12] is not None else None,
-                "dist_pivot": float(r[13]) if r[13] is not None else None,
+                "sr_score":   float(r[9]) if r[9] is not None else None,
+                "close":      float(r[10]) if r[10] is not None else None,
+                "atr_ratio":  float(r[11]) if r[11] is not None else None,
+                "ret_20d":    float(r[12]) if r[12] is not None else None,
+                "dvol_ratio": float(r[13]) if r[13] is not None else None,
+                "dist_pivot": float(r[14]) if r[14] is not None else None,
             })
         return out
     except Exception as exc:
@@ -521,13 +748,15 @@ def get_config() -> dict:
         "price_min": DEFAULT_PRICE_MIN,
         "price_max": DEFAULT_PRICE_MAX,
         "intraday_alerts_enabled": True,
+        "pick_limit": DEFAULT_LIMIT,
     }
     if not snapshots.enabled():
         return cfg
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
-                "SELECT weights, price_min, price_max, intraday_alerts_enabled "
+                "SELECT weights, price_min, price_max, intraday_alerts_enabled, "
+                "pick_limit "
                 "FROM picker_config WHERE id = 1"
             )
             row = cur.fetchone()
@@ -552,6 +781,8 @@ def get_config() -> dict:
         cfg["price_max"] = float(row[2])
     if row[3] is not None:
         cfg["intraday_alerts_enabled"] = bool(row[3])
+    if row[4] is not None:
+        cfg["pick_limit"] = _clamp_limit(row[4])
     return cfg
 
 
@@ -579,23 +810,29 @@ def set_intraday_alerts_enabled(enabled: bool) -> bool:
         return False
 
 
-def save_config(weights: dict, price_min: float, price_max: float) -> bool:
+def save_config(weights: dict, price_min: float, price_max: float,
+                pick_limit: int | None = None) -> bool:
     if not snapshots.enabled():
         return False
     # Filter the weights dict down to the known keys to keep the schema
     # honest if the caller throws extra keys at us.
     clean = {k: float(weights.get(k, DEFAULT_WEIGHTS[k])) for k in DEFAULT_WEIGHTS}
+    # When pick_limit isn't supplied, preserve whatever is stored (or the
+    # default) rather than clobbering it.
+    limit = _clamp_limit(pick_limit) if pick_limit is not None else get_config()["pick_limit"]
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
-                "INSERT INTO picker_config (id, weights, price_min, price_max, updated_at) "
-                "VALUES (1, %s, %s, %s, now()) "
+                "INSERT INTO picker_config "
+                "(id, weights, price_min, price_max, pick_limit, updated_at) "
+                "VALUES (1, %s, %s, %s, %s, now()) "
                 "ON CONFLICT (id) DO UPDATE SET "
                 "weights = EXCLUDED.weights, "
                 "price_min = EXCLUDED.price_min, "
                 "price_max = EXCLUDED.price_max, "
+                "pick_limit = EXCLUDED.pick_limit, "
                 "updated_at = now()",
-                (json.dumps(clean), float(price_min), float(price_max)),
+                (json.dumps(clean), float(price_min), float(price_max), int(limit)),
             )
         return True
     except Exception as exc:
