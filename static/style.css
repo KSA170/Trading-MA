@@ -1690,25 +1690,88 @@ button.hidden { display: none; }
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
 }
-.report-table .row-filter {
+.filter-dd { position: relative; }
+.filter-dd-btn {
   width: 100%;
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 3px;
-  padding: 2px 5px;
+  padding: 3px 6px;
   font-size: 11px;
-  font-weight: normal;
-  text-transform: none;
-  letter-spacing: 0;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.report-table .row-filter::placeholder { color: var(--muted); opacity: 0.6; }
-.report-table .row-filter:focus {
-  outline: none;
+.filter-dd-btn:hover { border-color: var(--accent); }
+.filter-dd-btn.active {
   border-color: var(--accent);
+  color: var(--accent);
 }
+.filter-dd-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 2px;
+  min-width: 100%;
+  max-width: 260px;
+  max-height: 280px;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.filter-dd-menu.hidden { display: none; }
+.filter-dd-actions {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  position: sticky;
+  top: -4px;
+  background: var(--panel);
+}
+.filter-dd-actions button {
+  flex: 1;
+  font-size: 10px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 4px;
+  cursor: pointer;
+  text-transform: lowercase;
+}
+.filter-dd-actions button:hover { color: var(--text); border-color: var(--accent); }
+.filter-dd-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  border-radius: 2px;
+}
+.filter-dd-opt:hover { background: var(--panel-2); }
+.filter-dd-opt input { margin: 0; cursor: pointer; }
+.filter-dd-opt span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.filter-dd-empty { font-size: 11px; padding: 4px; }
 
 .histogram {
   display: flex;

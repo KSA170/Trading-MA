@@ -190,9 +190,21 @@ def record_option_outcome(
 ) -> bool:
     """Insert (or update) an option outcome row.
 
-    `rec` is the options recommendation dict (same shape passed to
-    options.save_recommendation). PASS-verdict recommendations or those
-    without a chosen contract are skipped — they're not real entries.
+    `rec` is an options recommendation dict. Two shapes are accepted
+    transparently because two upstream callers exist:
+
+      - `recommend_for_ticker` (the live pipeline) nests contract
+        details under `rec["contract"]` with keys like `contract_symbol`,
+        `strike`, `mid`, `dte`, `expiration`.
+      - `load_recommendations` (the DB reader, used by options.pin_rec
+        and the historical backfill) returns FLAT recs with the same
+        fields at the top level — and uses `mid_price` for what the
+        live pipeline calls `mid`.
+
+    Falling back across both shapes here keeps the writer agnostic to
+    where the rec came from. Skips only if no contract_symbol is
+    resolvable — verdict gates were removed because the only writer
+    is now `user_pin` (explicit user pin), which we always honor.
 
     Pass `cur` to reuse an open Postgres cursor — see
     `record_stock_outcome` for the rationale.
@@ -203,20 +215,25 @@ def record_option_outcome(
     entry_date = _coerce_date(entry_date)
     if not ticker or not entry_date or not isinstance(rec, dict):
         return False
-    verdict = (rec.get("verdict") or "").upper()
-    if verdict in ("PASS", ""):
-        return False
     contract = rec.get("contract") or {}
-    contract_symbol = contract.get("contract_symbol")
+
+    def _g(key, alt_key=None):
+        v = contract.get(key)
+        if v is None: v = rec.get(key)
+        if v is None and alt_key is not None: v = rec.get(alt_key)
+        return v
+
+    contract_symbol = _g("contract_symbol")
     if not contract_symbol:
         return False
-    direction = rec.get("direction")
-    strike = contract.get("strike")
-    expiration = _coerce_date(contract.get("expiration"))
-    dte = contract.get("dte")
-    mid = contract.get("mid")
+    verdict          = (rec.get("verdict") or "").upper() or None
+    direction        = rec.get("direction")
+    strike           = _g("strike")
+    expiration       = _coerce_date(_g("expiration"))
+    dte              = _g("dte")
+    mid              = _g("mid", alt_key="mid_price")
     underlying_close = rec.get("close") or contract.get("underlying_close")
-    composite = rec.get("composite_score")
+    composite        = rec.get("composite_score")
 
     sql = (
         "INSERT INTO option_outcomes "

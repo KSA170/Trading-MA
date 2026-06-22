@@ -4273,97 +4273,192 @@ function _renderHistogram(hist, horizon) {
     + '<div class="histogram">' + bars + '</div></div>';
 }
 
+// Build the cell array for one outcome row. Returns [{text, cls?}, ...]
+// in column order so both the unique-values computation (for dropdowns)
+// and the body HTML use the same source of truth.
+function _buildOutcomeCells(r, isOptions, horizon) {
+  const srcs = (r.sources || []).map(s => (s && s.kind) || '?').join(', ') || '—';
+  if (isOptions) {
+    const itm = r.expiration_itm === true ? '✓' : r.expiration_itm === false ? '✗' : '—';
+    const ret = r['underlying_ret_' + horizon + 'd'];
+    return [
+      {text: r.entry_date || '—'},
+      {text: r.ticker || '—'},
+      {text: r.direction || '—'},
+      {text: r.strike != null ? String(r.strike) : '—'},
+      {text: r.expiration || '—'},
+      {text: r.verdict || '—'},
+      {text: r.composite_score != null ? Number(r.composite_score).toFixed(1) : '—', cls: 'num'},
+      {text: _fmtPct(ret), cls: 'num ' + (ret > 0 ? 'pos' : ret < 0 ? 'neg' : '')},
+      {text: itm},
+      {text: srcs, cls: 'muted'},
+    ];
+  }
+  return [
+    {text: r.entry_date || '—'},
+    {text: r.ticker || '—'},
+    {text: r.entry_close != null ? Number(r.entry_close).toFixed(2) : '—', cls: 'num'},
+    {text: _fmtPct(r.ret_1d),  cls: 'num ' + (r.ret_1d  > 0 ? 'pos' : r.ret_1d  < 0 ? 'neg' : '')},
+    {text: _fmtPct(r.ret_5d),  cls: 'num ' + (r.ret_5d  > 0 ? 'pos' : r.ret_5d  < 0 ? 'neg' : '')},
+    {text: _fmtPct(r.ret_20d), cls: 'num ' + (r.ret_20d > 0 ? 'pos' : r.ret_20d < 0 ? 'neg' : '')},
+    {text: _fmtPct(r.max_favorable_excursion_20d), cls: 'num pos'},
+    {text: _fmtPct(r.max_drawdown_20d), cls: 'num neg'},
+    {text: srcs, cls: 'muted'},
+  ];
+}
+
 function _renderRowsTable(rows, kind, horizon) {
   if (!rows || !rows.length) {
     return '<div class="report-card empty"><h3>Entries</h3><div class="muted">No rows in this window.</div></div>';
   }
   const isOptions = kind === 'options';
-  // Column labels — used for both the header row and the filter row's
-  // placeholder text. Keep in sync with the row-building code below.
   const cols = isOptions
     ? ['Date','Ticker','Dir','Strike','Exp','Verdict','Score','Ret ' + horizon + 'd','ITM?','Sources']
     : ['Date','Ticker','Entry','Ret 1d','Ret 5d','Ret 20d','MFE 20d','MDD 20d','Sources'];
   const numericCols = isOptions
     ? new Set([6, 7])
     : new Set([2, 3, 4, 5, 6, 7]);
+
+  const visible = rows.slice(0, 500);
+  const cellsByRow = visible.map(r => _buildOutcomeCells(r, isOptions, horizon));
+
+  // Unique values per column for the dropdown options. Sort: numeric
+  // ascending where possible, else alphabetical.
+  const uniques = cols.map((_, ci) => {
+    const set = new Set();
+    for (const cells of cellsByRow) {
+      const t = cells[ci].text;
+      if (t && t !== '—') set.add(t);
+    }
+    const arr = Array.from(set);
+    const allNum = arr.every(v => !isNaN(parseFloat(v.replace('%', '').replace('+', ''))));
+    arr.sort(allNum
+      ? (a, b) => parseFloat(a.replace('%', '').replace('+', ''))
+                - parseFloat(b.replace('%', '').replace('+', ''))
+      : undefined);
+    return arr;
+  });
+
   const head = '<tr>' + cols.map((c, i) =>
     `<th${numericCols.has(i) ? ' class="num"' : ''}>${c}</th>`
   ).join('') + '</tr>';
-  const filterRow = '<tr class="filter-row">' + cols.map((_, i) =>
-    `<th><input type="text" class="row-filter" data-col="${i}" placeholder="filter…" aria-label="Filter ${cols[i]}" /></th>`
-  ).join('') + '</tr>';
-  const body = rows.slice(0, 500).map(r => {
-    const srcs = (r.sources || []).map(s => (s && s.kind) || '?').join(', ') || '—';
-    if (isOptions) {
-      const itm = r.expiration_itm === true ? '✓' : r.expiration_itm === false ? '✗' : '—';
-      const ret = r['underlying_ret_' + horizon + 'd'];
-      return '<tr>'
-        + '<td>' + (r.entry_date || '—') + '</td>'
-        + '<td>' + (r.ticker || '—') + '</td>'
-        + '<td>' + (r.direction || '—') + '</td>'
-        + '<td>' + (r.strike != null ? r.strike : '—') + '</td>'
-        + '<td>' + (r.expiration || '—') + '</td>'
-        + '<td>' + (r.verdict || '—') + '</td>'
-        + '<td class="num">' + (r.composite_score != null ? Number(r.composite_score).toFixed(1) : '—') + '</td>'
-        + '<td class="num ' + (ret > 0 ? 'pos' : ret < 0 ? 'neg' : '') + '">' + _fmtPct(ret) + '</td>'
-        + '<td>' + itm + '</td>'
-        + '<td class="muted">' + srcs + '</td>'
-        + '</tr>';
-    }
-    return '<tr>'
-      + '<td>' + (r.entry_date || '—') + '</td>'
-      + '<td>' + (r.ticker || '—') + '</td>'
-      + '<td class="num">' + (r.entry_close != null ? Number(r.entry_close).toFixed(2) : '—') + '</td>'
-      + '<td class="num ' + (r.ret_1d > 0 ? 'pos' : r.ret_1d < 0 ? 'neg' : '') + '">' + _fmtPct(r.ret_1d) + '</td>'
-      + '<td class="num ' + (r.ret_5d > 0 ? 'pos' : r.ret_5d < 0 ? 'neg' : '') + '">' + _fmtPct(r.ret_5d) + '</td>'
-      + '<td class="num ' + (r.ret_20d > 0 ? 'pos' : r.ret_20d < 0 ? 'neg' : '') + '">' + _fmtPct(r.ret_20d) + '</td>'
-      + '<td class="num pos">' + _fmtPct(r.max_favorable_excursion_20d) + '</td>'
-      + '<td class="num neg">' + _fmtPct(r.max_drawdown_20d) + '</td>'
-      + '<td class="muted">' + srcs + '</td>'
-      + '</tr>';
+
+  const filterRow = '<tr class="filter-row">' + cols.map((label, ci) => {
+    const opts = uniques[ci].map(v =>
+      `<label class="filter-dd-opt"><input type="checkbox" data-val="${escapeHtml(v)}" checked /> <span>${escapeHtml(v)}</span></label>`
+    ).join('') || '<div class="muted filter-dd-empty">no values</div>';
+    return `<th><div class="filter-dd" data-col="${ci}">`
+      + `<button type="button" class="filter-dd-btn" aria-label="Filter ${escapeHtml(label)}">All ▾</button>`
+      + `<div class="filter-dd-menu hidden">`
+      +   `<div class="filter-dd-actions">`
+      +     `<button type="button" class="filter-dd-all">all</button>`
+      +     `<button type="button" class="filter-dd-none">none</button>`
+      +   `</div>`
+      +   `<div class="filter-dd-opts">${opts}</div>`
+      + `</div></div></th>`;
   }).join('');
+
+  const body = cellsByRow.map(cells =>
+    '<tr>' + cells.map(c =>
+      `<td${c.cls ? ' class="' + c.cls + '"' : ''}>${escapeHtml(c.text)}</td>`
+    ).join('') + '</tr>'
+  ).join('');
+
   const cap = rows.length > 500 ? '<div class="muted">(showing 500 of ' + rows.length + ')</div>' : '';
   return '<div class="report-card"><h3>Entries</h3>' + cap
     + '<div class="report-table-wrap"><table class="report-table filterable"><thead>'
     + head + filterRow + '</thead><tbody>' + body + '</tbody></table></div></div>';
 }
 
-// Apply the per-column filter inputs to a `.filterable` table. Hides
-// rows where any non-empty filter input doesn't substring-match the
-// corresponding cell's text (case-insensitive). AND across columns.
+// Recompute the button label ("All ▾" or "N/M ▾") and the active class
+// based on how many checkboxes are checked.
+function _updateDdBtn(btn, checks) {
+  const total = checks.length;
+  const sel = Array.from(checks).filter(c => c.checked).length;
+  btn.textContent = (sel === total ? 'All' : `${sel}/${total}`) + ' ▾';
+  btn.classList.toggle('active', sel < total);
+}
+
+// Apply every dropdown's selection to a `.filterable` table. Hides rows
+// where any column's selected-set doesn't include that cell's value.
+// AND across columns. If a column has all checkboxes checked, it's a
+// no-op for that column.
 function _applyRowFilters(table) {
-  const inputs = table.querySelectorAll('.row-filter');
+  const dds = table.querySelectorAll('.filter-dd');
   const filters = [];
-  inputs.forEach((inp) => {
-    const v = inp.value.trim().toLowerCase();
-    if (v) filters.push({col: Number(inp.dataset.col), v});
+  dds.forEach((dd) => {
+    const checks = dd.querySelectorAll('input[type=checkbox]');
+    let allChecked = true;
+    const allowed = new Set();
+    checks.forEach((c) => {
+      if (c.checked) allowed.add(c.dataset.val);
+      else allChecked = false;
+    });
+    if (!allChecked) filters.push({col: Number(dd.dataset.col), allowed});
   });
   const rows = table.tBodies[0] ? table.tBodies[0].rows : [];
   for (const tr of rows) {
     let show = true;
     for (const f of filters) {
       const cell = tr.cells[f.col];
-      if (!cell || !cell.textContent.toLowerCase().includes(f.v)) {
-        show = false;
-        break;
-      }
+      if (!cell || !f.allowed.has(cell.textContent)) { show = false; break; }
     }
     tr.style.display = show ? '' : 'none';
   }
 }
 
-// Wire input handlers on every .filterable table inside the given
-// container. Idempotent — re-running after a re-render is safe since
-// we attach via a data flag.
+// Wire dropdown handlers on every .filterable table inside the given
+// container. Idempotent — flagged via data-filters-wired so repeated
+// renders don't double-bind.
 function _wireRowFilters(container) {
   const tables = container.querySelectorAll('table.filterable');
   tables.forEach((table) => {
     if (table.dataset.filtersWired === '1') return;
     table.dataset.filtersWired = '1';
-    table.querySelectorAll('.row-filter').forEach((inp) => {
-      inp.addEventListener('input', () => _applyRowFilters(table));
-      // Stop click from bubbling into the table's row-sort handler.
-      inp.addEventListener('click', (e) => e.stopPropagation());
+
+    const dds = table.querySelectorAll('.filter-dd');
+    dds.forEach((dd) => {
+      const btn   = dd.querySelector('.filter-dd-btn');
+      const menu  = dd.querySelector('.filter-dd-menu');
+      const checks = dd.querySelectorAll('input[type=checkbox]');
+      const allBtn = dd.querySelector('.filter-dd-all');
+      const noneBtn = dd.querySelector('.filter-dd-none');
+
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Close other open menus on the same table.
+        table.querySelectorAll('.filter-dd-menu').forEach((m) => {
+          if (m !== menu) m.classList.add('hidden');
+        });
+        menu.classList.toggle('hidden');
+      });
+
+      allBtn.addEventListener('click', () => {
+        checks.forEach((c) => { c.checked = true; });
+        _updateDdBtn(btn, checks);
+        _applyRowFilters(table);
+      });
+      noneBtn.addEventListener('click', () => {
+        checks.forEach((c) => { c.checked = false; });
+        _updateDdBtn(btn, checks);
+        _applyRowFilters(table);
+      });
+      checks.forEach((c) => {
+        c.addEventListener('change', () => {
+          _updateDdBtn(btn, checks);
+          _applyRowFilters(table);
+        });
+      });
+      // Don't let clicks inside the menu close it (the document-level
+      // listener below would catch them otherwise).
+      menu.addEventListener('click', (e) => e.stopPropagation());
+    });
+
+    // Click anywhere outside the table closes any open dropdown.
+    document.addEventListener('click', (e) => {
+      if (!table.contains(e.target)) {
+        table.querySelectorAll('.filter-dd-menu').forEach((m) => m.classList.add('hidden'));
+      }
     });
   });
 }
