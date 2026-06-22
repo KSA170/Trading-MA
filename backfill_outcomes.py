@@ -232,12 +232,6 @@ def backfill_options_pins(days: int) -> int:
                     continue
             if not isinstance(rec, dict):
                 continue
-            # Pins were the user's explicit "track this" signal — record
-            # even for verdict=PASS by forcing PINNED so the recorder's
-            # verdict gate doesn't drop them.
-            if (rec.get("verdict") or "").upper() in ("PASS", ""):
-                rec = dict(rec)
-                rec["verdict"] = "PINNED"
             ok = outcomes.record_option_outcome(
                 ticker, as_of, rec,
                 {"kind": "user_pin", "id": int(pin_id), "label": "User pin"},
