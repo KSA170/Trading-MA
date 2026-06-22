@@ -1732,28 +1732,19 @@ button.hidden { display: none; }
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 .filter-dd-menu.hidden { display: none; }
-.filter-dd-actions {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 4px;
-  margin-bottom: 4px;
+.filter-dd-selectall {
   position: sticky;
   top: -4px;
   background: var(--panel);
+  margin: 0 0 2px;
+  padding: 4px;
+  z-index: 1;
 }
-.filter-dd-actions button {
-  flex: 1;
-  font-size: 10px;
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 2px 4px;
-  cursor: pointer;
-  text-transform: lowercase;
+.filter-dd-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 2px 0 4px;
 }
-.filter-dd-actions button:hover { color: var(--text); border-color: var(--accent); }
 .filter-dd-opt {
   display: flex;
   align-items: center;

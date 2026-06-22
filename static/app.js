@@ -4345,15 +4345,13 @@ function _renderRowsTable(rows, kind, horizon) {
 
   const filterRow = '<tr class="filter-row">' + cols.map((label, ci) => {
     const opts = uniques[ci].map(v =>
-      `<label class="filter-dd-opt"><input type="checkbox" data-val="${escapeHtml(v)}" checked /> <span>${escapeHtml(v)}</span></label>`
+      `<label class="filter-dd-opt"><input type="checkbox" class="filter-dd-val" data-val="${escapeHtml(v)}" checked /> <span>${escapeHtml(v)}</span></label>`
     ).join('') || '<div class="muted filter-dd-empty">no values</div>';
     return `<th><div class="filter-dd" data-col="${ci}">`
-      + `<button type="button" class="filter-dd-btn" aria-label="Filter ${escapeHtml(label)}">All ▾</button>`
-      + `<div class="filter-dd-menu hidden">`
-      +   `<div class="filter-dd-actions">`
-      +     `<button type="button" class="filter-dd-all">all</button>`
-      +     `<button type="button" class="filter-dd-none">none</button>`
-      +   `</div>`
+      + `<button type="button" class="filter-dd-btn" aria-label="Filter ${escapeHtml(label)}" aria-haspopup="listbox" aria-expanded="false">All ▾</button>`
+      + `<div class="filter-dd-menu hidden" role="listbox">`
+      +   `<label class="filter-dd-opt filter-dd-selectall"><input type="checkbox" class="filter-dd-all" checked /> <span><strong>(Select All)</strong></span></label>`
+      +   `<div class="filter-dd-divider"></div>`
       +   `<div class="filter-dd-opts">${opts}</div>`
       + `</div></div></th>`;
   }).join('');
@@ -4370,27 +4368,38 @@ function _renderRowsTable(rows, kind, horizon) {
     + head + filterRow + '</thead><tbody>' + body + '</tbody></table></div></div>';
 }
 
-// Recompute the button label ("All ▾" or "N/M ▾") and the active class
-// based on how many checkboxes are checked.
-function _updateDdBtn(btn, checks) {
-  const total = checks.length;
-  const sel = Array.from(checks).filter(c => c.checked).length;
-  btn.textContent = (sel === total ? 'All' : `${sel}/${total}`) + ' ▾';
-  btn.classList.toggle('active', sel < total);
+// Sync the dropdown's button label + (Select All) checkbox state to
+// the current set of per-value checkbox states.
+function _syncDdState(dd) {
+  const btn      = dd.querySelector('.filter-dd-btn');
+  const valChecks = dd.querySelectorAll('.filter-dd-val');
+  const allCheck = dd.querySelector('.filter-dd-all');
+  const total = valChecks.length;
+  let sel = 0;
+  valChecks.forEach((c) => { if (c.checked) sel++; });
+  if (allCheck) {
+    if (sel === 0)          { allCheck.checked = false; allCheck.indeterminate = false; }
+    else if (sel === total) { allCheck.checked = true;  allCheck.indeterminate = false; }
+    else                    { allCheck.checked = false; allCheck.indeterminate = true; }
+  }
+  if (btn) {
+    btn.textContent = (sel === total ? 'All' : `${sel}/${total}`) + ' ▾';
+    btn.classList.toggle('active', sel < total);
+  }
 }
 
 // Apply every dropdown's selection to a `.filterable` table. Hides rows
 // where any column's selected-set doesn't include that cell's value.
-// AND across columns. If a column has all checkboxes checked, it's a
-// no-op for that column.
+// AND across columns. If a column has all per-value checkboxes checked,
+// it's a no-op for that column.
 function _applyRowFilters(table) {
   const dds = table.querySelectorAll('.filter-dd');
   const filters = [];
   dds.forEach((dd) => {
-    const checks = dd.querySelectorAll('input[type=checkbox]');
+    const valChecks = dd.querySelectorAll('.filter-dd-val');
     let allChecked = true;
     const allowed = new Set();
-    checks.forEach((c) => {
+    valChecks.forEach((c) => {
       if (c.checked) allowed.add(c.dataset.val);
       else allChecked = false;
     });
@@ -4407,10 +4416,38 @@ function _applyRowFilters(table) {
   }
 }
 
+// Close every filter dropdown menu on every filterable table on the page.
+// Used by the single document-level outside-click handler.
+function _closeAllFilterMenus() {
+  document.querySelectorAll('table.filterable .filter-dd-menu')
+    .forEach((m) => m.classList.add('hidden'));
+  document.querySelectorAll('table.filterable .filter-dd-btn')
+    .forEach((b) => b.setAttribute('aria-expanded', 'false'));
+}
+
+// Single global outside-click handler — installed lazily on first call
+// to _wireRowFilters. Without this guard, repeated re-renders would
+// accumulate one listener per re-render, all firing on every click.
+let _filtersGlobalHandlerInstalled = false;
+function _installGlobalFilterHandler() {
+  if (_filtersGlobalHandlerInstalled) return;
+  _filtersGlobalHandlerInstalled = true;
+  document.addEventListener('click', (e) => {
+    // If the click was inside any .filter-dd, let the dropdown's own
+    // handlers manage state. Otherwise close everything.
+    if (!e.target.closest('.filter-dd')) _closeAllFilterMenus();
+  });
+  // Escape closes everything too.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') _closeAllFilterMenus();
+  });
+}
+
 // Wire dropdown handlers on every .filterable table inside the given
-// container. Idempotent — flagged via data-filters-wired so repeated
-// renders don't double-bind.
+// container. Idempotent — each table is flagged via data-filters-wired
+// so re-renders don't double-bind.
 function _wireRowFilters(container) {
+  _installGlobalFilterHandler();
   const tables = container.querySelectorAll('table.filterable');
   tables.forEach((table) => {
     if (table.dataset.filtersWired === '1') return;
@@ -4418,47 +4455,52 @@ function _wireRowFilters(container) {
 
     const dds = table.querySelectorAll('.filter-dd');
     dds.forEach((dd) => {
-      const btn   = dd.querySelector('.filter-dd-btn');
-      const menu  = dd.querySelector('.filter-dd-menu');
-      const checks = dd.querySelectorAll('input[type=checkbox]');
-      const allBtn = dd.querySelector('.filter-dd-all');
-      const noneBtn = dd.querySelector('.filter-dd-none');
+      const btn       = dd.querySelector('.filter-dd-btn');
+      const menu      = dd.querySelector('.filter-dd-menu');
+      const valChecks = dd.querySelectorAll('.filter-dd-val');
+      const allCheck  = dd.querySelector('.filter-dd-all');
 
+      // Opening the menu: close every other open menu (across the whole
+      // page, not just this table) so only one is open at a time, then
+      // toggle ours. Stop the event so the global outside-click handler
+      // doesn't immediately re-close it.
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        // Close other open menus on the same table.
-        table.querySelectorAll('.filter-dd-menu').forEach((m) => {
-          if (m !== menu) m.classList.add('hidden');
-        });
-        menu.classList.toggle('hidden');
+        e.preventDefault();
+        const wasOpen = !menu.classList.contains('hidden');
+        _closeAllFilterMenus();
+        if (!wasOpen) {
+          menu.classList.remove('hidden');
+          btn.setAttribute('aria-expanded', 'true');
+        }
       });
 
-      allBtn.addEventListener('click', () => {
-        checks.forEach((c) => { c.checked = true; });
-        _updateDdBtn(btn, checks);
-        _applyRowFilters(table);
-      });
-      noneBtn.addEventListener('click', () => {
-        checks.forEach((c) => { c.checked = false; });
-        _updateDdBtn(btn, checks);
-        _applyRowFilters(table);
-      });
-      checks.forEach((c) => {
+      // Any click inside the menu (checkbox toggles, label clicks,
+      // scrolling, etc.) MUST NOT bubble out — otherwise the global
+      // outside-click handler closes the menu mid-interaction, and
+      // any control on the page that listens for clicks would receive
+      // a phantom event from inside the menu.
+      menu.addEventListener('click', (e) => e.stopPropagation());
+      menu.addEventListener('mousedown', (e) => e.stopPropagation());
+
+      // (Select All) toggle. Cascade to per-value checkboxes, then
+      // re-sync and re-apply.
+      if (allCheck) {
+        allCheck.addEventListener('change', () => {
+          const checked = allCheck.checked;
+          valChecks.forEach((c) => { c.checked = checked; });
+          _syncDdState(dd);
+          _applyRowFilters(table);
+        });
+      }
+
+      // Per-value checkbox change.
+      valChecks.forEach((c) => {
         c.addEventListener('change', () => {
-          _updateDdBtn(btn, checks);
+          _syncDdState(dd);
           _applyRowFilters(table);
         });
       });
-      // Don't let clicks inside the menu close it (the document-level
-      // listener below would catch them otherwise).
-      menu.addEventListener('click', (e) => e.stopPropagation());
-    });
-
-    // Click anywhere outside the table closes any open dropdown.
-    document.addEventListener('click', (e) => {
-      if (!table.contains(e.target)) {
-        table.querySelectorAll('.filter-dd-menu').forEach((m) => m.classList.add('hidden'));
-      }
     });
   });
 }
