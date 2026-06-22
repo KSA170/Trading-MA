@@ -1,11 +1,24 @@
 """One-shot backfill: seed stock_outcomes / option_outcomes from the
 last 90 days of historical events (alert_sent, nightly_picks,
-momentum_scanner_alerts, options_recommendations).
+momentum_scanner_alerts, options_recommendations, options_pinned_recs).
 
 Safe to re-run — every insert uses ON CONFLICT DO UPDATE that appends
 sources rather than duplicating rows. After seeding, the nightly
 outcomes filler will compute forward returns for any matured windows on
-its next run; call `outcomes.run_nightly()` explicitly to force it.
+its next run; this script also calls `outcomes.run_nightly()` at the end
+to fill them immediately.
+
+Performance note (vs the original impl): each phase now reuses a single
+Postgres connection across all rows, instead of opening a new connection
+per row. On a remote DB the per-connection TLS+auth handshake is
+~200-500ms, which dominates wall time for the 1000s of rows a typical
+90-day backfill seeds. Single-connection brings it to ~5-30 seconds per
+phase. Progress is logged every 100 rows so a long-running phase shows
+heartbeats in the workflow log.
+
+Phase ordering: pins → options recs → momentum → picker → alerts.
+Pins are the smallest set and the highest-signal (explicit user action),
+so they land first even if the job is killed mid-run.
 
 Usage:
     python backfill_outcomes.py            # 90 days default
@@ -18,12 +31,16 @@ import argparse
 import json
 import logging
 import sys
+import time
 
 import outcomes
 import snapshots
 
 
 log = logging.getLogger("backfill_outcomes")
+
+# Heartbeat interval — log progress every N rows within a phase.
+PROGRESS_EVERY = 100
 
 
 def _stock_close_on(cur, ticker: str, as_of: str) -> float | None:
@@ -37,8 +54,18 @@ def _stock_close_on(cur, ticker: str, as_of: str) -> float | None:
     return float(r[0]) if r and r[0] is not None else None
 
 
+def _log_progress(phase: str, i: int, total: int, t0: float) -> None:
+    if i and (i % PROGRESS_EVERY == 0 or i == total):
+        elapsed = time.time() - t0
+        rate = i / elapsed if elapsed > 0 else 0
+        eta = (total - i) / rate if rate > 0 else 0
+        log.info("  %s: %d/%d (%.0f rows/s, ETA %.0fs)",
+                 phase, i, total, rate, eta)
+
+
 def backfill_alerts(days: int) -> int:
     n = 0
+    t0 = time.time()
     with snapshots._conn() as c, c.cursor() as cur:
         cur.execute(
             "SELECT a.rule_id, a.ticker, a.trigger_date, r.name, r.rule_type "
@@ -46,54 +73,64 @@ def backfill_alerts(days: int) -> int:
             "WHERE a.trigger_date >= CURRENT_DATE - INTERVAL '%s days'" % int(days)
         )
         rows = cur.fetchall()
-    for rule_id, ticker, trigger_date, rule_name, rule_type in rows:
-        with snapshots._conn() as c, c.cursor() as cur:
+        log.info("backfill_alerts: scanning %d rows", len(rows))
+        for i, (rule_id, ticker, trigger_date, rule_name, rule_type) in enumerate(rows, 1):
             ec = _stock_close_on(cur, ticker, str(trigger_date))
-        kind = "alert_setup" if rule_type == "setup" else "alert_screener"
-        ok = outcomes.record_stock_outcome(
-            ticker, trigger_date, ec,
-            {"kind": kind, "id": rule_id, "label": rule_name or "Alert"},
-        )
-        if ok: n += 1
-    log.info("backfill_alerts: %d/%d", n, len(rows))
+            kind = "alert_setup" if rule_type == "setup" else "alert_screener"
+            ok = outcomes.record_stock_outcome(
+                ticker, trigger_date, ec,
+                {"kind": kind, "id": rule_id, "label": rule_name or "Alert"},
+                cur=cur,
+            )
+            if ok: n += 1
+            _log_progress("backfill_alerts", i, len(rows), t0)
+    log.info("backfill_alerts: %d/%d in %.1fs", n, len(rows), time.time() - t0)
     return n
 
 
 def backfill_picker(days: int) -> int:
     n = 0
+    t0 = time.time()
     with snapshots._conn() as c, c.cursor() as cur:
         cur.execute(
             "SELECT pick_date, rank, ticker, close FROM nightly_picks "
             "WHERE pick_date >= CURRENT_DATE - INTERVAL '%s days'" % int(days)
         )
         rows = cur.fetchall()
-    for pick_date, rank, ticker, close in rows:
-        ok = outcomes.record_stock_outcome(
-            ticker, pick_date, float(close) if close else None,
-            {"kind": "picker", "id": int(rank),
-             "label": f"Picker rank {rank}"},
-        )
-        if ok: n += 1
-    log.info("backfill_picker: %d/%d", n, len(rows))
+        log.info("backfill_picker: scanning %d rows", len(rows))
+        for i, (pick_date, rank, ticker, close) in enumerate(rows, 1):
+            ok = outcomes.record_stock_outcome(
+                ticker, pick_date, float(close) if close else None,
+                {"kind": "picker", "id": int(rank),
+                 "label": f"Picker rank {rank}"},
+                cur=cur,
+            )
+            if ok: n += 1
+            _log_progress("backfill_picker", i, len(rows), t0)
+    log.info("backfill_picker: %d/%d in %.1fs", n, len(rows), time.time() - t0)
     return n
 
 
 def backfill_momentum(days: int) -> int:
     n = 0
+    t0 = time.time()
     with snapshots._conn() as c, c.cursor() as cur:
         cur.execute(
             "SELECT alert_date, ticker, price FROM momentum_scanner_alerts "
             "WHERE alert_date >= CURRENT_DATE - INTERVAL '%s days'" % int(days)
         )
         rows = cur.fetchall()
-    for alert_date, ticker, price in rows:
-        ok = outcomes.record_stock_outcome(
-            ticker, alert_date, float(price) if price else None,
-            {"kind": "momentum_scan", "id": None,
-             "label": "Momentum scanner"},
-        )
-        if ok: n += 1
-    log.info("backfill_momentum: %d/%d", n, len(rows))
+        log.info("backfill_momentum: scanning %d rows", len(rows))
+        for i, (alert_date, ticker, price) in enumerate(rows, 1):
+            ok = outcomes.record_stock_outcome(
+                ticker, alert_date, float(price) if price else None,
+                {"kind": "momentum_scan", "id": None,
+                 "label": "Momentum scanner"},
+                cur=cur,
+            )
+            if ok: n += 1
+            _log_progress("backfill_momentum", i, len(rows), t0)
+    log.info("backfill_momentum: %d/%d in %.1fs", n, len(rows), time.time() - t0)
     return n
 
 
@@ -104,42 +141,43 @@ def backfill_options_pins(days: int) -> int:
     tag the source as 'user_pin' with the pin id so the report can
     distinguish manual pins from nightly_scan picks."""
     n = 0
+    t0 = time.time()
     with snapshots._conn() as c, c.cursor() as cur:
         cur.execute(
             "SELECT id, ticker, as_of, snapshot FROM options_pinned_recs "
             "WHERE as_of >= CURRENT_DATE - INTERVAL '%s days'" % int(days)
         )
         rows = cur.fetchall()
-    for pin_id, ticker, as_of, snapshot in rows:
-        # snapshot is the full rec dict (JSONB). psycopg2 returns it as
-        # a dict; tolerate str defensively.
-        rec = snapshot
-        if isinstance(rec, str):
-            try:
-                import json as _json
-                rec = _json.loads(rec)
-            except Exception:
+        log.info("backfill_options_pins: scanning %d rows", len(rows))
+        for i, (pin_id, ticker, as_of, snapshot) in enumerate(rows, 1):
+            rec = snapshot
+            if isinstance(rec, str):
+                try:
+                    rec = json.loads(rec)
+                except Exception:
+                    continue
+            if not isinstance(rec, dict):
                 continue
-        if not isinstance(rec, dict):
-            continue
-        # Pins were the user's explicit "track this" signal — we want
-        # them recorded even for verdict=PASS. Force a non-PASS verdict
-        # if the snapshot's verdict would otherwise short-circuit the
-        # recorder.
-        if (rec.get("verdict") or "").upper() in ("PASS", ""):
-            rec = dict(rec)
-            rec["verdict"] = "PINNED"
-        ok = outcomes.record_option_outcome(
-            ticker, as_of, rec,
-            {"kind": "user_pin", "id": int(pin_id), "label": "User pin"},
-        )
-        if ok: n += 1
-    log.info("backfill_options_pins: %d/%d", n, len(rows))
+            # Pins were the user's explicit "track this" signal — record
+            # even for verdict=PASS by forcing PINNED so the recorder's
+            # verdict gate doesn't drop them.
+            if (rec.get("verdict") or "").upper() in ("PASS", ""):
+                rec = dict(rec)
+                rec["verdict"] = "PINNED"
+            ok = outcomes.record_option_outcome(
+                ticker, as_of, rec,
+                {"kind": "user_pin", "id": int(pin_id), "label": "User pin"},
+                cur=cur,
+            )
+            if ok: n += 1
+            _log_progress("backfill_options_pins", i, len(rows), t0)
+    log.info("backfill_options_pins: %d/%d in %.1fs", n, len(rows), time.time() - t0)
     return n
 
 
 def backfill_options(days: int) -> int:
     n = 0
+    t0 = time.time()
     with snapshots._conn() as c, c.cursor() as cur:
         cur.execute(
             "SELECT as_of, ticker, direction, verdict, composite_score, "
@@ -150,32 +188,33 @@ def backfill_options(days: int) -> int:
             "  AND contract_symbol IS NOT NULL" % int(days)
         )
         rows = cur.fetchall()
-    for (as_of, ticker, direction, verdict, composite,
-         csym, strike, expiration, dte, mid) in rows:
-        # Reconstruct a minimal recommendation dict for the writer.
-        with snapshots._conn() as c, c.cursor() as cur:
+        log.info("backfill_options: scanning %d rows", len(rows))
+        for i, (as_of, ticker, direction, verdict, composite,
+                csym, strike, expiration, dte, mid) in enumerate(rows, 1):
             ec = _stock_close_on(cur, ticker, str(as_of))
-        rec = {
-            "ticker":          ticker,
-            "direction":       direction,
-            "verdict":         verdict,
-            "composite_score": composite,
-            "close":           ec,
-            "contract": {
-                "contract_symbol": csym,
-                "strike":          strike,
-                "expiration":      expiration,
-                "dte":             dte,
-                "mid":             mid,
-            },
-        }
-        ok = outcomes.record_option_outcome(
-            ticker, as_of, rec,
-            {"kind": "nightly_scan", "id": None,
-             "label": "Options recommender (historical)"},
-        )
-        if ok: n += 1
-    log.info("backfill_options: %d/%d", n, len(rows))
+            rec = {
+                "ticker":          ticker,
+                "direction":       direction,
+                "verdict":         verdict,
+                "composite_score": composite,
+                "close":           ec,
+                "contract": {
+                    "contract_symbol": csym,
+                    "strike":          strike,
+                    "expiration":      expiration,
+                    "dte":             dte,
+                    "mid":             mid,
+                },
+            }
+            ok = outcomes.record_option_outcome(
+                ticker, as_of, rec,
+                {"kind": "nightly_scan", "id": None,
+                 "label": "Options recommender (historical)"},
+                cur=cur,
+            )
+            if ok: n += 1
+            _log_progress("backfill_options", i, len(rows), t0)
+    log.info("backfill_options: %d/%d in %.1fs", n, len(rows), time.time() - t0)
     return n
 
 
@@ -195,17 +234,21 @@ def main() -> int:
     snapshots.init()
     outcomes.init_tables()
 
+    # Phase order: smallest/highest-signal first so a killed job still
+    # delivers the most valuable data.
     total = 0
-    total += backfill_alerts(args.days)
-    total += backfill_picker(args.days)
-    total += backfill_momentum(args.days)
-    total += backfill_options(args.days)
     total += backfill_options_pins(args.days)
+    total += backfill_options(args.days)
+    total += backfill_momentum(args.days)
+    total += backfill_picker(args.days)
+    total += backfill_alerts(args.days)
     log.info("backfill total seeded: %d", total)
 
     # Fill forward returns + regime tags on the seeded rows.
+    log.info("running nightly fill (forward returns + regime tags)...")
+    t0 = time.time()
     r = outcomes.run_nightly()
-    log.info("nightly fill after backfill: %s", json.dumps(r))
+    log.info("nightly fill done in %.1fs: %s", time.time() - t0, json.dumps(r))
     return 0
 
 

@@ -121,6 +121,8 @@ def record_stock_outcome(
     entry_date: Any,
     entry_close: float | None,
     source: dict,
+    *,
+    cur=None,
 ) -> bool:
     """Insert a stock outcome row, or append a source to the existing row.
 
@@ -128,6 +130,13 @@ def record_stock_outcome(
     {"kind": "alert_screener", "id": 42, "label": "Watchlist"}. If the
     (ticker, entry_date) row already exists, the source is appended to
     its sources array if not already present (matched on kind+id).
+
+    Pass `cur` to reuse an open Postgres cursor (caller owns the
+    connection + commit). Used by the backfill script to avoid opening
+    a fresh connection per row — the per-connection TLS/auth handshake
+    is a 10-100x speedup on a remote DB. Without `cur` the function
+    opens its own short-lived connection — the path the realtime
+    write-paths (alerts/picker/scanner/options) use.
     """
     if not snapshots.enabled():
         return False
@@ -135,25 +144,26 @@ def record_stock_outcome(
     entry_date = _coerce_date(entry_date)
     if not ticker or not entry_date or not isinstance(source, dict):
         return False
+    sql = (
+        "INSERT INTO stock_outcomes (ticker, entry_date, entry_close, sources) "
+        "VALUES (%s, %s, %s, %s::jsonb) "
+        "ON CONFLICT (ticker, entry_date) DO UPDATE SET "
+        "  sources = CASE "
+        "    WHEN stock_outcomes.sources @> %s::jsonb THEN stock_outcomes.sources "
+        "    ELSE stock_outcomes.sources || %s::jsonb "
+        "  END, "
+        "  entry_close = COALESCE(stock_outcomes.entry_close, EXCLUDED.entry_close)"
+    )
+    params = (ticker, entry_date, entry_close,
+              json.dumps([source]),
+              json.dumps([{"kind": source.get("kind"), "id": source.get("id")}]),
+              json.dumps([source]))
     try:
-        with snapshots._conn() as c, c.cursor() as cur:
-            # ON CONFLICT branch appends the source if not already present.
-            # We compare on (kind, id) so the same source firing twice on
-            # the same day doesn't duplicate.
-            cur.execute(
-                "INSERT INTO stock_outcomes (ticker, entry_date, entry_close, sources) "
-                "VALUES (%s, %s, %s, %s::jsonb) "
-                "ON CONFLICT (ticker, entry_date) DO UPDATE SET "
-                "  sources = CASE "
-                "    WHEN stock_outcomes.sources @> %s::jsonb THEN stock_outcomes.sources "
-                "    ELSE stock_outcomes.sources || %s::jsonb "
-                "  END, "
-                "  entry_close = COALESCE(stock_outcomes.entry_close, EXCLUDED.entry_close)",
-                (ticker, entry_date, entry_close,
-                 json.dumps([source]),
-                 json.dumps([{"kind": source.get("kind"), "id": source.get("id")}]),
-                 json.dumps([source])),
-            )
+        if cur is not None:
+            cur.execute(sql, params)
+        else:
+            with snapshots._conn() as c, c.cursor() as cur2:
+                cur2.execute(sql, params)
         return True
     except Exception as exc:
         log.warning("outcomes.record_stock_outcome(%s,%s) failed: %s",
@@ -166,12 +176,17 @@ def record_option_outcome(
     entry_date: Any,
     rec: dict,
     source: dict,
+    *,
+    cur=None,
 ) -> bool:
     """Insert (or update) an option outcome row.
 
     `rec` is the options recommendation dict (same shape passed to
     options.save_recommendation). PASS-verdict recommendations or those
     without a chosen contract are skipped — they're not real entries.
+
+    Pass `cur` to reuse an open Postgres cursor — see
+    `record_stock_outcome` for the rationale.
     """
     if not snapshots.enabled():
         return False
@@ -194,29 +209,33 @@ def record_option_outcome(
     underlying_close = rec.get("close") or contract.get("underlying_close")
     composite = rec.get("composite_score")
 
+    sql = (
+        "INSERT INTO option_outcomes "
+        "(ticker, entry_date, direction, contract_symbol, strike, "
+        " expiration, dte_at_entry, mid_at_entry, underlying_close_at_entry, "
+        " composite_score, verdict, sources) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
+        "ON CONFLICT (ticker, entry_date) DO UPDATE SET "
+        "  sources = CASE "
+        "    WHEN option_outcomes.sources @> %s::jsonb THEN option_outcomes.sources "
+        "    ELSE option_outcomes.sources || %s::jsonb "
+        "  END, "
+        "  composite_score = COALESCE(EXCLUDED.composite_score, option_outcomes.composite_score), "
+        "  verdict = COALESCE(EXCLUDED.verdict, option_outcomes.verdict), "
+        "  mid_at_entry = COALESCE(option_outcomes.mid_at_entry, EXCLUDED.mid_at_entry), "
+        "  underlying_close_at_entry = COALESCE(option_outcomes.underlying_close_at_entry, EXCLUDED.underlying_close_at_entry)"
+    )
+    params = (ticker, entry_date, direction, contract_symbol, strike,
+              expiration, dte, mid, underlying_close,
+              composite, verdict, json.dumps([source]),
+              json.dumps([{"kind": source.get("kind"), "id": source.get("id")}]),
+              json.dumps([source]))
     try:
-        with snapshots._conn() as c, c.cursor() as cur:
-            cur.execute(
-                "INSERT INTO option_outcomes "
-                "(ticker, entry_date, direction, contract_symbol, strike, "
-                " expiration, dte_at_entry, mid_at_entry, underlying_close_at_entry, "
-                " composite_score, verdict, sources) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
-                "ON CONFLICT (ticker, entry_date) DO UPDATE SET "
-                "  sources = CASE "
-                "    WHEN option_outcomes.sources @> %s::jsonb THEN option_outcomes.sources "
-                "    ELSE option_outcomes.sources || %s::jsonb "
-                "  END, "
-                "  composite_score = COALESCE(EXCLUDED.composite_score, option_outcomes.composite_score), "
-                "  verdict = COALESCE(EXCLUDED.verdict, option_outcomes.verdict), "
-                "  mid_at_entry = COALESCE(option_outcomes.mid_at_entry, EXCLUDED.mid_at_entry), "
-                "  underlying_close_at_entry = COALESCE(option_outcomes.underlying_close_at_entry, EXCLUDED.underlying_close_at_entry)",
-                (ticker, entry_date, direction, contract_symbol, strike,
-                 expiration, dte, mid, underlying_close,
-                 composite, verdict, json.dumps([source]),
-                 json.dumps([{"kind": source.get("kind"), "id": source.get("id")}]),
-                 json.dumps([source])),
-            )
+        if cur is not None:
+            cur.execute(sql, params)
+        else:
+            with snapshots._conn() as c, c.cursor() as cur2:
+                cur2.execute(sql, params)
         return True
     except Exception as exc:
         log.warning("outcomes.record_option_outcome(%s,%s) failed: %s",
