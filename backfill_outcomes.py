@@ -97,6 +97,47 @@ def backfill_momentum(days: int) -> int:
     return n
 
 
+def backfill_options_pins(days: int) -> int:
+    """Seed option_outcomes from every existing options_pinned_recs row
+    in the window. Pins are an explicit user signal — we record them
+    even when the original recommendation's verdict was PASS, and we
+    tag the source as 'user_pin' with the pin id so the report can
+    distinguish manual pins from nightly_scan picks."""
+    n = 0
+    with snapshots._conn() as c, c.cursor() as cur:
+        cur.execute(
+            "SELECT id, ticker, as_of, snapshot FROM options_pinned_recs "
+            "WHERE as_of >= CURRENT_DATE - INTERVAL '%s days'" % int(days)
+        )
+        rows = cur.fetchall()
+    for pin_id, ticker, as_of, snapshot in rows:
+        # snapshot is the full rec dict (JSONB). psycopg2 returns it as
+        # a dict; tolerate str defensively.
+        rec = snapshot
+        if isinstance(rec, str):
+            try:
+                import json as _json
+                rec = _json.loads(rec)
+            except Exception:
+                continue
+        if not isinstance(rec, dict):
+            continue
+        # Pins were the user's explicit "track this" signal — we want
+        # them recorded even for verdict=PASS. Force a non-PASS verdict
+        # if the snapshot's verdict would otherwise short-circuit the
+        # recorder.
+        if (rec.get("verdict") or "").upper() in ("PASS", ""):
+            rec = dict(rec)
+            rec["verdict"] = "PINNED"
+        ok = outcomes.record_option_outcome(
+            ticker, as_of, rec,
+            {"kind": "user_pin", "id": int(pin_id), "label": "User pin"},
+        )
+        if ok: n += 1
+    log.info("backfill_options_pins: %d/%d", n, len(rows))
+    return n
+
+
 def backfill_options(days: int) -> int:
     n = 0
     with snapshots._conn() as c, c.cursor() as cur:
@@ -159,6 +200,7 @@ def main() -> int:
     total += backfill_picker(args.days)
     total += backfill_momentum(args.days)
     total += backfill_options(args.days)
+    total += backfill_options_pins(args.days)
     log.info("backfill total seeded: %d", total)
 
     # Fill forward returns + regime tags on the seeded rows.
