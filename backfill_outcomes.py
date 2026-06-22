@@ -43,15 +43,86 @@ log = logging.getLogger("backfill_outcomes")
 PROGRESS_EVERY = 100
 
 
-def _stock_close_on(cur, ticker: str, as_of: str) -> float | None:
-    cur.execute(
-        "SELECT close FROM daily_snapshot "
-        "WHERE ticker = %s AND as_of <= %s "
-        "ORDER BY as_of DESC LIMIT 1",
-        (ticker, as_of),
-    )
-    r = cur.fetchone()
-    return float(r[0]) if r and r[0] is not None else None
+class _CloseCache:
+    """Per-phase ticker → {date: close} cache, sourced from
+    daily_snapshot.recent_bars.
+
+    Why this exists: daily_snapshot only retains the most recent ~5
+    distinct as_of dates (RETENTION_DAYS), so a `SELECT close FROM
+    daily_snapshot WHERE as_of <= entry_date` query returns NULL for
+    any entry older than the retention horizon. That's why the first
+    backfill run left rows from before ~June 15 with entry_close NULL.
+
+    Each retained row, however, carries 60 trailing OHLCV bars in its
+    recent_bars JSONB — ~12 weeks of history. So one query per ticker
+    against the latest snapshot row pulls every close we need for that
+    ticker, no matter how far back the entry sits within the 90-day
+    backfill window.
+
+    Lookup semantics: exact-match on the entry date first; falls back
+    to the most recent prior bar (for the rare case the caller passes
+    a non-trading day).
+    """
+
+    def __init__(self, cur):
+        self.cur = cur
+        self._cache: dict[str, dict[str, float]] = {}
+        self.misses = 0   # tickers with no snapshot row at all
+        self.hits   = 0
+
+    def get(self, ticker: str, as_of: str) -> float | None:
+        ticker = (ticker or "").strip().upper()
+        if not ticker:
+            return None
+        bars_by_date = self._cache.get(ticker)
+        if bars_by_date is None:
+            bars_by_date = self._load(ticker)
+            self._cache[ticker] = bars_by_date
+            if not bars_by_date:
+                self.misses += 1
+        as_of = str(as_of)
+        if as_of in bars_by_date:
+            self.hits += 1
+            return bars_by_date[as_of]
+        # Fallback: most recent prior bar.
+        prior = [d for d in bars_by_date if d <= as_of]
+        if not prior:
+            return None
+        self.hits += 1
+        return bars_by_date[max(prior)]
+
+    def _load(self, ticker: str) -> dict[str, float]:
+        self.cur.execute(
+            "SELECT recent_bars FROM daily_snapshot "
+            "WHERE ticker = %s "
+            "ORDER BY as_of DESC LIMIT 1",
+            (ticker,),
+        )
+        r = self.cur.fetchone()
+        if not r or not r[0]:
+            return {}
+        rb = r[0]
+        if isinstance(rb, str):
+            try:
+                rb = json.loads(rb)
+            except Exception:
+                return {}
+        if not isinstance(rb, dict):
+            return {}
+        bars = rb.get("bars") or []
+        out: dict[str, float] = {}
+        for b in bars:
+            if not isinstance(b, dict):
+                continue
+            d = b.get("date") or b.get("as_of")
+            c = b.get("close")
+            if d is None or c is None:
+                continue
+            try:
+                out[str(d)] = float(c)
+            except (TypeError, ValueError):
+                pass
+        return out
 
 
 def _log_progress(phase: str, i: int, total: int, t0: float) -> None:
@@ -67,6 +138,7 @@ def backfill_alerts(days: int) -> int:
     n = 0
     t0 = time.time()
     with snapshots._conn() as c, c.cursor() as cur:
+        closes = _CloseCache(cur)
         cur.execute(
             "SELECT a.rule_id, a.ticker, a.trigger_date, r.name, r.rule_type "
             "FROM alert_sent a LEFT JOIN alert_rules r ON r.id = a.rule_id "
@@ -75,7 +147,7 @@ def backfill_alerts(days: int) -> int:
         rows = cur.fetchall()
         log.info("backfill_alerts: scanning %d rows", len(rows))
         for i, (rule_id, ticker, trigger_date, rule_name, rule_type) in enumerate(rows, 1):
-            ec = _stock_close_on(cur, ticker, str(trigger_date))
+            ec = closes.get(ticker, str(trigger_date))
             kind = "alert_setup" if rule_type == "setup" else "alert_screener"
             ok = outcomes.record_stock_outcome(
                 ticker, trigger_date, ec,
@@ -84,6 +156,8 @@ def backfill_alerts(days: int) -> int:
             )
             if ok: n += 1
             _log_progress("backfill_alerts", i, len(rows), t0)
+        log.info("  close cache: %d hits, %d tickers with no snapshot",
+                 closes.hits, closes.misses)
     log.info("backfill_alerts: %d/%d in %.1fs", n, len(rows), time.time() - t0)
     return n
 
@@ -179,6 +253,7 @@ def backfill_options(days: int) -> int:
     n = 0
     t0 = time.time()
     with snapshots._conn() as c, c.cursor() as cur:
+        closes = _CloseCache(cur)
         cur.execute(
             "SELECT as_of, ticker, direction, verdict, composite_score, "
             "       contract_symbol, strike, expiration, dte, mid_price "
@@ -191,7 +266,7 @@ def backfill_options(days: int) -> int:
         log.info("backfill_options: scanning %d rows", len(rows))
         for i, (as_of, ticker, direction, verdict, composite,
                 csym, strike, expiration, dte, mid) in enumerate(rows, 1):
-            ec = _stock_close_on(cur, ticker, str(as_of))
+            ec = closes.get(ticker, str(as_of))
             rec = {
                 "ticker":          ticker,
                 "direction":       direction,
@@ -214,6 +289,8 @@ def backfill_options(days: int) -> int:
             )
             if ok: n += 1
             _log_progress("backfill_options", i, len(rows), t0)
+        log.info("  close cache: %d hits, %d tickers with no snapshot",
+                 closes.hits, closes.misses)
     log.info("backfill_options: %d/%d in %.1fs", n, len(rows), time.time() - t0)
     return n
 
