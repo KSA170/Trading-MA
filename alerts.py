@@ -1003,15 +1003,26 @@ def run() -> int:
         return 0
 
     sent = 0
+    import outcomes
     for rule, ticker, hit in triggered_screener:
         if send_telegram(_format_alert(rule["name"], hit, now)):
             record_sent(rule["id"], ticker, today,
                         f"momentum={hit.momentum_score}")
+            outcomes.record_stock_outcome(
+                ticker, today, getattr(hit, "close", None),
+                {"kind": "alert_screener", "id": rule["id"],
+                 "label": rule.get("name") or "Screener alert"},
+            )
             sent += 1
     for rule, res in triggered_setup:
         if send_telegram(_format_setup_alert(rule["name"], res, snapshot_as_of or today)):
             record_sent(rule["id"], res["ticker"], today,
                         f"setup_score={res.get('score')}")
+            outcomes.record_stock_outcome(
+                res["ticker"], today, res.get("close"),
+                {"kind": "alert_setup", "id": rule["id"],
+                 "label": rule.get("name") or "Setup alert"},
+            )
             sent += 1
     total = len(triggered_screener) + len(triggered_setup)
     log.info("alerts: %d triggered, %d sent to Telegram", total, sent)

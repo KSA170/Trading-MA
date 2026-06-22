@@ -1,0 +1,33 @@
+name: Nightly outcomes filler
+
+# Fills forward returns + regime tags on every stock_outcomes /
+# option_outcomes row whose 20d window has matured. Idempotent.
+#
+# Cron: 22:30 UTC weekdays = 30 min after the nightly picker runs, so
+# daily_snapshot has today's bars for every ticker the report could
+# reference.
+on:
+  schedule:
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly-outcomes
+  cancel-in-progress: false
+
+jobs:
+  fill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Fill outcomes
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python outcomes_cron.py

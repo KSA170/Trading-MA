@@ -1166,6 +1166,12 @@ def run() -> int:
         details = _format_details(m, cfg)
         if not record_alert(today, ticker, m, details):
             continue   # someone else inserted it first
+        import outcomes as _outcomes
+        _outcomes.record_stock_outcome(
+            ticker, today, m.get("price"),
+            {"kind": "momentum_scan", "id": None,
+             "label": "Momentum scanner"},
+        )
         # Enrichment is best-effort. Every function swallows exceptions
         # and returns None / {} / [] on failure so a flaky upstream
         # can't block the Telegram send.

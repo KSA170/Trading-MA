@@ -678,6 +678,13 @@ def save_picks(picks: list[dict], as_of: str) -> int:
                      p.get("close"), p.get("vc_ratio"),
                      p.get("ret_20d"), p.get("va_ratio"), p.get("dp_pct")),
                 )
+        import outcomes
+        for rank, p in enumerate(picks, start=1):
+            outcomes.record_stock_outcome(
+                p["ticker"], as_of, p.get("close"),
+                {"kind": "picker", "id": int(rank),
+                 "label": f"Picker rank {rank}"},
+            )
         return len(picks)
     except Exception as exc:
         log.warning("picker.save_picks failed: %s", exc)

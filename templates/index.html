@@ -19,8 +19,10 @@
   <header class="topbar">
     <h1>Trading MA <span class="muted">— Breakout Screener</span></h1>
     <nav class="app-tabs" role="tablist" aria-label="Workspace">
-      <button id="tab-btn-stock"   type="button" class="app-tab active" role="tab" aria-selected="true"  aria-controls="tab-stock"   data-tab="stock">Stock screener</button>
-      <button id="tab-btn-options" type="button" class="app-tab"        role="tab" aria-selected="false" aria-controls="tab-options" data-tab="options">Options screener</button>
+      <button id="tab-btn-stock"          type="button" class="app-tab active" role="tab" aria-selected="true"  aria-controls="tab-stock"          data-tab="stock">Stock screener</button>
+      <button id="tab-btn-stock-report"   type="button" class="app-tab"        role="tab" aria-selected="false" aria-controls="tab-stock-report"   data-tab="stock-report">Stock Strategy Report</button>
+      <button id="tab-btn-options"        type="button" class="app-tab"        role="tab" aria-selected="false" aria-controls="tab-options"        data-tab="options">Options screener</button>
+      <button id="tab-btn-options-report" type="button" class="app-tab"        role="tab" aria-selected="false" aria-controls="tab-options-report" data-tab="options-report">Options Strategy Report</button>
     </nav>
     <div class="status">
       <span id="status-text">idle</span>
@@ -761,6 +763,33 @@
 
   </div><!-- /#tab-stock -->
 
+  <div id="tab-stock-report" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-stock-report">
+    <section class="report-tab">
+      <div class="report-controls">
+        <label class="muted">Lookback
+          <select id="stock-report-days">
+            <option value="30">30 days</option>
+            <option value="60">60 days</option>
+            <option value="90" selected>90 days</option>
+            <option value="180">180 days</option>
+          </select>
+        </label>
+        <label class="muted">Horizon
+          <select id="stock-report-horizon">
+            <option value="1">1d</option>
+            <option value="3">3d</option>
+            <option value="5" selected>5d</option>
+            <option value="10">10d</option>
+            <option value="20">20d</option>
+          </select>
+        </label>
+        <button id="stock-report-refresh" type="button" class="primary">Refresh</button>
+        <span id="stock-report-status" class="muted"></span>
+      </div>
+      <div id="stock-report-body" class="report-body"></div>
+    </section>
+  </div><!-- /#tab-stock-report -->
+
   <div id="tab-options" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-options">
     <section class="options-screener">
       <div class="options-controls">
@@ -877,6 +906,34 @@
       <p class="muted options-disclaimer">⚠ Informational only — not financial advice. Options can expire worthless; size positions accordingly and verify all numbers against your broker before placing a trade. Composite score uses public data only (yfinance, Finnhub insider Form 4); dark pool prints, unusual options flow, and 13F filings require paid data feeds and are not measured.</p>
     </section>
   </div><!-- /#tab-options -->
+
+  <div id="tab-options-report" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-options-report">
+    <section class="report-tab">
+      <div class="report-controls">
+        <label class="muted">Lookback
+          <select id="options-report-days">
+            <option value="30">30 days</option>
+            <option value="60">60 days</option>
+            <option value="90" selected>90 days</option>
+            <option value="180">180 days</option>
+          </select>
+        </label>
+        <label class="muted">Underlying horizon
+          <select id="options-report-horizon">
+            <option value="1">1d</option>
+            <option value="3">3d</option>
+            <option value="5" selected>5d</option>
+            <option value="10">10d</option>
+            <option value="20">20d</option>
+          </select>
+        </label>
+        <button id="options-report-refresh" type="button" class="primary">Refresh</button>
+        <span id="options-report-status" class="muted"></span>
+      </div>
+      <div id="options-report-body" class="report-body"></div>
+      <p class="muted options-disclaimer">Underlying returns only — yfinance doesn't expose historical contract prices, so contract P&amp;L isn't tracked. The ITM-at-expiration column is computed from the underlying close on the expiration date.</p>
+    </section>
+  </div><!-- /#tab-options-report -->
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
