@@ -4278,9 +4278,20 @@ function _renderRowsTable(rows, kind, horizon) {
     return '<div class="report-card empty"><h3>Entries</h3><div class="muted">No rows in this window.</div></div>';
   }
   const isOptions = kind === 'options';
-  const head = isOptions
-    ? '<tr><th>Date</th><th>Ticker</th><th>Dir</th><th>Strike</th><th>Exp</th><th>Verdict</th><th class="num">Score</th><th class="num">Ret ' + horizon + 'd</th><th>ITM?</th><th>Sources</th></tr>'
-    : '<tr><th>Date</th><th>Ticker</th><th class="num">Entry</th><th class="num">Ret 1d</th><th class="num">Ret 5d</th><th class="num">Ret 20d</th><th class="num">MFE 20d</th><th class="num">MDD 20d</th><th>Sources</th></tr>';
+  // Column labels — used for both the header row and the filter row's
+  // placeholder text. Keep in sync with the row-building code below.
+  const cols = isOptions
+    ? ['Date','Ticker','Dir','Strike','Exp','Verdict','Score','Ret ' + horizon + 'd','ITM?','Sources']
+    : ['Date','Ticker','Entry','Ret 1d','Ret 5d','Ret 20d','MFE 20d','MDD 20d','Sources'];
+  const numericCols = isOptions
+    ? new Set([6, 7])
+    : new Set([2, 3, 4, 5, 6, 7]);
+  const head = '<tr>' + cols.map((c, i) =>
+    `<th${numericCols.has(i) ? ' class="num"' : ''}>${c}</th>`
+  ).join('') + '</tr>';
+  const filterRow = '<tr class="filter-row">' + cols.map((_, i) =>
+    `<th><input type="text" class="row-filter" data-col="${i}" placeholder="filter…" aria-label="Filter ${cols[i]}" /></th>`
+  ).join('') + '</tr>';
   const body = rows.slice(0, 500).map(r => {
     const srcs = (r.sources || []).map(s => (s && s.kind) || '?').join(', ') || '—';
     if (isOptions) {
@@ -4313,7 +4324,48 @@ function _renderRowsTable(rows, kind, horizon) {
   }).join('');
   const cap = rows.length > 500 ? '<div class="muted">(showing 500 of ' + rows.length + ')</div>' : '';
   return '<div class="report-card"><h3>Entries</h3>' + cap
-    + '<div class="report-table-wrap"><table class="report-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div></div>';
+    + '<div class="report-table-wrap"><table class="report-table filterable"><thead>'
+    + head + filterRow + '</thead><tbody>' + body + '</tbody></table></div></div>';
+}
+
+// Apply the per-column filter inputs to a `.filterable` table. Hides
+// rows where any non-empty filter input doesn't substring-match the
+// corresponding cell's text (case-insensitive). AND across columns.
+function _applyRowFilters(table) {
+  const inputs = table.querySelectorAll('.row-filter');
+  const filters = [];
+  inputs.forEach((inp) => {
+    const v = inp.value.trim().toLowerCase();
+    if (v) filters.push({col: Number(inp.dataset.col), v});
+  });
+  const rows = table.tBodies[0] ? table.tBodies[0].rows : [];
+  for (const tr of rows) {
+    let show = true;
+    for (const f of filters) {
+      const cell = tr.cells[f.col];
+      if (!cell || !cell.textContent.toLowerCase().includes(f.v)) {
+        show = false;
+        break;
+      }
+    }
+    tr.style.display = show ? '' : 'none';
+  }
+}
+
+// Wire input handlers on every .filterable table inside the given
+// container. Idempotent — re-running after a re-render is safe since
+// we attach via a data flag.
+function _wireRowFilters(container) {
+  const tables = container.querySelectorAll('table.filterable');
+  tables.forEach((table) => {
+    if (table.dataset.filtersWired === '1') return;
+    table.dataset.filtersWired = '1';
+    table.querySelectorAll('.row-filter').forEach((inp) => {
+      inp.addEventListener('input', () => _applyRowFilters(table));
+      // Stop click from bubbling into the table's row-sort handler.
+      inp.addEventListener('click', (e) => e.stopPropagation());
+    });
+  });
 }
 
 async function loadStockReport() {
@@ -4335,6 +4387,7 @@ async function loadStockReport() {
       + _renderBucketTable('By regime', j.by_regime, 'regime', h)
       + _renderHistogram(j.histogram, h)
       + _renderRowsTable(j.rows, 'stock', h);
+    _wireRowFilters(els.stockReportBody);
     if (els.stockReportStatus) els.stockReportStatus.textContent = (j.rows.length || 0) + ' entries';
     _stockReportLoaded = true;
   } catch (exc) {
@@ -4371,6 +4424,7 @@ async function loadOptionsReport() {
       + _renderBucketTable('By regime', j.by_regime, 'regime', h)
       + _renderHistogram(j.histogram, h)
       + _renderRowsTable(j.rows, 'options', h);
+    _wireRowFilters(els.optionsReportBody);
     if (els.optionsReportStatus) els.optionsReportStatus.textContent = (j.rows.length || 0) + ' entries';
     _optionsReportLoaded = true;
   } catch (exc) {

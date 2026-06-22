@@ -144,6 +144,15 @@ def record_stock_outcome(
     entry_date = _coerce_date(entry_date)
     if not ticker or not entry_date or not isinstance(source, dict):
         return False
+    # Skip rows without an entry close — the Strategy Report can't
+    # compute forward returns from a NULL entry price, and the user
+    # has explicitly asked that those rows not appear in the report.
+    # Real-time write paths (alerts/picker/scanner/screener thumbs-up)
+    # always have a price; backfill skips a row if its ticker has
+    # aged out of the daily_snapshot retention window AND isn't in any
+    # retained row's trailing-bar JSONB.
+    if entry_close is None:
+        return False
     sql = (
         "INSERT INTO stock_outcomes (ticker, entry_date, entry_close, sources) "
         "VALUES (%s, %s, %s, %s::jsonb) "

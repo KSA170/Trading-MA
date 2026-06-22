@@ -395,15 +395,10 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
                     opt.save_recommendation_with_iv(rec)
                 except Exception as exc:
                     log.warning("save_recommendation(%s) failed: %s", ticker, exc)
-                try:
-                    import outcomes
-                    outcomes.record_option_outcome(
-                        ticker, rec.get("as_of"), rec,
-                        {"kind": "nightly_scan", "id": None,
-                         "label": "Options recommender (nightly)"},
-                    )
-                except Exception as exc:
-                    log.warning("record_option_outcome(%s) failed: %s", ticker, exc)
+                # Note: option_outcomes is intentionally NOT written here.
+                # Only user-pinned recommendations (options.pin_rec) feed
+                # the Options Strategy Report — nightly scans and ad-hoc
+                # lookups would drown the report in noise.
     finally:
         # wait=False so a still-hanging in-flight ticker doesn't block
         # the worker from returning. The orphaned daemon thread will
