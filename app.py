@@ -1382,21 +1382,40 @@ def api_outcomes_option_report():
 @app.route("/api/outcomes/thumbs-up", methods=["POST"])
 def api_outcomes_thumbs_up():
     """Manual entry-tracking from the stock screener results table.
-    Body: {ticker: 'AAPL', entry_date: 'YYYY-MM-DD', entry_close: 1.23}"""
+
+    Accepts either a single entry or a batch:
+      {ticker: 'AAPL', entry_date: 'YYYY-MM-DD', entry_close: 1.23}
+      {rows: [{ticker, entry_date, entry_close}, ...]}
+
+    Source kind: 'manual_screener' when the call originates from the
+    screener's selection toolbar, 'manual' otherwise. Body may carry
+    an explicit `source_label` to override the default label.
+    """
     import outcomes
     payload = request.get_json(silent=True) or {}
-    ticker = (payload.get("ticker") or "").strip().upper()
-    entry_date = (payload.get("entry_date") or "").strip()
-    if not ticker or not entry_date:
-        return jsonify({"error": "ticker and entry_date required"}), 400
-    try:
-        entry_close = float(payload.get("entry_close")) if payload.get("entry_close") is not None else None
-    except (TypeError, ValueError):
-        entry_close = None
-    ok = outcomes.record_stock_outcome(
-        ticker, entry_date, entry_close,
-        {"kind": "manual", "id": None, "label": "Thumbs-up"},
-    )
+    label = (payload.get("source_label") or "Screener selection").strip()
+    kind  = (payload.get("source_kind")  or "manual_screener").strip()
+
+    def _record(row: dict) -> bool:
+        t = (row.get("ticker") or "").strip().upper()
+        d = (row.get("entry_date") or "").strip()
+        if not t or not d:
+            return False
+        try:
+            ec = float(row["entry_close"]) if row.get("entry_close") is not None else None
+        except (TypeError, ValueError):
+            ec = None
+        return outcomes.record_stock_outcome(
+            t, d, ec, {"kind": kind, "id": None, "label": label},
+        )
+
+    rows = payload.get("rows")
+    if isinstance(rows, list):
+        recorded = sum(1 for r in rows if isinstance(r, dict) and _record(r))
+        return jsonify({"recorded": recorded, "total": len(rows)})
+    if not payload.get("ticker") or not payload.get("entry_date"):
+        return jsonify({"error": "ticker+entry_date or rows[] required"}), 400
+    ok = _record(payload)
     return jsonify({"recorded": bool(ok)})
 
 

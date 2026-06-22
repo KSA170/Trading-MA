@@ -1456,6 +1456,15 @@ def pin_rec(ticker: str, as_of: str, note: str = "") -> dict | None:
                     (note_clean, pin_id),
                 )
                 db_note = note_clean
+        try:
+            import outcomes
+            outcomes.record_option_outcome(
+                ticker, as_of, rec,
+                {"kind": "user_pin", "id": int(pin_id), "label": "User pin"},
+            )
+        except Exception as exc:
+            log.warning("record_option_outcome(pin %s,%s) failed: %s",
+                        ticker, as_of, exc)
         return {
             "id": int(pin_id),
             "ticker": ticker.upper(),

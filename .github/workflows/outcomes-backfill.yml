@@ -1,0 +1,37 @@
+name: Outcomes — historical backfill (manual)
+
+# Seeds stock_outcomes / option_outcomes from historical alert_sent,
+# nightly_picks, momentum_scanner_alerts, options_recommendations, and
+# options_pinned_recs rows. Idempotent — ON CONFLICT appends sources
+# rather than duplicating, so re-running is safe.
+#
+# Trigger manually from the Actions tab. The `days` input controls how
+# far back to look (default 90).
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days of history to backfill"
+        required: false
+        default: "90"
+
+concurrency:
+  group: outcomes-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run backfill
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python backfill_outcomes.py --days ${{ inputs.days }}

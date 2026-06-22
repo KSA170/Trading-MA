@@ -116,6 +116,7 @@ const els = {
   shareBtn: $('#share-btn'),
   exportTvBtn: $('#export-tv-btn'),
   alertsAddBtn: $('#alerts-add-btn'),
+  reportAddBtn: $('#report-add-btn'),
   exportBtn: $('#export-btn'),
   clearSelectionBtn: $('#clear-selection-btn'),
   columnsBtn: $('#columns-btn'),
@@ -1324,7 +1325,7 @@ function updateSelectionUI() {
     els.selectionCount.textContent = count === 1 ? '1 selected' : `${count} selected`;
   }
   [els.emailBtn, els.shareBtn, els.exportTvBtn, els.alertsAddBtn,
-   els.exportBtn, els.clearSelectionBtn].forEach((b) => {
+   els.reportAddBtn, els.exportBtn, els.clearSelectionBtn].forEach((b) => {
     if (b) b.disabled = count === 0;
   });
   if (els.selectAll) {
@@ -2009,6 +2010,44 @@ async function addSelectedToAlerts(rows) {
 }
 
 if (els.alertsAddBtn) els.alertsAddBtn.addEventListener('click', () => addSelectedToAlerts());
+
+async function addSelectedToReport(rows) {
+  rows = rows || selectedRows();
+  if (!rows.length) return;
+  // Use each row's `as_of_date` for entry_date and its `close` for
+  // entry_close — these are the same values the screener shows in the
+  // table, so the report reflects exactly what the user saw at click.
+  const payload = {
+    source_kind:  'manual_screener',
+    source_label: 'Screener selection',
+    rows: rows.map((r) => ({
+      ticker:      r.ticker,
+      entry_date:  r.as_of_date,
+      entry_close: r.close,
+    })),
+  };
+  try {
+    const res = await fetch('/api/outcomes/thumbs-up', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus('Add to report failed: ' + (data.error || ('HTTP ' + res.status)));
+      return;
+    }
+    const n = data.recorded || 0;
+    setStatus(`added ${n} to Strategy Report — open the tab to view`);
+    // If the Stock Strategy Report tab has been opened this session,
+    // invalidate the cache so its next activation re-fetches.
+    _stockReportLoaded = false;
+  } catch (_) {
+    setStatus('Add to report failed');
+  }
+}
+
+if (els.reportAddBtn) els.reportAddBtn.addEventListener('click', () => addSelectedToReport());
 
 
 // --- alert rules ----------------------------------------------------------
