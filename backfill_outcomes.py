@@ -295,6 +295,37 @@ def backfill_options(days: int) -> int:
     return n
 
 
+def cleanup_orphans() -> dict:
+    """Enforce the report's business rules by deleting rows the user
+    doesn't want surfaced:
+
+      - stock_outcomes rows whose entry_close is NULL — useless for
+        the report since forward returns can't be computed.
+      - option_outcomes rows that have no `user_pin` source — the user
+        only wants pinned options tracked, not nightly_scan / user_lookup
+        ones. A row with BOTH user_pin AND another source is kept (the
+        pin still applies).
+
+    Idempotent. Safe to re-run.
+    """
+    out = {"stocks_deleted": 0, "options_deleted": 0}
+    with snapshots._conn() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM stock_outcomes WHERE entry_close IS NULL")
+        out["stocks_deleted"] = cur.rowcount or 0
+        cur.execute(
+            "DELETE FROM option_outcomes "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM jsonb_array_elements(sources) e "
+            "  WHERE e->>'kind' = 'user_pin'"
+            ")"
+        )
+        out["options_deleted"] = cur.rowcount or 0
+    log.info("cleanup_orphans: deleted %d stocks (NULL entry_close), "
+             "%d options (no user_pin source)",
+             out["stocks_deleted"], out["options_deleted"])
+    return out
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -303,6 +334,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=90,
                     help="how many days back to seed (default 90)")
+    ap.add_argument("--skip-cleanup", action="store_true",
+                    help="skip the orphan-row cleanup that runs by default")
     args = ap.parse_args()
 
     if not snapshots.enabled():
@@ -311,11 +344,18 @@ def main() -> int:
     snapshots.init()
     outcomes.init_tables()
 
+    # Cleanup first — removes rows that the user doesn't want in the
+    # report. Idempotent.
+    if not args.skip_cleanup:
+        cleanup_orphans()
+
     # Phase order: smallest/highest-signal first so a killed job still
-    # delivers the most valuable data.
+    # delivers the most valuable data. `backfill_options` is intentionally
+    # NOT called — only user-pinned options (backfill_options_pins) feed
+    # the Options Strategy Report. Auto-saved recommendations (from the
+    # nightly scanner / on-demand lookup) would drown the report in noise.
     total = 0
     total += backfill_options_pins(args.days)
-    total += backfill_options(args.days)
     total += backfill_momentum(args.days)
     total += backfill_picker(args.days)
     total += backfill_alerts(args.days)

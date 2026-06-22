@@ -1153,17 +1153,6 @@ def api_options_lookup():
         # Persist any analyzed ticker (even WATCH/PASS) — useful for
         # the daily history view; load_recommendations sorts by score.
         options.save_recommendation(rec)
-        try:
-            import outcomes
-            outcomes.record_option_outcome(
-                ticker, rec.get("as_of"), rec,
-                {"kind": "user_lookup", "id": None,
-                 "label": "User lookup"},
-            )
-        except Exception as exc:
-            import logging
-            logging.getLogger("app").warning(
-                "record_option_outcome(%s) failed: %s", ticker, exc)
     return jsonify(rec)
 
 
