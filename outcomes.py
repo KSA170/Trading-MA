@@ -375,17 +375,23 @@ def _fetch_forward_bars(cur, ticker: str, entry_date: str,
             for b in bars:
                 if not isinstance(b, dict):
                     continue
-                d = b.get("date") or b.get("as_of")
+                # snapshot writer (screener._row_from_df) stores bars
+                # with short keys: d, o, h, l, c, v. Translate to the
+                # long-key format the rest of outcomes.py uses.
+                d = b.get("d") or b.get("date") or b.get("as_of")
                 try:
-                    close = float(b.get("close"))
+                    close = float(b.get("c") if b.get("c") is not None
+                                  else b.get("close"))
                 except (TypeError, ValueError):
                     continue
                 if not d or close <= 0:
                     continue
                 if str(d) >= entry_date:
+                    high_raw = b.get("h") if b.get("h") is not None else b.get("high")
+                    low_raw  = b.get("l") if b.get("l") is not None else b.get("low")
                     out.append({"date": str(d), "close": close,
-                                "high": float(b.get("high") or close),
-                                "low":  float(b.get("low")  or close)})
+                                "high": float(high_raw or close),
+                                "low":  float(low_raw  or close)})
             out.sort(key=lambda x: x["date"])
     if out:
         return out

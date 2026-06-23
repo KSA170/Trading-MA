@@ -114,8 +114,11 @@ class _CloseCache:
         for b in bars:
             if not isinstance(b, dict):
                 continue
-            d = b.get("date") or b.get("as_of")
-            c = b.get("close")
+            # snapshot writer (screener._row_from_df) stores bars with
+            # short keys (d, c, o, h, l, v). Long-key fallback tolerates
+            # any future format the writer might produce.
+            d = b.get("d") or b.get("date") or b.get("as_of")
+            c = b.get("c") if b.get("c") is not None else b.get("close")
             if d is None or c is None:
                 continue
             try:
