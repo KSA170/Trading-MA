@@ -271,12 +271,90 @@ def record_option_outcome(
 
 # --- forward return filler ------------------------------------------------
 
+def _bars_from_yfinance(ticker: str, entry_date: str,
+                       through: str) -> list[dict]:
+    """Fallback when daily_snapshot has no usable row for `ticker` (the
+    snapshot pipeline hasn't refreshed it recently, or the ticker is
+    out of the snapshot universe). Fetch the OHLC bars directly from
+    yfinance for the [entry_date, through] window.
+
+    Returns the same shape as _fetch_forward_bars (date / close / high /
+    low, ordered ascending). Network-bound — ~1-2s per call — so used
+    only when the fast path returns empty.
+    """
+    try:
+        import yfinance as yf
+        # yfinance's end is exclusive; pad by 2 calendar days so we
+        # don't drop the last trading day in the window.
+        end_dt = (datetime.strptime(through, "%Y-%m-%d")
+                  + timedelta(days=2)).strftime("%Y-%m-%d")
+        hist = yf.Ticker(ticker).history(
+            start=entry_date, end=end_dt, auto_adjust=False,
+        )
+        if hist is None or hist.empty:
+            return []
+        out = []
+        for d, row in hist.iterrows():
+            try:
+                date_str = d.strftime("%Y-%m-%d")
+                close = float(row["Close"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if close <= 0 or date_str < entry_date:
+                continue
+            try:
+                high = float(row.get("High") or close)
+                low  = float(row.get("Low")  or close)
+            except (TypeError, ValueError):
+                high, low = close, close
+            out.append({"date": date_str, "close": close,
+                        "high": high, "low": low})
+        out.sort(key=lambda x: x["date"])
+        return out
+    except Exception as exc:
+        log.warning("yfinance fallback for %s [%s..%s] failed: %s",
+                    ticker, entry_date, through, exc)
+        return []
+
+
+def _close_on_from_yfinance(ticker: str, as_of: str) -> float | None:
+    """Fallback for the ITM-at-expiration check — fetch a single
+    historical close for `ticker` on or just before `as_of` via
+    yfinance. Returns None on any failure."""
+    try:
+        import yfinance as yf
+        end_dt = (datetime.strptime(as_of, "%Y-%m-%d")
+                  + timedelta(days=2)).strftime("%Y-%m-%d")
+        # Pull a small window before as_of so we land on the most recent
+        # actual trading day if as_of is a weekend/holiday.
+        start_dt = (datetime.strptime(as_of, "%Y-%m-%d")
+                    - timedelta(days=7)).strftime("%Y-%m-%d")
+        hist = yf.Ticker(ticker).history(
+            start=start_dt, end=end_dt, auto_adjust=False,
+        )
+        if hist is None or hist.empty:
+            return None
+        prior = [d for d in hist.index if d.strftime("%Y-%m-%d") <= as_of]
+        if not prior:
+            return None
+        close = hist.loc[max(prior), "Close"]
+        return float(close) if close is not None else None
+    except Exception as exc:
+        log.warning("yfinance close-on fallback for %s @ %s failed: %s",
+                    ticker, as_of, exc)
+        return None
+
+
 def _fetch_forward_bars(cur, ticker: str, entry_date: str,
                         through: str) -> list[dict]:
     """Pull daily bars for `ticker` from entry_date forward through
     `through` (inclusive). Reads from daily_snapshot.recent_bars on
     the latest as_of in the window — that JSONB already carries the
-    trailing ~60 bars so a single row covers all our horizons."""
+    trailing ~60 bars so a single row covers all our horizons. Falls
+    back to yfinance when no snapshot row covers the entry window
+    (e.g., warm-cache hasn't refreshed this ticker recently or it sits
+    outside the snapshot universe).
+    """
     cur.execute(
         "SELECT recent_bars FROM daily_snapshot "
         "WHERE ticker = %s AND as_of >= %s AND as_of <= %s "
@@ -284,34 +362,35 @@ def _fetch_forward_bars(cur, ticker: str, entry_date: str,
         (ticker, entry_date, through),
     )
     row = cur.fetchone()
-    if not row or not row[0]:
-        return []
-    rb = row[0]
-    if isinstance(rb, str):
-        try:
-            rb = json.loads(rb)
-        except Exception:
-            return []
-    if not isinstance(rb, dict):
-        return []
-    bars = rb.get("bars") or []
-    out = []
-    for b in bars:
-        if not isinstance(b, dict):
-            continue
-        d = b.get("date") or b.get("as_of")
-        try:
-            close = float(b.get("close"))
-        except (TypeError, ValueError):
-            continue
-        if not d or close <= 0:
-            continue
-        if str(d) >= entry_date:
-            out.append({"date": str(d), "close": close,
-                        "high": float(b.get("high") or close),
-                        "low":  float(b.get("low")  or close)})
-    out.sort(key=lambda x: x["date"])
-    return out
+    out: list[dict] = []
+    if row and row[0]:
+        rb = row[0]
+        if isinstance(rb, str):
+            try:
+                rb = json.loads(rb)
+            except Exception:
+                rb = None
+        if isinstance(rb, dict):
+            bars = rb.get("bars") or []
+            for b in bars:
+                if not isinstance(b, dict):
+                    continue
+                d = b.get("date") or b.get("as_of")
+                try:
+                    close = float(b.get("close"))
+                except (TypeError, ValueError):
+                    continue
+                if not d or close <= 0:
+                    continue
+                if str(d) >= entry_date:
+                    out.append({"date": str(d), "close": close,
+                                "high": float(b.get("high") or close),
+                                "low":  float(b.get("low")  or close)})
+            out.sort(key=lambda x: x["date"])
+    if out:
+        return out
+    # Fast path returned nothing — fall back to yfinance.
+    return _bars_from_yfinance(ticker, entry_date, through)
 
 
 def _compute_returns(entry_close: float, bars: list[dict]) -> dict:
@@ -393,6 +472,29 @@ def fill_stock_forward_returns(limit: int | None = None) -> dict:
     if not snapshots.enabled():
         return {"checked": 0, "updated": 0}
     today = date.today().isoformat()
+
+    # Self-heal: earlier versions of this function happily UPDATE'd rows
+    # with all-NULL returns when no bars were available AND stamped
+    # forward_filled_through to today — locking those rows out of any
+    # future retry once they aged past entry_date+30d. Clear the
+    # forward_filled_through on any row that ended up with no returns
+    # at all, so this run picks them back up.
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "UPDATE stock_outcomes SET forward_filled_through = NULL "
+                "WHERE forward_filled_through IS NOT NULL "
+                "  AND ret_1d IS NULL AND ret_3d IS NULL AND ret_5d IS NULL "
+                "  AND ret_10d IS NULL AND ret_20d IS NULL"
+            )
+            cleared = cur.rowcount or 0
+            if cleared:
+                log.info("fill_stock_forward_returns: cleared "
+                         "forward_filled_through on %d previously-locked "
+                         "all-NULL row(s) so they retry this run", cleared)
+    except Exception as exc:
+        log.warning("fill_stock_forward_returns: self-heal failed: %s", exc)
+
     sql = (
         "SELECT ticker, entry_date, entry_close "
         "FROM stock_outcomes "
@@ -411,8 +513,13 @@ def fill_stock_forward_returns(limit: int | None = None) -> dict:
         log.warning("fill_stock_forward_returns: fetch failed: %s", exc)
         return {"checked": 0, "updated": 0}
 
-    # Tracked across batches via mutable list for closure access.
+    # Per-skip-reason counters tracked across batches via mutable list
+    # for closure access. "no_close" = could not resolve entry_close at
+    # all. "no_bars" = no forward bars from snapshot OR yfinance, so
+    # nothing real to compute — we don't mark these as filled so the
+    # next run (when data may have arrived) retries them.
     skipped_no_close = [0]
+    skipped_no_bars  = [0]
 
     def _proc(cur, batch):
         n = 0
@@ -430,6 +537,14 @@ def fill_stock_forward_returns(limit: int | None = None) -> dict:
                 skipped_no_close[0] += 1
                 continue
             rets = _compute_returns(float(ec), bars)
+            # If we couldn't compute a single real return value, don't
+            # write a row of NULLs and lock forward_filled_through to
+            # today — that would prevent any future retry from picking
+            # the row up again. Skip and let the next run try.
+            any_real = any(rets.get(f"ret_{h}d") is not None for h in HORIZONS)
+            if not any_real:
+                skipped_no_bars[0] += 1
+                continue
             cur.execute(
                 "UPDATE stock_outcomes SET "
                 "  entry_close = COALESCE(entry_close, %s), "
@@ -452,10 +567,15 @@ def fill_stock_forward_returns(limit: int | None = None) -> dict:
         work, "fill_stock_forward_returns", _proc)
     if skipped_no_close[0]:
         log.info("fill_stock_forward_returns: %d row(s) skipped — no "
-                 "entry_close and no forward bars in snapshot",
+                 "entry_close and no forward bars from snapshot or yfinance",
                  skipped_no_close[0])
+    if skipped_no_bars[0]:
+        log.info("fill_stock_forward_returns: %d row(s) skipped — no forward "
+                 "bars available; left unfilled so next run can retry",
+                 skipped_no_bars[0])
     return {"checked": len(work), "updated": committed,
             "skipped_no_close": skipped_no_close[0],
+            "skipped_no_bars":  skipped_no_bars[0],
             "failed_batches": failed}
 
 
@@ -470,6 +590,28 @@ def fill_option_forward_returns(limit: int | None = None) -> dict:
     if not snapshots.enabled():
         return {"checked": 0, "updated": 0}
     today = date.today().isoformat()
+
+    # Self-heal same as fill_stock_forward_returns — clear
+    # forward_filled_through on rows that ended up all-NULL so this run
+    # picks them back up. Critical for the pinned options that got
+    # poisoned by earlier "updated=0 but log claimed success" runs.
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "UPDATE option_outcomes SET forward_filled_through = NULL "
+                "WHERE forward_filled_through IS NOT NULL "
+                "  AND underlying_ret_1d IS NULL AND underlying_ret_3d IS NULL "
+                "  AND underlying_ret_5d IS NULL AND underlying_ret_10d IS NULL "
+                "  AND underlying_ret_20d IS NULL"
+            )
+            cleared = cur.rowcount or 0
+            if cleared:
+                log.info("fill_option_forward_returns: cleared "
+                         "forward_filled_through on %d previously-locked "
+                         "all-NULL row(s) so they retry this run", cleared)
+    except Exception as exc:
+        log.warning("fill_option_forward_returns: self-heal failed: %s", exc)
+
     sql = (
         "SELECT ticker, entry_date, underlying_close_at_entry, "
         "       direction, strike, expiration "
@@ -506,11 +648,19 @@ def fill_option_forward_returns(limit: int | None = None) -> dict:
             if ec is None:
                 # Diagnose so the user can see WHY this row didn't update.
                 if not bars:
-                    skipped.append(f"{ticker}@{entry_date_str}: no snapshot bars")
+                    skipped.append(f"{ticker}@{entry_date_str}: no bars (snapshot or yfinance)")
                 else:
                     skipped.append(f"{ticker}@{entry_date_str}: bars present but close missing")
                 continue
             rets = _compute_returns(float(ec), bars)
+            # If we couldn't compute a single real return value (bars
+            # only contained the entry day, or were empty), don't write
+            # a row of NULLs and lock forward_filled_through — leave it
+            # so the next run can retry.
+            any_real = any(rets.get(f"ret_{h}d") is not None for h in HORIZONS)
+            if not any_real:
+                skipped.append(f"{ticker}@{entry_date_str}: no forward bars to compute returns")
+                continue
             itm = None
             if expiration and expiration <= date.today() and strike:
                 exp_str = _coerce_date(expiration)
@@ -521,8 +671,12 @@ def fill_option_forward_returns(limit: int | None = None) -> dict:
                     (ticker, exp_str),
                 )
                 r = cur.fetchone()
-                if r and r[0] is not None:
-                    exp_close = float(r[0])
+                exp_close = float(r[0]) if r and r[0] is not None else None
+                if exp_close is None:
+                    # Snapshot doesn't cover this ticker on the expiration
+                    # date — fall back to yfinance for a single close.
+                    exp_close = _close_on_from_yfinance(ticker, exp_str)
+                if exp_close is not None:
                     if direction == "call":
                         itm = exp_close > float(strike)
                     elif direction == "put":
