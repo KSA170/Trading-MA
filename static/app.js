@@ -4350,13 +4350,15 @@ function _renderRowsTable(rows, kind, horizon) {
     return `<th><div class="filter-dd" data-col="${ci}">`
       + `<button type="button" class="filter-dd-btn" aria-label="Filter ${escapeHtml(label)}" aria-haspopup="listbox" aria-expanded="false">All ▾</button>`
       + `<div class="filter-dd-menu hidden" role="listbox">`
-      +   `<label class="filter-dd-opt filter-dd-selectall"><input type="checkbox" class="filter-dd-all" checked /> <span><strong>(Select All)</strong></span></label>`
+      +   `<div class="filter-dd-header">`
+      +     `<label class="filter-dd-opt filter-dd-selectall"><input type="checkbox" class="filter-dd-all" checked /> <span><strong>(Select All)</strong></span></label>`
+      +     `<div class="filter-dd-actions">`
+      +       `<button type="button" class="filter-dd-cancel">Cancel</button>`
+      +       `<button type="button" class="filter-dd-ok primary">OK</button>`
+      +     `</div>`
+      +   `</div>`
       +   `<div class="filter-dd-divider"></div>`
       +   `<div class="filter-dd-opts">${opts}</div>`
-      +   `<div class="filter-dd-footer">`
-      +     `<button type="button" class="filter-dd-cancel">Cancel</button>`
-      +     `<button type="button" class="filter-dd-ok primary">OK</button>`
-      +   `</div>`
       + `</div></div></th>`;
   }).join('');
 
