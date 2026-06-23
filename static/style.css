@@ -1644,6 +1644,44 @@ button.hidden { display: none; }
   font-weight: 600;
 }
 .report-card.empty { color: var(--muted); font-size: 12px; }
+.report-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.report-card-head h3 { margin: 0; }
+.report-card-actions { display: flex; gap: 6px; }
+.row-remove-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.row-remove-btn:not(:disabled):hover {
+  border-color: #f87171;
+  color: #f87171;
+}
+.row-remove-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.report-card-cap { font-size: 11px; margin-bottom: 6px; }
+
+/* Leading select column on entries tables. Compact so it doesn't push
+   the data columns. */
+.report-table th.select-col,
+.report-table td.select-col {
+  width: 28px;
+  padding-left: 8px;
+  padding-right: 4px;
+  text-align: center;
+}
+.row-select, .row-select-all { cursor: pointer; margin: 0; }
 
 .summary-grid {
   display: grid;
