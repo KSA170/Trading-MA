@@ -86,7 +86,21 @@ def _conn():
     except Exception as exc:
         _driver_error = f"{type(exc).__name__}: {exc}"
         raise
-    c = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    # TCP keepalives — without these, Render's Postgres aggressively
+    # closes connections that sit "idle" between queries (even sub-second
+    # gaps during a Python loop count). The forward-fill cron caught
+    # this as "SSL connection has been closed unexpectedly" mid-batch,
+    # rolling back the entire transaction. Sending a keepalive probe
+    # every 30s with a 10s retry interval keeps the TCP socket healthy
+    # without meaningful overhead.
+    c = psycopg2.connect(
+        DATABASE_URL,
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=3,
+    )
     try:
         yield c
         c.commit()
