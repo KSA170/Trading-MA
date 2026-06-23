@@ -345,139 +345,216 @@ def _compute_returns(entry_close: float, bars: list[dict]) -> dict:
     return out
 
 
+# Per-batch row count for the forward-fill / regime-tag passes. Small
+# enough that a dropped SSL connection only loses ~1s of work, large
+# enough that the per-batch handshake overhead stays under 5% of total
+# wall time.
+_FILL_BATCH_SIZE = 25
+
+
+def _process_in_batches(work: list, name: str, processor):
+    """Run `processor(cur, batch)` against successive batches of `work`,
+    each in its own short-lived connection. A batch that raises rolls
+    back — its in-flight row count is NOT added to the total — but
+    previously committed batches are safe. Returns
+    (committed_total, failed_batches).
+    """
+    committed = 0
+    failed = 0
+    for i in range(0, len(work), _FILL_BATCH_SIZE):
+        batch = work[i:i + _FILL_BATCH_SIZE]
+        try:
+            with snapshots._conn() as c, c.cursor() as cur:
+                n = processor(cur, batch)
+            # Reached only if the with-block committed without raising.
+            committed += int(n or 0)
+        except Exception as exc:
+            failed += 1
+            log.warning("%s: batch %d (rows %d-%d) failed: %s — "
+                        "previously committed batches are intact",
+                        name, i // _FILL_BATCH_SIZE + 1,
+                        i + 1, min(i + _FILL_BATCH_SIZE, len(work)), exc)
+    if failed:
+        log.warning("%s: %d/%d batches failed; updated count reflects "
+                    "committed work only", name, failed,
+                    (len(work) + _FILL_BATCH_SIZE - 1) // _FILL_BATCH_SIZE)
+    return committed, failed
+
+
 def fill_stock_forward_returns(limit: int | None = None) -> dict:
     """Compute forward returns for every stock_outcomes row whose 20d
     window is now in the past (or for which we have enough bars).
-    Returns {"checked": N, "updated": M}."""
+    Returns {"checked": N, "updated": M, "skipped_no_close": K, ...}.
+
+    Batched: each chunk of `_FILL_BATCH_SIZE` rows runs in its own
+    short-lived Postgres connection so a dropped SSL doesn't roll back
+    every other batch's work.
+    """
     if not snapshots.enabled():
         return {"checked": 0, "updated": 0}
     today = date.today().isoformat()
-    checked = updated = 0
+    sql = (
+        "SELECT ticker, entry_date, entry_close "
+        "FROM stock_outcomes "
+        "WHERE (forward_filled_through IS NULL "
+        "   OR forward_filled_through < entry_date + INTERVAL '30 days') "
+        "  AND entry_date <= (CURRENT_DATE - INTERVAL '1 day') "
+        "ORDER BY entry_date DESC"
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
     try:
         with snapshots._conn() as c, c.cursor() as cur:
-            # Pull rows where the 20d window has ended (or we haven't
-            # filled at all yet). Use entry_date + 30 calendar days as
-            # the trigger — by then daily_snapshot has the bars.
-            sql = (
-                "SELECT ticker, entry_date, entry_close "
-                "FROM stock_outcomes "
-                "WHERE (forward_filled_through IS NULL "
-                "   OR forward_filled_through < entry_date + INTERVAL '30 days') "
-                "  AND entry_date <= (CURRENT_DATE - INTERVAL '1 day') "
-                "ORDER BY entry_date DESC"
-            )
-            if limit:
-                sql += f" LIMIT {int(limit)}"
             cur.execute(sql)
-            rows = cur.fetchall()
-            for ticker, entry_date, entry_close in rows:
-                checked += 1
-                entry_date_str = _coerce_date(entry_date)
-                # Window end: 30 calendar days out, or today, whichever is earlier.
-                through = min(
-                    (entry_date + timedelta(days=FORWARD_LOOKAHEAD_DAYS)).isoformat(),
-                    today,
-                )
-                bars = _fetch_forward_bars(cur, ticker, entry_date_str, through)
-                # Backfill entry_close from snapshot if missing.
-                ec = entry_close
-                if ec is None and bars:
-                    ec = bars[0]["close"]
-                if ec is None:
-                    continue
-                rets = _compute_returns(float(ec), bars)
-                cur.execute(
-                    "UPDATE stock_outcomes SET "
-                    "  entry_close = COALESCE(entry_close, %s), "
-                    "  ret_1d = %s, ret_3d = %s, ret_5d = %s, "
-                    "  ret_10d = %s, ret_20d = %s, "
-                    "  max_favorable_excursion_20d = %s, "
-                    "  max_drawdown_20d = %s, "
-                    "  forward_filled_through = %s "
-                    "WHERE ticker = %s AND entry_date = %s",
-                    (ec,
-                     rets["ret_1d"], rets["ret_3d"], rets["ret_5d"],
-                     rets["ret_10d"], rets["ret_20d"],
-                     rets["max_favorable_excursion_20d"],
-                     rets["max_drawdown_20d"],
-                     through, ticker, entry_date_str),
-                )
-                updated += 1
+            work = cur.fetchall()
     except Exception as exc:
-        log.warning("outcomes.fill_stock_forward_returns failed: %s", exc)
-    return {"checked": checked, "updated": updated}
+        log.warning("fill_stock_forward_returns: fetch failed: %s", exc)
+        return {"checked": 0, "updated": 0}
+
+    # Tracked across batches via mutable list for closure access.
+    skipped_no_close = [0]
+
+    def _proc(cur, batch):
+        n = 0
+        for ticker, entry_date, entry_close in batch:
+            entry_date_str = _coerce_date(entry_date)
+            through = min(
+                (entry_date + timedelta(days=FORWARD_LOOKAHEAD_DAYS)).isoformat(),
+                today,
+            )
+            bars = _fetch_forward_bars(cur, ticker, entry_date_str, through)
+            ec = entry_close
+            if ec is None and bars:
+                ec = bars[0]["close"]
+            if ec is None:
+                skipped_no_close[0] += 1
+                continue
+            rets = _compute_returns(float(ec), bars)
+            cur.execute(
+                "UPDATE stock_outcomes SET "
+                "  entry_close = COALESCE(entry_close, %s), "
+                "  ret_1d = %s, ret_3d = %s, ret_5d = %s, "
+                "  ret_10d = %s, ret_20d = %s, "
+                "  max_favorable_excursion_20d = %s, "
+                "  max_drawdown_20d = %s, "
+                "  forward_filled_through = %s "
+                "WHERE ticker = %s AND entry_date = %s",
+                (ec, rets["ret_1d"], rets["ret_3d"], rets["ret_5d"],
+                 rets["ret_10d"], rets["ret_20d"],
+                 rets["max_favorable_excursion_20d"],
+                 rets["max_drawdown_20d"],
+                 through, ticker, entry_date_str),
+            )
+            n += 1
+        return n
+
+    committed, failed = _process_in_batches(
+        work, "fill_stock_forward_returns", _proc)
+    if skipped_no_close[0]:
+        log.info("fill_stock_forward_returns: %d row(s) skipped — no "
+                 "entry_close and no forward bars in snapshot",
+                 skipped_no_close[0])
+    return {"checked": len(work), "updated": committed,
+            "skipped_no_close": skipped_no_close[0],
+            "failed_batches": failed}
 
 
 def fill_option_forward_returns(limit: int | None = None) -> dict:
+    """Compute underlying forward returns for every option_outcomes
+    row whose 20d window is now in the past. Batched (see
+    fill_stock_forward_returns) so an SSL drop doesn't cost the whole
+    pass. Logs which tickers were skipped and why — usually "no
+    snapshot data for ticker X" when the underlying is outside the
+    snapshot universe.
+    """
     if not snapshots.enabled():
         return {"checked": 0, "updated": 0}
     today = date.today().isoformat()
-    checked = updated = 0
+    sql = (
+        "SELECT ticker, entry_date, underlying_close_at_entry, "
+        "       direction, strike, expiration "
+        "FROM option_outcomes "
+        "WHERE (forward_filled_through IS NULL "
+        "   OR forward_filled_through < entry_date + INTERVAL '30 days' "
+        "   OR (expiration <= CURRENT_DATE AND expiration_itm IS NULL)) "
+        "  AND entry_date <= (CURRENT_DATE - INTERVAL '1 day') "
+        "ORDER BY entry_date DESC"
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
     try:
         with snapshots._conn() as c, c.cursor() as cur:
-            sql = (
-                "SELECT ticker, entry_date, underlying_close_at_entry, "
-                "       direction, strike, expiration "
-                "FROM option_outcomes "
-                "WHERE (forward_filled_through IS NULL "
-                "   OR forward_filled_through < entry_date + INTERVAL '30 days' "
-                "   OR (expiration <= CURRENT_DATE AND expiration_itm IS NULL)) "
-                "  AND entry_date <= (CURRENT_DATE - INTERVAL '1 day') "
-                "ORDER BY entry_date DESC"
-            )
-            if limit:
-                sql += f" LIMIT {int(limit)}"
             cur.execute(sql)
-            rows = cur.fetchall()
-            for ticker, entry_date, ec, direction, strike, expiration in rows:
-                checked += 1
-                entry_date_str = _coerce_date(entry_date)
-                through = min(
-                    (entry_date + timedelta(days=FORWARD_LOOKAHEAD_DAYS)).isoformat(),
-                    today,
-                )
-                bars = _fetch_forward_bars(cur, ticker, entry_date_str, through)
-                if ec is None and bars:
-                    ec = bars[0]["close"]
-                if ec is None:
-                    continue
-                rets = _compute_returns(float(ec), bars)
-                # Expiration ITM check — only meaningful once expiration
-                # is in the past and we have the underlying close on the
-                # expiration date.
-                itm = None
-                if expiration and expiration <= date.today() and strike:
-                    exp_str = _coerce_date(expiration)
-                    cur.execute(
-                        "SELECT close FROM daily_snapshot "
-                        "WHERE ticker = %s AND as_of <= %s "
-                        "ORDER BY as_of DESC LIMIT 1",
-                        (ticker, exp_str),
-                    )
-                    r = cur.fetchone()
-                    if r and r[0] is not None:
-                        exp_close = float(r[0])
-                        if direction == "call":
-                            itm = exp_close > float(strike)
-                        elif direction == "put":
-                            itm = exp_close < float(strike)
-                cur.execute(
-                    "UPDATE option_outcomes SET "
-                    "  underlying_close_at_entry = COALESCE(underlying_close_at_entry, %s), "
-                    "  underlying_ret_1d = %s, underlying_ret_3d = %s, "
-                    "  underlying_ret_5d = %s, underlying_ret_10d = %s, "
-                    "  underlying_ret_20d = %s, "
-                    "  expiration_itm = COALESCE(expiration_itm, %s), "
-                    "  forward_filled_through = %s "
-                    "WHERE ticker = %s AND entry_date = %s",
-                    (ec, rets["ret_1d"], rets["ret_3d"], rets["ret_5d"],
-                     rets["ret_10d"], rets["ret_20d"],
-                     itm, through, ticker, entry_date_str),
-                )
-                updated += 1
+            work = cur.fetchall()
     except Exception as exc:
-        log.warning("outcomes.fill_option_forward_returns failed: %s", exc)
-    return {"checked": checked, "updated": updated}
+        log.warning("fill_option_forward_returns: fetch failed: %s", exc)
+        return {"checked": 0, "updated": 0}
+
+    skipped: list[str] = []   # tickers skipped this pass + reason
+
+    def _proc(cur, batch):
+        n = 0
+        for ticker, entry_date, ec, direction, strike, expiration in batch:
+            entry_date_str = _coerce_date(entry_date)
+            through = min(
+                (entry_date + timedelta(days=FORWARD_LOOKAHEAD_DAYS)).isoformat(),
+                today,
+            )
+            bars = _fetch_forward_bars(cur, ticker, entry_date_str, through)
+            if ec is None and bars:
+                ec = bars[0]["close"]
+            if ec is None:
+                # Diagnose so the user can see WHY this row didn't update.
+                if not bars:
+                    skipped.append(f"{ticker}@{entry_date_str}: no snapshot bars")
+                else:
+                    skipped.append(f"{ticker}@{entry_date_str}: bars present but close missing")
+                continue
+            rets = _compute_returns(float(ec), bars)
+            itm = None
+            if expiration and expiration <= date.today() and strike:
+                exp_str = _coerce_date(expiration)
+                cur.execute(
+                    "SELECT close FROM daily_snapshot "
+                    "WHERE ticker = %s AND as_of <= %s "
+                    "ORDER BY as_of DESC LIMIT 1",
+                    (ticker, exp_str),
+                )
+                r = cur.fetchone()
+                if r and r[0] is not None:
+                    exp_close = float(r[0])
+                    if direction == "call":
+                        itm = exp_close > float(strike)
+                    elif direction == "put":
+                        itm = exp_close < float(strike)
+            cur.execute(
+                "UPDATE option_outcomes SET "
+                "  underlying_close_at_entry = COALESCE(underlying_close_at_entry, %s), "
+                "  underlying_ret_1d = %s, underlying_ret_3d = %s, "
+                "  underlying_ret_5d = %s, underlying_ret_10d = %s, "
+                "  underlying_ret_20d = %s, "
+                "  expiration_itm = COALESCE(expiration_itm, %s), "
+                "  forward_filled_through = %s "
+                "WHERE ticker = %s AND entry_date = %s",
+                (ec, rets["ret_1d"], rets["ret_3d"], rets["ret_5d"],
+                 rets["ret_10d"], rets["ret_20d"],
+                 itm, through, ticker, entry_date_str),
+            )
+            n += 1
+        return n
+
+    committed, failed = _process_in_batches(
+        work, "fill_option_forward_returns", _proc)
+    if skipped:
+        log.info("fill_option_forward_returns: %d row(s) skipped:",
+                 len(skipped))
+        for line in skipped[:20]:
+            log.info("    %s", line)
+        if len(skipped) > 20:
+            log.info("    ... and %d more", len(skipped) - 20)
+    return {"checked": len(work), "updated": committed,
+            "skipped": len(skipped),
+            "failed_batches": failed}
 
 
 # --- regime tagging -------------------------------------------------------
@@ -493,58 +570,73 @@ def _vix_bucket(vix: float | None) -> str | None:
 
 def fill_regime_tags(limit: int | None = None) -> dict:
     """For any outcome row missing regime tags, look up SPY's close vs
-    its 50d MA and VIX's close on the entry date and stamp them in.
+    its 50d EMA and VIX's close on the entry date and stamp them in.
 
     SPY-above-50d comes from the daily_snapshot row for SPY on or before
     the entry date (we use the snapshot's ema50 as a proxy — it tracks
     the 50d MA closely enough for regime bucketing). VIX comes from
-    ^VIX's snapshot row if present, else NULL (graceful)."""
+    ^VIX's snapshot row if present, else NULL (graceful).
+
+    Batched per `_FILL_BATCH_SIZE`. Each table processed separately so
+    an early failure in one doesn't block the other.
+    """
     if not snapshots.enabled():
         return {"updated": 0}
-    updated = 0
-    try:
-        with snapshots._conn() as c, c.cursor() as cur:
-            for table in ("stock_outcomes", "option_outcomes"):
-                sql = (
-                    f"SELECT ticker, entry_date FROM {table} "
-                    "WHERE regime_spy_above_50d IS NULL "
-                    "ORDER BY entry_date DESC"
-                )
-                if limit:
-                    sql += f" LIMIT {int(limit)}"
+    total_updated = 0
+    total_failed = 0
+    for table in ("stock_outcomes", "option_outcomes"):
+        sql = (
+            f"SELECT ticker, entry_date FROM {table} "
+            "WHERE regime_spy_above_50d IS NULL "
+            "ORDER BY entry_date DESC"
+        )
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        try:
+            with snapshots._conn() as c, c.cursor() as cur:
                 cur.execute(sql)
-                rows = cur.fetchall()
-                for ticker, entry_date in rows:
-                    d = _coerce_date(entry_date)
-                    cur.execute(
-                        "SELECT close, ema50 FROM daily_snapshot "
-                        "WHERE ticker = 'SPY' AND as_of <= %s "
-                        "ORDER BY as_of DESC LIMIT 1",
-                        (d,),
-                    )
-                    spy = cur.fetchone()
-                    above = None
-                    if spy and spy[0] and spy[1]:
-                        above = float(spy[0]) > float(spy[1])
-                    cur.execute(
-                        "SELECT close FROM daily_snapshot "
-                        "WHERE ticker = '^VIX' AND as_of <= %s "
-                        "ORDER BY as_of DESC LIMIT 1",
-                        (d,),
-                    )
-                    vix_row = cur.fetchone()
-                    vix = float(vix_row[0]) if vix_row and vix_row[0] else None
-                    bucket = _vix_bucket(vix)
-                    cur.execute(
-                        f"UPDATE {table} SET "
-                        "  regime_spy_above_50d = %s, regime_vix_bucket = %s "
-                        "WHERE ticker = %s AND entry_date = %s",
-                        (above, bucket, ticker, d),
-                    )
-                    updated += 1
-    except Exception as exc:
-        log.warning("outcomes.fill_regime_tags failed: %s", exc)
-    return {"updated": updated}
+                work = cur.fetchall()
+        except Exception as exc:
+            log.warning("fill_regime_tags(%s): fetch failed: %s", table, exc)
+            continue
+
+        def _proc(cur, batch, _table=table):
+            n = 0
+            for ticker, entry_date in batch:
+                d = _coerce_date(entry_date)
+                cur.execute(
+                    "SELECT close, ema50 FROM daily_snapshot "
+                    "WHERE ticker = 'SPY' AND as_of <= %s "
+                    "ORDER BY as_of DESC LIMIT 1",
+                    (d,),
+                )
+                spy = cur.fetchone()
+                above = None
+                if spy and spy[0] and spy[1]:
+                    above = float(spy[0]) > float(spy[1])
+                cur.execute(
+                    "SELECT close FROM daily_snapshot "
+                    "WHERE ticker = '^VIX' AND as_of <= %s "
+                    "ORDER BY as_of DESC LIMIT 1",
+                    (d,),
+                )
+                vix_row = cur.fetchone()
+                vix = float(vix_row[0]) if vix_row and vix_row[0] else None
+                bucket = _vix_bucket(vix)
+                cur.execute(
+                    f"UPDATE {_table} SET "
+                    "  regime_spy_above_50d = %s, regime_vix_bucket = %s "
+                    "WHERE ticker = %s AND entry_date = %s",
+                    (above, bucket, ticker, d),
+                )
+                n += 1
+            return n
+
+        committed, failed = _process_in_batches(
+            work, f"fill_regime_tags({table})", _proc)
+        total_updated += committed
+        total_failed  += failed
+    return {"updated": total_updated, "failed_batches": total_failed}
 
 
 # --- report aggregator ----------------------------------------------------
