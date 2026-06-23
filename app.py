@@ -1408,6 +1408,34 @@ def api_outcomes_thumbs_up():
     return jsonify({"recorded": bool(ok)})
 
 
+def _outcomes_delete_payload():
+    payload = request.get_json(silent=True) or {}
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not entries:
+        return None, (jsonify({"error": "entries (non-empty list) required"}), 400)
+    return entries, None
+
+
+@app.route("/api/outcomes/stock/delete", methods=["POST"])
+def api_outcomes_stock_delete():
+    """Delete rows from stock_outcomes by (ticker, entry_date). Powers
+    the Stock Strategy Report's "Remove selected" button. Body:
+        {entries: [{ticker, entry_date}, ...]}"""
+    import outcomes
+    entries, err = _outcomes_delete_payload()
+    if err: return err
+    return jsonify({"deleted": outcomes.delete_stock_outcomes(entries)})
+
+
+@app.route("/api/outcomes/options/delete", methods=["POST"])
+def api_outcomes_option_delete():
+    """Same as stock/delete but for option_outcomes."""
+    import outcomes
+    entries, err = _outcomes_delete_payload()
+    if err: return err
+    return jsonify({"deleted": outcomes.delete_option_outcomes(entries)})
+
+
 # Provision the Postgres snapshot + alert tables (no-ops when DATABASE_URL
 # is unset), then kick off the daily auto-warm scheduler. The auto-warm
 # thread will write a snapshot row per ticker when each warm completes.

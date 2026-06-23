@@ -269,6 +269,47 @@ def record_option_outcome(
         return False
 
 
+# --- delete (user-initiated row removal) ----------------------------------
+
+def _delete_outcomes(table: str, entries: list[dict]) -> int:
+    """DELETE rows from `table` matching the (ticker, entry_date) pairs
+    in `entries`. Used by the Strategy Report's "Remove selected"
+    button. Returns the actual number of rows deleted (so the caller
+    can show truthful feedback even if some pairs didn't match)."""
+    if not snapshots.enabled() or not entries:
+        return 0
+    pairs: list[tuple[str, str]] = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        t = (e.get("ticker") or "").strip().upper()
+        d = _coerce_date(e.get("entry_date"))
+        if t and d:
+            pairs.append((t, d))
+    if not pairs:
+        return 0
+    deleted = 0
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            for t, d in pairs:
+                cur.execute(
+                    f"DELETE FROM {table} WHERE ticker = %s AND entry_date = %s",
+                    (t, d),
+                )
+                deleted += cur.rowcount or 0
+    except Exception as exc:
+        log.warning("_delete_outcomes(%s) failed: %s", table, exc)
+    return deleted
+
+
+def delete_stock_outcomes(entries: list[dict]) -> int:
+    return _delete_outcomes("stock_outcomes", entries)
+
+
+def delete_option_outcomes(entries: list[dict]) -> int:
+    return _delete_outcomes("option_outcomes", entries)
+
+
 # --- forward return filler ------------------------------------------------
 
 def _bars_from_yfinance(ticker: str, entry_date: str,

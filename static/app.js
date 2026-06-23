@@ -4235,15 +4235,21 @@ function _renderBucketTable(title, buckets, keyField, horizon) {
     return '<div class="report-card empty"><h3>' + title + '</h3><div class="muted">No data.</div></div>';
   }
   const sorted = [...buckets].sort((a, b) => (b.count || 0) - (a.count || 0));
-  const rows = sorted.map(b => (
-    '<tr>'
-    + '<td>' + (b.label || b[keyField] || '—') + '</td>'
-    + '<td class="num">' + (b.count || 0) + '</td>'
-    + '<td class="num">' + _fmtRate(b.hit_rate) + '</td>'
-    + '<td class="num ' + (b.median > 0 ? 'pos' : b.median < 0 ? 'neg' : '') + '">' + _fmtPct(b.median) + '</td>'
-    + '<td class="num">' + _fmtPct(b.mean) + '</td>'
-    + '</tr>'
-  )).join('');
+  const rows = sorted.map(b => {
+    // For the By Source panel use the shared SOURCE_LABELS mapping so
+    // the bucket name matches the per-row label in the Entries table.
+    // Regime buckets keep the backend-provided string.
+    const name = keyField === 'kind'
+      ? _sourceLabel(b.kind)
+      : (b.label || b[keyField] || '—');
+    return '<tr>'
+      + '<td>' + escapeHtml(name) + '</td>'
+      + '<td class="num">' + (b.count || 0) + '</td>'
+      + '<td class="num">' + _fmtRate(b.hit_rate) + '</td>'
+      + '<td class="num ' + (b.median > 0 ? 'pos' : b.median < 0 ? 'neg' : '') + '">' + _fmtPct(b.median) + '</td>'
+      + '<td class="num">' + _fmtPct(b.mean) + '</td>'
+      + '</tr>';
+  }).join('');
   return '<div class="report-card"><h3>' + title + '</h3>'
     + '<table class="report-table"><thead><tr>'
     + '<th>' + (keyField === 'kind' ? 'Source' : 'Regime') + '</th>'
@@ -4273,11 +4279,35 @@ function _renderHistogram(hist, horizon) {
     + '<div class="histogram">' + bars + '</div></div>';
 }
 
+// Human-friendly labels for outcome source kinds. Used in both the
+// Entries table's "Sources" column and the By Source panel so the two
+// always show identical names. Per-row variation (e.g., the picker's
+// rank, or an alert rule's name) is intentionally dropped here — the
+// goal is a stable bucket name that matches across the two views.
+const SOURCE_LABELS = {
+  alert_screener:   'Screener alert',
+  alert_setup:      'Setup alert',
+  picker:           'Picker',
+  momentum_scan:    'Momentum scanner',
+  user_pin:         'Pinned option',
+  manual_screener:  'Screener selection',
+  manual:           'Manual entry',
+  nightly_scan:     'Options scanner',   // legacy / pre-removal rows
+  user_lookup:      'User lookup',        // legacy / pre-removal rows
+  unknown:          'Unknown',
+};
+function _sourceLabel(kind) {
+  if (kind == null || kind === '') return '—';
+  return SOURCE_LABELS[kind] || kind;
+}
+
 // Build the cell array for one outcome row. Returns [{text, cls?}, ...]
 // in column order so both the unique-values computation (for dropdowns)
 // and the body HTML use the same source of truth.
 function _buildOutcomeCells(r, isOptions, horizon) {
-  const srcs = (r.sources || []).map(s => (s && s.kind) || '?').join(', ') || '—';
+  const srcs = (r.sources || [])
+    .map(s => _sourceLabel((s && s.kind) || 'unknown'))
+    .join(', ') || '—';
   if (isOptions) {
     const itm = r.expiration_itm === true ? '✓' : r.expiration_itm === false ? '✗' : '—';
     const ret = r['underlying_ret_' + horizon + 'd'];
@@ -4339,37 +4369,50 @@ function _renderRowsTable(rows, kind, horizon) {
     return arr;
   });
 
-  const head = '<tr>' + cols.map((c, i) =>
-    `<th${numericCols.has(i) ? ' class="num"' : ''}>${c}</th>`
-  ).join('') + '</tr>';
+  // Header row: leading select column, then the data columns. Filter
+  // dropdowns' data-col is shifted by +1 so it matches the DOM cell
+  // index (tr.cells[N]) when applying filters.
+  const head = '<tr><th class="select-col"><input type="checkbox" class="row-select-all" aria-label="Select all rows" /></th>'
+    + cols.map((c, i) => `<th${numericCols.has(i) ? ' class="num"' : ''}>${escapeHtml(c)}</th>`).join('')
+    + '</tr>';
 
-  const filterRow = '<tr class="filter-row">' + cols.map((label, ci) => {
-    const opts = uniques[ci].map(v =>
-      `<label class="filter-dd-opt"><input type="checkbox" class="filter-dd-val" data-val="${escapeHtml(v)}" checked /> <span>${escapeHtml(v)}</span></label>`
-    ).join('') || '<div class="muted filter-dd-empty">no values</div>';
-    return `<th><div class="filter-dd" data-col="${ci}">`
-      + `<button type="button" class="filter-dd-btn" aria-label="Filter ${escapeHtml(label)}" aria-haspopup="listbox" aria-expanded="false">All ▾</button>`
-      + `<div class="filter-dd-menu hidden" role="listbox">`
-      +   `<div class="filter-dd-header">`
-      +     `<label class="filter-dd-opt filter-dd-selectall"><input type="checkbox" class="filter-dd-all" checked /> <span><strong>(Select All)</strong></span></label>`
-      +     `<div class="filter-dd-actions">`
-      +       `<button type="button" class="filter-dd-cancel">Cancel</button>`
-      +       `<button type="button" class="filter-dd-ok primary">OK</button>`
-      +     `</div>`
-      +   `</div>`
-      +   `<div class="filter-dd-divider"></div>`
-      +   `<div class="filter-dd-opts">${opts}</div>`
-      + `</div></div></th>`;
+  const filterRow = '<tr class="filter-row"><th class="select-col"></th>'
+    + cols.map((label, ci) => {
+        const opts = uniques[ci].map(v =>
+          `<label class="filter-dd-opt"><input type="checkbox" class="filter-dd-val" data-val="${escapeHtml(v)}" checked /> <span>${escapeHtml(v)}</span></label>`
+        ).join('') || '<div class="muted filter-dd-empty">no values</div>';
+        // data-col is the DOM cell index — +1 to skip the leading select column.
+        return `<th><div class="filter-dd" data-col="${ci + 1}">`
+          + `<button type="button" class="filter-dd-btn" aria-label="Filter ${escapeHtml(label)}" aria-haspopup="listbox" aria-expanded="false">All ▾</button>`
+          + `<div class="filter-dd-menu hidden" role="listbox">`
+          +   `<div class="filter-dd-header">`
+          +     `<label class="filter-dd-opt filter-dd-selectall"><input type="checkbox" class="filter-dd-all" checked /> <span><strong>(Select All)</strong></span></label>`
+          +     `<div class="filter-dd-actions">`
+          +       `<button type="button" class="filter-dd-cancel">Cancel</button>`
+          +       `<button type="button" class="filter-dd-ok primary">OK</button>`
+          +     `</div>`
+          +   `</div>`
+          +   `<div class="filter-dd-divider"></div>`
+          +   `<div class="filter-dd-opts">${opts}</div>`
+          + `</div></div></th>`;
+      }).join('')
+    + '</tr>';
+
+  const body = cellsByRow.map((cells, i) => {
+    const r = visible[i];
+    const sel = `<td class="select-col"><input type="checkbox" class="row-select" data-ticker="${escapeHtml(r.ticker || '')}" data-date="${escapeHtml(r.entry_date || '')}" aria-label="Select ${escapeHtml(r.ticker || '')} ${escapeHtml(r.entry_date || '')}" /></td>`;
+    return '<tr>' + sel
+      + cells.map(c => `<td${c.cls ? ' class="' + c.cls + '"' : ''}>${escapeHtml(c.text)}</td>`).join('')
+      + '</tr>';
   }).join('');
 
-  const body = cellsByRow.map(cells =>
-    '<tr>' + cells.map(c =>
-      `<td${c.cls ? ' class="' + c.cls + '"' : ''}>${escapeHtml(c.text)}</td>`
-    ).join('') + '</tr>'
-  ).join('');
-
-  const cap = rows.length > 500 ? '<div class="muted">(showing 500 of ' + rows.length + ')</div>' : '';
-  return '<div class="report-card"><h3>Entries</h3>' + cap
+  const cap = rows.length > 500 ? '<div class="muted report-card-cap">(showing 500 of ' + rows.length + ')</div>' : '';
+  const actions = '<div class="report-card-actions">'
+    + '<button type="button" class="row-remove-btn" disabled>Remove 0 selected</button>'
+    + '</div>';
+  return '<div class="report-card" data-kind="' + escapeHtml(kind) + '">'
+    + '<div class="report-card-head"><h3>Entries</h3>' + actions + '</div>'
+    + cap
     + '<div class="report-table-wrap"><table class="report-table filterable"><thead>'
     + head + filterRow + '</thead><tbody>' + body + '</tbody></table></div></div>';
 }
@@ -4554,6 +4597,93 @@ function _wireRowFilters(container) {
   });
 }
 
+// Wire the per-row checkbox + "Remove N selected" button on every
+// .report-card that contains a filterable table. Uses the card's
+// data-kind to route the delete to the right backend endpoint.
+function _wireRowSelection(container) {
+  container.querySelectorAll('.report-card[data-kind]').forEach((card) => {
+    if (card.dataset.selectionWired === '1') return;
+    card.dataset.selectionWired = '1';
+
+    const kind     = card.dataset.kind;
+    const removeBtn = card.querySelector('.row-remove-btn');
+    const table     = card.querySelector('table.filterable');
+    if (!removeBtn || !table) return;
+    const headerCb = table.querySelector('.row-select-all');
+    const rowCbs   = () => Array.from(table.querySelectorAll('.row-select'));
+
+    const updateBtn = () => {
+      const cbs = rowCbs();
+      const checked = cbs.filter(c => c.checked).length;
+      removeBtn.textContent = `Remove ${checked} selected`;
+      removeBtn.disabled = checked === 0;
+      if (headerCb) {
+        if (checked === 0)              { headerCb.checked = false; headerCb.indeterminate = false; }
+        else if (checked === cbs.length) { headerCb.checked = true;  headerCb.indeterminate = false; }
+        else                             { headerCb.checked = false; headerCb.indeterminate = true; }
+      }
+    };
+
+    if (headerCb) {
+      headerCb.addEventListener('change', () => {
+        const want = headerCb.checked;
+        rowCbs().forEach((c) => {
+          // Only toggle visible rows so the header check respects active filters.
+          const tr = c.closest('tr');
+          if (tr && tr.style.display !== 'none') c.checked = want;
+        });
+        updateBtn();
+      });
+    }
+
+    table.tBodies[0] && table.tBodies[0].addEventListener('change', (e) => {
+      if (e.target && e.target.classList && e.target.classList.contains('row-select')) {
+        updateBtn();
+      }
+    });
+
+    removeBtn.addEventListener('click', async () => {
+      const checked = rowCbs().filter(c => c.checked);
+      if (!checked.length) return;
+      const n = checked.length;
+      if (!window.confirm(`Delete ${n} entr${n === 1 ? 'y' : 'ies'} from the ${kind} outcomes table? This cannot be undone.`)) return;
+      const entries = checked.map(cb => ({
+        ticker:     cb.dataset.ticker,
+        entry_date: cb.dataset.date,
+      }));
+      const endpoint = kind === 'options' ? '/api/outcomes/options/delete' : '/api/outcomes/stock/delete';
+      removeBtn.disabled = true;
+      removeBtn.textContent = 'Deleting…';
+      try {
+        const r = await fetch(endpoint, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({entries}),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          alert('Delete failed: ' + (j.error || ('HTTP ' + r.status)));
+          updateBtn();
+          return;
+        }
+        // Re-fetch the report so summary/by-source/histogram all reflect
+        // the deletion. Invalidate the cache so the tab-switch lazy-load
+        // also picks up fresh data.
+        if (kind === 'options') {
+          _optionsReportLoaded = false;
+          loadOptionsReport();
+        } else {
+          _stockReportLoaded = false;
+          loadStockReport();
+        }
+      } catch (exc) {
+        alert('Delete failed: ' + (exc && exc.message || exc));
+        updateBtn();
+      }
+    });
+  });
+}
+
 async function loadStockReport() {
   const days = (els.stockReportDays && els.stockReportDays.value) || 90;
   const horizon = (els.stockReportHorizon && els.stockReportHorizon.value) || 5;
@@ -4574,6 +4704,7 @@ async function loadStockReport() {
       + _renderHistogram(j.histogram, h)
       + _renderRowsTable(j.rows, 'stock', h);
     _wireRowFilters(els.stockReportBody);
+    _wireRowSelection(els.stockReportBody);
     if (els.stockReportStatus) els.stockReportStatus.textContent = (j.rows.length || 0) + ' entries';
     _stockReportLoaded = true;
   } catch (exc) {
@@ -4611,6 +4742,7 @@ async function loadOptionsReport() {
       + _renderHistogram(j.histogram, h)
       + _renderRowsTable(j.rows, 'options', h);
     _wireRowFilters(els.optionsReportBody);
+    _wireRowSelection(els.optionsReportBody);
     if (els.optionsReportStatus) els.optionsReportStatus.textContent = (j.rows.length || 0) + ' entries';
     _optionsReportLoaded = true;
   } catch (exc) {
