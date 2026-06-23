@@ -4353,6 +4353,10 @@ function _renderRowsTable(rows, kind, horizon) {
       +   `<label class="filter-dd-opt filter-dd-selectall"><input type="checkbox" class="filter-dd-all" checked /> <span><strong>(Select All)</strong></span></label>`
       +   `<div class="filter-dd-divider"></div>`
       +   `<div class="filter-dd-opts">${opts}</div>`
+      +   `<div class="filter-dd-footer">`
+      +     `<button type="button" class="filter-dd-cancel">Cancel</button>`
+      +     `<button type="button" class="filter-dd-ok primary">OK</button>`
+      +   `</div>`
       + `</div></div></th>`;
   }).join('');
 
@@ -4416,28 +4420,51 @@ function _applyRowFilters(table) {
   }
 }
 
-// Close every filter dropdown menu on every filterable table on the page.
-// Used by the single document-level outside-click handler.
+// Cancel any pending (unapplied) edits on every open dropdown and close
+// the menus. "Cancel" semantics: restore the checkbox state that was
+// applied last (snapshot taken on menu open), so a click outside or an
+// Escape press behaves like clicking the Cancel button — matches Excel.
 function _closeAllFilterMenus() {
-  document.querySelectorAll('table.filterable .filter-dd-menu')
-    .forEach((m) => m.classList.add('hidden'));
-  document.querySelectorAll('table.filterable .filter-dd-btn')
-    .forEach((b) => b.setAttribute('aria-expanded', 'false'));
+  document.querySelectorAll('table.filterable .filter-dd').forEach((dd) => {
+    const menu = dd.querySelector('.filter-dd-menu');
+    if (menu && !menu.classList.contains('hidden')) {
+      _restorePendingState(dd);
+    }
+    if (menu) menu.classList.add('hidden');
+    const btn = dd.querySelector('.filter-dd-btn');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  });
 }
 
-// Single global outside-click handler — installed lazily on first call
-// to _wireRowFilters. Without this guard, repeated re-renders would
-// accumulate one listener per re-render, all firing on every click.
+// Snapshot the current checkbox state into dataset.pendingState so we
+// can restore on Cancel.
+function _snapshotPendingState(dd) {
+  const state = [];
+  dd.querySelectorAll('.filter-dd-val').forEach((c) => {
+    state.push(c.checked ? 1 : 0);
+  });
+  dd.dataset.pendingState = state.join('');
+}
+
+function _restorePendingState(dd) {
+  const state = dd.dataset.pendingState;
+  if (!state) return;
+  const valChecks = dd.querySelectorAll('.filter-dd-val');
+  for (let i = 0; i < valChecks.length; i++) {
+    valChecks[i].checked = state[i] === '1';
+  }
+  _syncDdState(dd);
+}
+
+// Single global outside-click handler — installed lazily. Without this
+// guard, repeated re-renders would accumulate one listener per render.
 let _filtersGlobalHandlerInstalled = false;
 function _installGlobalFilterHandler() {
   if (_filtersGlobalHandlerInstalled) return;
   _filtersGlobalHandlerInstalled = true;
   document.addEventListener('click', (e) => {
-    // If the click was inside any .filter-dd, let the dropdown's own
-    // handlers manage state. Otherwise close everything.
     if (!e.target.closest('.filter-dd')) _closeAllFilterMenus();
   });
-  // Escape closes everything too.
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') _closeAllFilterMenus();
   });
@@ -4446,6 +4473,13 @@ function _installGlobalFilterHandler() {
 // Wire dropdown handlers on every .filterable table inside the given
 // container. Idempotent — each table is flagged via data-filters-wired
 // so re-renders don't double-bind.
+//
+// UX model: Excel AutoFilter. Changing checkboxes inside the menu does
+// NOT apply the filter immediately — the table stays as it was. Apply
+// happens on OK click; Cancel (or outside-click, or Escape) restores
+// the checkboxes to their pre-open state and closes. This avoids the
+// scary "empty table" the user hit when (Select All) was un-checked
+// in a previous iteration that applied live.
 function _wireRowFilters(container) {
   _installGlobalFilterHandler();
   const tables = container.querySelectorAll('table.filterable');
@@ -4459,48 +4493,61 @@ function _wireRowFilters(container) {
       const menu      = dd.querySelector('.filter-dd-menu');
       const valChecks = dd.querySelectorAll('.filter-dd-val');
       const allCheck  = dd.querySelector('.filter-dd-all');
+      const okBtn     = dd.querySelector('.filter-dd-ok');
+      const cancelBtn = dd.querySelector('.filter-dd-cancel');
 
-      // Opening the menu: close every other open menu (across the whole
-      // page, not just this table) so only one is open at a time, then
-      // toggle ours. Stop the event so the global outside-click handler
-      // doesn't immediately re-close it.
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         e.preventDefault();
         const wasOpen = !menu.classList.contains('hidden');
         _closeAllFilterMenus();
         if (!wasOpen) {
+          _snapshotPendingState(dd);
           menu.classList.remove('hidden');
           btn.setAttribute('aria-expanded', 'true');
         }
       });
 
-      // Any click inside the menu (checkbox toggles, label clicks,
-      // scrolling, etc.) MUST NOT bubble out — otherwise the global
-      // outside-click handler closes the menu mid-interaction, and
-      // any control on the page that listens for clicks would receive
-      // a phantom event from inside the menu.
+      // Any event inside the menu MUST NOT bubble out — both click and
+      // mousedown, since some surrounding controls react to mousedown.
       menu.addEventListener('click', (e) => e.stopPropagation());
       menu.addEventListener('mousedown', (e) => e.stopPropagation());
 
-      // (Select All) toggle. Cascade to per-value checkboxes, then
-      // re-sync and re-apply.
+      // (Select All) toggle — cascade to per-value checkboxes and
+      // re-sync visual state. Filter NOT applied until OK.
       if (allCheck) {
         allCheck.addEventListener('change', () => {
           const checked = allCheck.checked;
           valChecks.forEach((c) => { c.checked = checked; });
           _syncDdState(dd);
-          _applyRowFilters(table);
         });
       }
 
-      // Per-value checkbox change.
+      // Per-value checkbox change — re-sync (Select All) state. Filter
+      // NOT applied until OK.
       valChecks.forEach((c) => {
-        c.addEventListener('change', () => {
-          _syncDdState(dd);
-          _applyRowFilters(table);
-        });
+        c.addEventListener('change', () => { _syncDdState(dd); });
       });
+
+      if (okBtn) {
+        okBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          _applyRowFilters(table);
+          menu.classList.add('hidden');
+          btn.setAttribute('aria-expanded', 'false');
+          // The newly-applied state becomes the snapshot — next open
+          // will restore to this state on Cancel.
+          _snapshotPendingState(dd);
+        });
+      }
+      if (cancelBtn) {
+        cancelBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          _restorePendingState(dd);
+          menu.classList.add('hidden');
+          btn.setAttribute('aria-expanded', 'false');
+        });
+      }
     });
   });
 }

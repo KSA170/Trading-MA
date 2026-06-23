@@ -1764,6 +1764,36 @@ button.hidden { display: none; }
 }
 .filter-dd-empty { font-size: 11px; padding: 4px; }
 
+.filter-dd-footer {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding: 4px 0 0;
+  margin-top: 4px;
+  position: sticky;
+  bottom: -4px;
+  background: var(--panel);
+}
+.filter-dd-footer button {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.filter-dd-footer button:hover { border-color: var(--accent); }
+.filter-dd-footer button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.filter-dd-footer button.primary:hover {
+  filter: brightness(1.1);
+}
+
 .histogram {
   display: flex;
   align-items: flex-end;
