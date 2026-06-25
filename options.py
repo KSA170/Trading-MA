@@ -1183,6 +1183,15 @@ def recommend_for_ticker(ticker: str,
                 f"chain fetch failed ({dte_min}-{dte_max} DTE): {exc}"
             )
             out["chain_fetch_status"] = "error"
+        # Still surface the score-only verdict so the UI doesn't show
+        # composite=70 with verdict=PASS (which is just the initial
+        # default kept when the early-return skipped _verdict()).
+        # iv_rich defaults to False since we don't have IV data
+        # without the chain — best-case verdict from score alone.
+        # Contract details remain unset; the rate-limit note above
+        # tells the user why.
+        v, d, conv = _verdict(composite["score"], iv_rich=False)
+        out["verdict"], out["direction"], out["conviction"] = v, d, conv
         return out
     if not chains:
         out["reason"] = (
