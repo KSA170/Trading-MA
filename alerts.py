@@ -464,6 +464,55 @@ def add_rule(name: str, scope_type: str, scope_value: str, params: dict,
         return None
 
 
+def update_rule(rule_id: int,
+                name: str | None = None,
+                scope_type: str | None = None,
+                scope_value: str | None = None) -> bool:
+    """Update an existing rule's name, scope_type, and/or scope_value.
+    Any field passed as None is left unchanged. Returns True on success.
+
+    rule_type is intentionally NOT editable — switching a screener rule
+    into a setup rule (or vice versa) would invalidate its `params`
+    column, and the user has a clearer path (delete + recreate) when
+    that's actually what they want.
+    """
+    if not enabled():
+        return False
+    sets: list[str] = []
+    args: list = []
+    if name is not None:
+        clean = (name or "").strip()
+        if not clean:
+            return False
+        sets.append("name = %s"); args.append(clean)
+    if scope_type is not None:
+        st = (scope_type or "").strip().lower()
+        if st not in SCOPE_TYPES:
+            return False
+        sets.append("scope_type = %s"); args.append(st)
+        # If caller is changing scope_type, force a fresh scope_value
+        # (the old one may not be valid for the new scope). Caller
+        # should pass scope_value too — fall back to '' if not.
+        if scope_value is None:
+            scope_value = ""
+    if scope_value is not None:
+        sv = (scope_value or "").strip()
+        sets.append("scope_value = %s"); args.append(sv)
+    if not sets:
+        return False
+    args.append(int(rule_id))
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                f"UPDATE alert_rules SET {', '.join(sets)} WHERE id = %s",
+                tuple(args),
+            )
+            return (cur.rowcount or 0) > 0
+    except Exception as exc:
+        log.warning("alerts: update_rule failed: %s", exc)
+        return False
+
+
 def delete_rule(rule_id: int) -> bool:
     if not enabled():
         return False
