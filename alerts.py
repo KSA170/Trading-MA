@@ -777,33 +777,198 @@ def send_telegram(text: str) -> bool:
     return True
 
 
-def _format_alert(rule_name: str, hit, as_of: datetime) -> str:
-    return (
-        f"<b>[{rule_name}]</b>\n"
-        f"<b>{hit.ticker}</b> — {hit.name}\n"
-        f"Price ${hit.close:.2f} ({hit.pct_change:+.2f}%)\n"
-        f"Momentum {hit.momentum_score:.0f}/100\n"
-        f"RSI {hit.rsi:.1f} | MACD hist {hit.macd_hist:+.3f} | "
-        f"RVol {hit.rel_volume:.2f}x\n"
-        f"Matched alert criteria — market data as of "
-        f"{as_of.strftime('%Y-%m-%d %H:%M')} ET"
+# --- enrichment-aware formatters ------------------------------------------
+# Both alert paths (screener-rule, setup-rule) now emit a rich Telegram
+# body matching the look of the realtime momentum scanner: header →
+# headline metrics → insider/fund/news enrichment → verdict + entry
+# recommendation.
+
+def _verdict_screener(hit) -> dict:
+    """BUY / WATCH / PASS rollup for a screener-rule alert. Inputs all
+    drawn from screener.evaluate_ticker's ScreenHit. Score out of 9 —
+    high momentum + high RVOL + decent pct-change + above-lookback-high
+    pushes BUY; weak everything stays PASS even though it cleared the
+    rule's filter bar."""
+    score = 0
+    mom = float(getattr(hit, "momentum_score", 0) or 0)
+    if   mom >= 80: score += 3
+    elif mom >= 60: score += 2
+    elif mom >= 40: score += 1
+    rvol = float(getattr(hit, "rel_volume", 0) or 0)
+    if   rvol >= 5:   score += 3
+    elif rvol >= 2.5: score += 2
+    elif rvol >= 1.5: score += 1
+    pct = float(getattr(hit, "pct_change", 0) or 0)
+    if   pct >= 10: score += 2
+    elif pct >= 5:  score += 1
+    if float(getattr(hit, "breakout_pct", 0) or 0) > 0:
+        score += 1  # broke out above the lookback window high
+    if score >= 7: return {"label": "BUY",   "glyph": "🟢", "score": score, "max": 9}
+    if score >= 4: return {"label": "WATCH", "glyph": "🟡", "score": score, "max": 9}
+    return {"label": "PASS", "glyph": "🔴", "score": score, "max": 9}
+
+
+def _verdict_setup(result: dict) -> dict:
+    """Verdict from a setup-rule alert — the score is already a 0-100
+    composite of base / ignition / earliness, so just bucket."""
+    score = float(result.get("score") or 0)
+    if score >= 80: return {"label": "BUY",   "glyph": "🟢", "score": score, "max": 100}
+    if score >= 60: return {"label": "WATCH", "glyph": "🟡", "score": score, "max": 100}
+    return {"label": "PASS", "glyph": "🔴", "score": score, "max": 100}
+
+
+def _entry_reco_screener(hit) -> str:
+    """Entry / stop / target string for a screener-rule alert.
+
+    No ATR available in the alert pipeline (we'd need to re-fetch the
+    bars), so use a flat 2.5% stop below current close and a 1.5R
+    profit target. Conservative; user can tighten or loosen visually."""
+    price = float(getattr(hit, "close", 0) or 0)
+    if price <= 0:
+        return ""
+    stop   = price * 0.975
+    target = price + (price - stop) * 1.5
+    return (f"🎯 Entry now: <b>${price:.2f}</b>  ·  "
+            f"Stop: ${stop:.2f}  ·  Target: ${target:.2f}")
+
+
+def _entry_reco_setup(result: dict) -> str:
+    """Setup is a base/inflection signal — the breakout hasn't
+    happened yet. Suggest a trigger price 0.5% above the inflection
+    bar's close, 5% stop below it, 2R target."""
+    pivot = float(result.get("close") or 0)
+    if pivot <= 0:
+        return ""
+    trigger = pivot * 1.005
+    stop    = pivot * 0.95
+    target  = trigger + (trigger - stop) * 2
+    return (f"🎯 Trigger above <b>${trigger:.2f}</b>  ·  "
+            f"Stop ${stop:.2f}  ·  Target ${target:.2f}")
+
+
+def _analysis_screener(hit, verdict: dict,
+                       insider: dict | None, news: list | None) -> str:
+    """One-line plain-English read of what the alert is saying. Composed
+    deterministically from the same metric facts the verdict uses, so
+    the analysis line and the verdict can never contradict each other."""
+    parts = []
+    rvol = float(getattr(hit, "rel_volume", 0) or 0)
+    pct  = float(getattr(hit, "pct_change", 0) or 0)
+    mom  = float(getattr(hit, "momentum_score", 0) or 0)
+    if   rvol >= 5:   parts.append(f"unusual volume ({rvol:.1f}× avg)")
+    elif rvol >= 2.5: parts.append(f"elevated volume ({rvol:.1f}× avg)")
+    if pct >= 10: parts.append(f"strong day ({pct:+.1f}%)")
+    elif pct >= 5: parts.append(f"green day ({pct:+.1f}%)")
+    if mom >= 70: parts.append(f"high momentum ({mom:.0f}/100)")
+    if float(getattr(hit, "breakout_pct", 0) or 0) > 0:
+        parts.append("broke prior high")
+    if insider:
+        code = (insider.get("code") or "").upper()
+        if code == "P": parts.append("insider buying")
+    if news: parts.append(f"{len(news)} fresh news item(s)")
+    if not parts:
+        return f"📝 Cleared filter; otherwise unremarkable → {verdict['label']}."
+    return "📝 " + ", ".join(parts) + f" → {verdict['label']}."
+
+
+def _analysis_setup(result: dict, verdict: dict) -> str:
+    base  = float(result.get("base_quality") or 0) * 100
+    ign   = float(result.get("ignition") or 0) * 100
+    early = float(result.get("earliness") or 0) * 100
+    parts = []
+    if base  >= 70: parts.append(f"tight base ({base:.0f})")
+    if ign   >= 70: parts.append(f"strong ignition ({ign:.0f})")
+    if early >= 70: parts.append(f"early in the move ({early:.0f})")
+    if not parts:
+        return f"📝 Setup cleared composite gate; sub-scores mixed → {verdict['label']}."
+    return "📝 " + ", ".join(parts) + f" → {verdict['label']}."
+
+
+def _format_alert(rule_name: str, hit, as_of: datetime,
+                  insider: dict | None = None,
+                  fund: dict | None = None,
+                  news: list | None = None) -> str:
+    """Telegram body for a screener-rule trigger. Header → metrics →
+    insider/fund/news enrichment → analysis + verdict + entry reco."""
+    import html as _html
+    import enrich
+    name = getattr(hit, "name", None) or ""
+    name_part = f" — {_html.escape(name)}" if name else ""
+    lines = [
+        f"<b>[{_html.escape(rule_name)}]</b>",
+        f"🚀 <b>{_html.escape(hit.ticker)}</b>{name_part}",
+        f"💵 Price <b>${hit.close:.2f}</b> ({hit.pct_change:+.2f}%)",
+        "",
+        f"📈 Momentum <b>{hit.momentum_score:.0f}/100</b>  ·  "
+        f"🔥 RVOL <b>{hit.rel_volume:.2f}×</b>  ·  "
+        f"RSI {hit.rsi:.1f}  ·  MACD hist {hit.macd_hist:+.3f}",
+    ]
+    insider_line = enrich.format_insider_line(insider)
+    lines.append("")
+    if insider_line: lines.append(insider_line)
+    else:            lines.append("📋 Insider: ❌ <i>(no recent Form 4 activity)</i>")
+    fund_line = enrich.format_fundamentals_line(fund)
+    if fund_line: lines.append(fund_line)
+    news_block = enrich.format_news_block(news)
+    if news_block:
+        lines.append("")
+        lines.append(news_block)
+    v = _verdict_screener(hit)
+    lines.append("")
+    lines.append(_analysis_screener(hit, v, insider, news))
+    lines.append(
+        f"🧭 <b>Verdict:</b> {v['glyph']} <b>{v['label']}</b> "
+        f"<i>({v['score']}/{v['max']})</i>"
     )
+    entry = _entry_reco_screener(hit)
+    if entry: lines.append(entry)
+    lines.append(f"<i>Market data as of {as_of.strftime('%Y-%m-%d %H:%M')} ET</i>")
+    return "\n".join(lines)
 
 
-def _format_setup_alert(rule_name: str, result: dict, snapshot_date: str) -> str:
-    """Telegram body for a setup-rule trigger. Surfaces the three
-    sub-scores (base / ignition / earliness) which together explain
-    *why* the overall setup score is what it is."""
-    return (
-        f"<b>[{rule_name}]</b>  Setup\n"
-        f"<b>{result['ticker']}</b> — {result.get('name', '')}\n"
-        f"Setup score <b>{result['score']:.0f}</b>/100  "
-        f"(base {result['base_quality']*100:.0f} · "
+def _format_setup_alert(rule_name: str, result: dict, snapshot_date: str,
+                        insider: dict | None = None,
+                        fund: dict | None = None,
+                        news: list | None = None) -> str:
+    """Telegram body for a setup-rule trigger. Same enrichment shape as
+    _format_alert; metrics block surfaces the three sub-scores (base /
+    ignition / earliness) which explain *why* the overall score is what
+    it is."""
+    import html as _html
+    import enrich
+    name = result.get("name") or ""
+    name_part = f" — {_html.escape(name)}" if name else ""
+    lines = [
+        f"<b>[{_html.escape(rule_name)}]</b>  Setup",
+        f"🚀 <b>{_html.escape(result['ticker'])}</b>{name_part}",
+        f"💵 Price <b>${result['close']:.2f}</b>",
+        "",
+        f"⚡ Setup score <b>{result['score']:.0f}</b>/100  "
+        f"<i>(base {result['base_quality']*100:.0f} · "
         f"ign {result['ignition']*100:.0f} · "
-        f"early {result['earliness']*100:.0f})\n"
-        f"Price ${result['close']:.2f}\n"
-        f"Snapshot {snapshot_date}"
+        f"early {result['earliness']*100:.0f})</i>",
+    ]
+    insider_line = enrich.format_insider_line(insider)
+    lines.append("")
+    if insider_line: lines.append(insider_line)
+    else:            lines.append("📋 Insider: ❌ <i>(no recent Form 4 activity)</i>")
+    fund_line = enrich.format_fundamentals_line(fund)
+    if fund_line: lines.append(fund_line)
+    news_block = enrich.format_news_block(news)
+    if news_block:
+        lines.append("")
+        lines.append(news_block)
+    v = _verdict_setup(result)
+    lines.append("")
+    lines.append(_analysis_setup(result, v))
+    lines.append(
+        f"🧭 <b>Verdict:</b> {v['glyph']} <b>{v['label']}</b> "
+        f"<i>({v['score']:.0f}/{v['max']})</i>"
     )
+    entry = _entry_reco_setup(result)
+    if entry: lines.append(entry)
+    lines.append(f"<i>Snapshot {snapshot_date}</i>")
+    return "\n".join(lines)
 
 
 # --- market clock ----------------------------------------------------------
@@ -1004,8 +1169,35 @@ def run() -> int:
 
     sent = 0
     import outcomes
+    import enrich
+
+    # Per-ticker enrichment cache so two rules firing on the same
+    # ticker in the same run only pay one yfinance + Finnhub round-trip
+    # each. Every enrichment call is best-effort (returns None / [] / {}
+    # on failure) — the alert still goes out without the missing block.
+    _enrich_cache: dict[str, dict] = {}
+
+    def _enrich_for(ticker: str) -> dict:
+        if ticker in _enrich_cache:
+            return _enrich_cache[ticker]
+        out = {"insider": None, "fund": None, "news": None}
+        try: out["insider"] = enrich.last_insider_transaction(ticker)
+        except Exception as exc:
+            log.warning("enrich.insider(%s) failed: %s", ticker, exc)
+        try: out["fund"] = enrich.fundamentals(ticker)
+        except Exception as exc:
+            log.warning("enrich.fundamentals(%s) failed: %s", ticker, exc)
+        try: out["news"] = enrich.recent_news(ticker)
+        except Exception as exc:
+            log.warning("enrich.news(%s) failed: %s", ticker, exc)
+        _enrich_cache[ticker] = out
+        return out
+
     for rule, ticker, hit in triggered_screener:
-        if send_telegram(_format_alert(rule["name"], hit, now)):
+        e = _enrich_for(ticker)
+        if send_telegram(_format_alert(rule["name"], hit, now,
+                                        insider=e["insider"], fund=e["fund"],
+                                        news=e["news"])):
             record_sent(rule["id"], ticker, today,
                         f"momentum={hit.momentum_score}")
             outcomes.record_stock_outcome(
@@ -1015,11 +1207,16 @@ def run() -> int:
             )
             sent += 1
     for rule, res in triggered_setup:
-        if send_telegram(_format_setup_alert(rule["name"], res, snapshot_as_of or today)):
-            record_sent(rule["id"], res["ticker"], today,
+        ticker = res["ticker"]
+        e = _enrich_for(ticker)
+        if send_telegram(_format_setup_alert(rule["name"], res,
+                                              snapshot_as_of or today,
+                                              insider=e["insider"], fund=e["fund"],
+                                              news=e["news"])):
+            record_sent(rule["id"], ticker, today,
                         f"setup_score={res.get('score')}")
             outcomes.record_stock_outcome(
-                res["ticker"], today, res.get("close"),
+                ticker, today, res.get("close"),
                 {"kind": "alert_setup", "id": rule["id"],
                  "label": rule.get("name") or "Setup alert"},
             )
