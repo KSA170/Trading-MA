@@ -53,10 +53,24 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
+import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
 log = logging.getLogger("options")
+
+
+# --- option-chain cache (used by the universe scanner) --------------------
+# Repeat scans within a 30-min window reuse the cached chain instead of
+# re-fetching from Yahoo. Dramatically reduces the rate-limit pressure
+# when the user runs back-to-back scans after seeing the throttle
+# banner. Bounded to _CHAIN_CACHE_MAX entries (oldest 20% evicted when
+# full) so a long-running process doesn't grow unbounded.
+_CHAIN_CACHE: dict[tuple, tuple[float, list[dict]]] = {}
+_CHAIN_CACHE_LOCK = threading.Lock()
+_CHAIN_CACHE_TTL_SEC = 30 * 60
+_CHAIN_CACHE_MAX = 500
 
 
 # --- tuning constants -----------------------------------------------------
@@ -595,7 +609,8 @@ def _looks_rate_limited(exc_msg: str) -> bool:
 
 def _fetch_chains_in_window(ticker: str,
                             dte_min: int,
-                            dte_max: int) -> list[dict]:
+                            dte_max: int,
+                            use_cache: bool = False) -> list[dict]:
     """Pull every chain inside [dte_min, dte_max]. Returns list of
     {expiration, dte, calls, puts}.
 
@@ -604,7 +619,22 @@ def _fetch_chains_in_window(ticker: str,
     indistinguishable before — every yfinance failure surfaced to the
     UI as 'no liquid option chain available... or ticker isn't
     optionable', misleading users into thinking liquid optionable
-    names (C, BAC, etc.) had no chains."""
+    names (C, BAC, etc.) had no chains.
+
+    `use_cache=True` (passed by the scanner) consults an in-memory
+    cache keyed by (ticker, dte_min, dte_max) with a 30-minute TTL,
+    so repeat scans within the window don't re-burn Yahoo's rate
+    budget. The on-demand `/api/options/lookup` path leaves it False
+    so user-initiated lookups always get fresh data.
+    """
+    if use_cache:
+        key = (ticker, int(dte_min), int(dte_max))
+        with _CHAIN_CACHE_LOCK:
+            entry = _CHAIN_CACHE.get(key)
+        if entry and (time.time() - entry[0]) < _CHAIN_CACHE_TTL_SEC:
+            log.info("chain cache HIT for %s [%d-%d] age %.0fs",
+                     ticker, dte_min, dte_max, time.time() - entry[0])
+            return entry[1]
     try:
         import yfinance as yf
     except Exception as exc:
@@ -650,6 +680,15 @@ def _fetch_chains_in_window(ticker: str,
             f"all {in_window_failed} chain fetch(es) failed in DTE window — last error: {last_err_msg}",
             rate_limited=_looks_rate_limited(last_err_msg),
         )
+    if use_cache and out:
+        with _CHAIN_CACHE_LOCK:
+            # Simple bounded LRU-ish eviction — when the dict exceeds
+            # the cap, drop the oldest 20% of entries by timestamp.
+            if len(_CHAIN_CACHE) >= _CHAIN_CACHE_MAX:
+                victims = sorted(_CHAIN_CACHE.items(), key=lambda kv: kv[1][0])
+                for k, _ in victims[: max(1, _CHAIN_CACHE_MAX // 5)]:
+                    _CHAIN_CACHE.pop(k, None)
+            _CHAIN_CACHE[(ticker, int(dte_min), int(dte_max))] = (time.time(), out)
     return out
 
 
@@ -1028,12 +1067,18 @@ def _prose_rationale(ticker: str, current_price: float,
 
 def recommend_for_ticker(ticker: str,
                          dte_min: int = DEFAULT_DTE_MIN,
-                         dte_max: int = DEFAULT_DTE_MAX) -> dict:
+                         dte_max: int = DEFAULT_DTE_MAX,
+                         use_chain_cache: bool = False) -> dict:
     """Full composite-score pipeline.
 
     `dte_min`/`dte_max` are user-adjustable; if earnings falls inside
     the window, the contract selector overrides expiry to 7-10 days
-    after earnings."""
+    after earnings.
+
+    `use_chain_cache=True` (passed by the scanner) consults the
+    30-min in-memory chain cache before hitting Yahoo. The on-demand
+    user-lookup path defaults to False so single-ticker queries
+    always return fresh chain data."""
     ticker = (ticker or "").strip().upper()
     # Sanitise the DTE inputs.
     try:
@@ -1122,7 +1167,8 @@ def recommend_for_ticker(ticker: str,
 
     # Option chain + IV context
     try:
-        chains = _fetch_chains_in_window(ticker, dte_min, dte_max)
+        chains = _fetch_chains_in_window(ticker, dte_min, dte_max,
+                                          use_cache=use_chain_cache)
     except _ChainFetchError as exc:
         # Chain fetch threw — distinguish rate-limit (UI shows banner,
         # try again later) from generic failure (likely intermittent).

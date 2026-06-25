@@ -2222,6 +2222,13 @@ button.hidden { display: none; }
   font-size: 13px;
   text-align: left;
 }
+.scan-ratelimit-note {
+  display: block;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  text-align: left;
+}
 .scan-running, .scan-empty {
   padding: 14px;
   font-size: 12px;

@@ -337,6 +337,13 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
     # eventually returns or the process restarts.
     import concurrent.futures as _cf
     _PER_TICKER_TIMEOUT_SEC = 60.0
+    _RATE_LIMIT_RETRY_DELAY_SEC = 15.0
+    # Adaptive throttle: once N consecutive tickers come back rate-
+    # limited, sleep _ADAPTIVE_THROTTLE_SEC between subsequent tickers
+    # so Yahoo's per-IP rolling window gets a chance to clear. Any
+    # successful ticker resets the counter.
+    _ADAPTIVE_THROTTLE_TRIGGER = 3
+    _ADAPTIVE_THROTTLE_SEC = 2.0
     _ticker_pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="opt-rec")
 
     def _looks_rate_limited(exc: BaseException) -> bool:
@@ -344,6 +351,26 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
         return ("too many" in m or "rate limit" in m or "429" in m
                 or "throttl" in m)
 
+    def _attempt(ticker_to_try: str):
+        """One shot at recommend_for_ticker. Returns (rec, kind, exc)
+        where kind is 'ok' | 'rate_limited' | 'timeout' | 'error'."""
+        try:
+            fut = _ticker_pool.submit(
+                opt.recommend_for_ticker,
+                ticker_to_try, dte_min=dte_min, dte_max=dte_max,
+                use_chain_cache=True,
+            )
+            rec_ = fut.result(timeout=_PER_TICKER_TIMEOUT_SEC)
+        except _cf.TimeoutError:
+            return None, "timeout", None
+        except Exception as exc:
+            kind = "rate_limited" if _looks_rate_limited(exc) else "error"
+            return None, kind, exc
+        if rec_.get("chain_fetch_status") == "rate_limited":
+            return rec_, "rate_limited", None
+        return rec_, "ok", None
+
+    consecutive_rate_limits = 0
     try:
         for i, cand in enumerate(pool, start=1):
             if should_cancel:
@@ -359,33 +386,54 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
                     progress_cb(i, len(pool), ticker)
                 except Exception:
                     pass
+            # Adaptive throttle — once Yahoo has been throttling us for
+            # 3 tickers in a row, pace the rest with a 2s sleep so the
+            # per-IP rolling window has a chance to clear.
+            if consecutive_rate_limits >= _ADAPTIVE_THROTTLE_TRIGGER:
+                log.info("scan: throttling self %.1fs (%d consecutive rate-limits)",
+                         _ADAPTIVE_THROTTLE_SEC, consecutive_rate_limits)
+                time.sleep(_ADAPTIVE_THROTTLE_SEC)
             t0 = time.time()
             log.info("scan [%d/%d] %s starting", i, len(pool), ticker)
-            try:
-                fut = _ticker_pool.submit(
-                    opt.recommend_for_ticker,
-                    ticker, dte_min=dte_min, dte_max=dte_max,
-                )
-                rec = fut.result(timeout=_PER_TICKER_TIMEOUT_SEC)
-            except _cf.TimeoutError:
+            rec, kind, exc = _attempt(ticker)
+            # One-shot retry with backoff for rate-limited results —
+            # often the second attempt 15s later succeeds because
+            # Yahoo's per-window counter has rolled.
+            if kind == "rate_limited":
+                log.info("scan [%d/%d] %s rate-limited — backing off %.0fs and retrying once",
+                         i, len(pool), ticker, _RATE_LIMIT_RETRY_DELAY_SEC)
+                time.sleep(_RATE_LIMIT_RETRY_DELAY_SEC)
+                rec2, kind2, exc2 = _attempt(ticker)
+                if kind2 == "ok":
+                    log.info("scan [%d/%d] %s recovered on retry", i, len(pool), ticker)
+                    rec, kind, exc = rec2, kind2, exc2
+                else:
+                    # Keep the original result/kind; retry didn't help.
+                    log.warning("scan [%d/%d] %s still rate-limited after retry",
+                                i, len(pool), ticker)
+            if kind == "timeout":
                 log.warning("scan [%d/%d] %s TIMED OUT after %.0fs — skipping",
                             i, len(pool), ticker, _PER_TICKER_TIMEOUT_SEC)
-                _bump_rate_limit_counter_if(None, hit=False)
+                consecutive_rate_limits = 0   # not a Yahoo-throttle signal
                 continue
-            except Exception as exc:
+            if kind == "error":
                 log.warning("scan [%d/%d] %s failed: %s", i, len(pool), ticker, exc)
-                if _looks_rate_limited(exc):
-                    _bump_rate_limit_counter_if(exc, hit=True)
+                consecutive_rate_limits = 0
                 continue
+            if kind == "rate_limited":
+                consecutive_rate_limits += 1
+                _bump_rate_limit_counter_if(exc, hit=True)
+                if rec is None:
+                    continue
+                # rec exists but chain_fetch_status was rate_limited —
+                # composite_score will be None, falls through to the
+                # gate below which skips it. We've already bumped.
+            else:
+                consecutive_rate_limits = 0
             log.info("scan [%d/%d] %s done in %.1fs (composite=%s)",
                      i, len(pool), ticker, time.time() - t0,
-                     rec.get("composite_score"))
-            # Chain fetch failed inside recommend_for_ticker — bump the
-            # rate-limit counter so the UI banner appears, without
-            # losing the partial composite result for visibility.
-            if rec.get("chain_fetch_status") == "rate_limited":
-                _bump_rate_limit_counter_if(None, hit=True)
-            if rec.get("composite_score") is None:
+                     rec.get("composite_score") if rec else None)
+            if rec is None or rec.get("composite_score") is None:
                 # Hit an early gate (no chain, below floor, etc.) — skip.
                 continue
             # Tag with the pre-score for transparency in the digest.
