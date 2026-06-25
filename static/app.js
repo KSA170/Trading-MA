@@ -244,6 +244,7 @@ const els = {
   optionsAdvMinDistance: $('#options-adv-min-distance'),
   optionsAdvMidMin: $('#options-adv-mid-min'),
   optionsAdvMidMax: $('#options-adv-mid-max'),
+  optionsAdvDirection: $('#options-adv-direction'),
   optionsAdvSave: $('#options-adv-save'),
   optionsAdvReset: $('#options-adv-reset'),
   optionsAdvStatus: $('#options-adv-status'),
@@ -5242,6 +5243,11 @@ function _readAdvancedFilters() {
     out.mid_min = parseFloat(els.optionsAdvMidMin.value);
   if (els.optionsAdvMidMax && els.optionsAdvMidMax.value !== '')
     out.mid_max = parseFloat(els.optionsAdvMidMax.value);
+  // Direction filter — string enum ('both' | 'call' | 'put'). Always
+  // include it so the backend doesn't fall back to a stale saved
+  // value when the user explicitly flipped the dropdown.
+  if (els.optionsAdvDirection && els.optionsAdvDirection.value)
+    out.direction = els.optionsAdvDirection.value;
   return out;
 }
 
@@ -5270,6 +5276,12 @@ function _applySettingsToUI(settings) {
     els.optionsAdvMidMin.value = settings.mid_min;
   if (els.optionsAdvMidMax && settings.mid_max != null)
     els.optionsAdvMidMax.value = settings.mid_max;
+  // Direction select — pick the option literally; default 'both'.
+  if (els.optionsAdvDirection && settings.direction) {
+    const want = String(settings.direction).toLowerCase();
+    const opt = Array.from(els.optionsAdvDirection.options).find(o => o.value === want);
+    if (opt) els.optionsAdvDirection.value = want;
+  }
 }
 
 function _renderPreview(data) {

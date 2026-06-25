@@ -1256,12 +1256,17 @@ def api_options_scan():
         mid_max      = float(body.get("mid_max", saved["mid_max"]))
     except (TypeError, ValueError):
         return jsonify({"error": "scan params must be numeric"}), 400
+    # Direction is a string enum — clamp client-side & whitelist here.
+    direction = str(body.get("direction") or saved["direction"]).strip().lower()
+    if direction not in ("call", "put", "both"):
+        direction = "both"
     top_n = max(1, min(top_n, 200))
     return jsonify(options_scanner.start_scan(
         top_n=top_n, dte_min=dte_min, dte_max=dte_max, persist=True,
         price_floor=price_floor, volume_floor=volume_floor,
         min_directional_distance=min_dist,
         mid_min=mid_min, mid_max=mid_max,
+        direction=direction,
     ))
 
 
