@@ -863,6 +863,14 @@
               <label for="options-adv-mid-max">Mid $ max</label>
               <input id="options-adv-mid-max" type="number" min="0.05" max="10000" step="0.05" value="1000" />
             </div>
+            <div class="adv-row" title="Focus the top-N selection on tickers whose pre-score points one direction. With 'Both' the scan returns a mix of calls and puts; with 'Calls only' or 'Puts only' all top-N candidates lean that way, so the surviving result list (after mid filter) is concentrated on your intended direction.">
+              <label for="options-adv-direction">Direction</label>
+              <select id="options-adv-direction">
+                <option value="both" selected>Both (default)</option>
+                <option value="call">Calls only</option>
+                <option value="put">Puts only</option>
+              </select>
+            </div>
             <div class="adv-row adv-row-actions">
               <button id="options-adv-save" type="button" title="Persist current filters as the default. The nightly alerts will use these too (unless overridden by an env var).">Save as defaults</button>
               <button id="options-adv-reset" type="button" title="Revert to the built-in defaults (price $20, volume 500k, min directional 8).">Reset</button>

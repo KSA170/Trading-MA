@@ -184,6 +184,12 @@ ALTER TABLE options_scan_config
     ADD COLUMN IF NOT EXISTS mid_min REAL NOT NULL DEFAULT 0;
 ALTER TABLE options_scan_config
     ADD COLUMN IF NOT EXISTS mid_max REAL NOT NULL DEFAULT 1000;
+-- Direction filter — 'call' / 'put' / 'both'. Default 'both' is a
+-- no-op; 'call' or 'put' filters the pre-score pool BEFORE the
+-- top-N slice so the surviving result list is concentrated on the
+-- direction the user wants.
+ALTER TABLE options_scan_config
+    ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT 'both';
 
 -- User-pinned recommendations for later review. `snapshot` freezes
 -- the full rec dict at pin time so it survives even if the

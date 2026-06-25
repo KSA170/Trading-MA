@@ -295,6 +295,7 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
                   min_directional_distance: float = PRE_SCORE_MIN_DISTANCE,
                   mid_min: float = 0.0,
                   mid_max: float = 1e9,
+                  direction: str = "both",
                   ) -> dict:
     """Run the full pipeline on the top N pre-scored candidates.
 
@@ -324,6 +325,20 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
         min_distance=min_directional_distance,
     )
     pre_scored = pre_result["pre_scored"]
+    # Direction filter — drop candidates whose pre-score direction_bias
+    # doesn't match what the user wants BEFORE we slice to top N. This
+    # doesn't reduce per-ticker fetch cost, but it concentrates the
+    # top N on the wanted direction so the surviving result list is
+    # ~2× more useful for a directionally-biased user. 'both' is the
+    # backward-compatible default — no filtering.
+    direction_norm = (direction or "both").strip().lower()
+    if direction_norm not in ("call", "put", "both"):
+        direction_norm = "both"
+    if direction_norm in ("call", "put"):
+        before = len(pre_scored)
+        pre_scored = [c for c in pre_scored if c.get("direction_bias") == direction_norm]
+        log.info("scan_universe: direction='%s' filter kept %d of %d candidates",
+                 direction_norm, len(pre_scored), before)
     pool = pre_scored[: max(1, int(top_n))]
     log.info("scan_universe: top %d of %d pre-scored candidates (cache %s)",
              len(pool), len(pre_scored), "HIT" if was_cached else "MISS")
@@ -629,6 +644,7 @@ def start_scan(top_n: int,
                min_directional_distance: float = PRE_SCORE_MIN_DISTANCE,
                mid_min: float = 0.0,
                mid_max: float = 1e9,
+               direction: str = "both",
                ) -> dict:
     """Kick off scan_universe in a daemon thread. Returns a status snapshot
     with `started` = True if a new run kicked off, False if one was
@@ -688,6 +704,7 @@ def start_scan(top_n: int,
                 price_floor=price_floor, volume_floor=volume_floor,
                 min_directional_distance=min_directional_distance,
                 mid_min=mid_min, mid_max=mid_max,
+                direction=direction,
             )
             with _scan_lock:
                 _scan_state["last_result"] = result
@@ -788,7 +805,13 @@ DEFAULT_SETTINGS: dict = {
     # candidates whose recommended contract premium is in range.
     "mid_min": 0.0,
     "mid_max": 1000.0,
+    # Direction filter — 'call' / 'put' / 'both'. Default 'both'
+    # is a no-op (no filtering); 'call' or 'put' filters the
+    # pre-score pool BEFORE the top-N slice so the surviving
+    # results all match the user's intent.
+    "direction": "both",
 }
+_VALID_DIRECTIONS = ("call", "put", "both")
 
 # Per-field clamps. Looser than the UI's dropdown choices on purpose —
 # the API accepts anything in range, the UI just curates a few presets.
@@ -813,6 +836,12 @@ def _clamp_settings(raw: dict) -> dict:
         v = raw.get(k, default)
         if v is None:
             v = default
+        # Direction is a string enum — coerce + whitelist rather than
+        # numeric-clamp like the rest of the settings.
+        if k == "direction":
+            v = str(v).strip().lower()
+            out[k] = v if v in _VALID_DIRECTIONS else default
+            continue
         try:
             v = float(v) if isinstance(default, float) else int(v)
         except (TypeError, ValueError):
@@ -841,7 +870,7 @@ def load_settings() -> dict:
         with snapshots._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT price_floor, volume_floor, min_directional_distance, "
-                "       top_n, dte_min, dte_max, mid_min, mid_max "
+                "       top_n, dte_min, dte_max, mid_min, mid_max, direction "
                 "FROM options_scan_config WHERE id = 1"
             )
             row = cur.fetchone()
@@ -856,6 +885,7 @@ def load_settings() -> dict:
             "dte_max": row[5],
             "mid_min": row[6],
             "mid_max": row[7],
+            "direction": row[8],
         })
     except Exception as exc:
         log.warning("load_settings failed (using defaults): %s", exc)
@@ -876,8 +906,8 @@ def save_settings(raw: dict) -> dict:
             cur.execute(
                 "INSERT INTO options_scan_config "
                 "  (id, price_floor, volume_floor, min_directional_distance, "
-                "   top_n, dte_min, dte_max, mid_min, mid_max, updated_at) "
-                "VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
+                "   top_n, dte_min, dte_max, mid_min, mid_max, direction, updated_at) "
+                "VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
                 "ON CONFLICT (id) DO UPDATE SET "
                 "  price_floor = EXCLUDED.price_floor, "
                 "  volume_floor = EXCLUDED.volume_floor, "
@@ -887,11 +917,12 @@ def save_settings(raw: dict) -> dict:
                 "  dte_max = EXCLUDED.dte_max, "
                 "  mid_min = EXCLUDED.mid_min, "
                 "  mid_max = EXCLUDED.mid_max, "
+                "  direction = EXCLUDED.direction, "
                 "  updated_at = now()",
                 (settings["price_floor"], int(settings["volume_floor"]),
                  settings["min_directional_distance"],
                  settings["top_n"], settings["dte_min"], settings["dte_max"],
-                 settings["mid_min"], settings["mid_max"]),
+                 settings["mid_min"], settings["mid_max"], settings["direction"]),
             )
     except Exception as exc:
         log.warning("save_settings failed: %s", exc)
