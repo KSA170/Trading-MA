@@ -5057,8 +5057,22 @@ function _renderScanProgress(state) {
   // root cause when the scan would otherwise look mysteriously slow
   // (each rate-limited ticker either times out at 60s or fails fast,
   // both of which produce no useful recommendation).
+  //
+  // Two-tier surface: at low counts (1-4 tickers AND <10% of done),
+  // show a quiet inline note instead of the loud banner — some
+  // yfinance flakiness is normal on every scan and the alarmist
+  // banner was misleading users on counts that didn't matter. The
+  // loud banner only fires when the failure rate suggests the scan
+  // is meaningfully degraded.
   if (rate_limited_count > 0) {
-    listMsg = `<div class="scan-ratelimit-banner"><strong>⚠️ Yahoo Finance is rate-limiting us</strong> — ${rate_limited_count} ticker${rate_limited_count === 1 ? '' : 's'} affected so far. The scan will continue but most tickers will be skipped. Try again in 5-10 minutes, or run after market close when traffic is lower.</div>` + listMsg;
+    const ratio = done > 0 ? (rate_limited_count / done) : 0;
+    const survived = Math.max(0, done - rate_limited_count);
+    const loud = rate_limited_count >= 5 && ratio >= 0.10;
+    if (loud) {
+      listMsg = `<div class="scan-ratelimit-banner"><strong>⚠️ Yahoo Finance is throttling us</strong> — ${rate_limited_count} of ${done} tickers (${Math.round(ratio * 100)}%) hit rate-limits. ${survived} succeeded so far. The scan will continue, but the failure rate suggests most subsequent tickers will also be skipped. Try again in 5-10 minutes, or run after market close when traffic is lower.</div>` + listMsg;
+    } else {
+      listMsg = `<div class="scan-ratelimit-note"><span class="muted">⏱ ${rate_limited_count} ticker${rate_limited_count === 1 ? '' : 's'} throttled (one retry each); ${survived} succeeded so far.</span></div>` + listMsg;
+    }
   }
   if (els.optionsStatus) els.optionsStatus.innerHTML = statusLine;
   if (els.optionsScanList)
