@@ -138,6 +138,30 @@
           </div>
         </div>
 
+        <div class="filter-group" data-group="price_sma10_dev" title="Filter the universe to tickers whose latest close is within this % band of the 10-day SMA. Useful for catching pullbacks-to-SMA10 (tight band around 0) or modest extensions (positive bias). Off by default.">
+          <label class="group-toggle"><input type="checkbox" id="apply_price_sma10_dev" /> Price dev vs SMA(10)</label>
+          <div class="filter">
+            <label>min (%)</label>
+            <input id="price_sma10_dev_min_pct" type="number" step="0.5" value="-3" />
+          </div>
+          <div class="filter">
+            <label>max (%)</label>
+            <input id="price_sma10_dev_max_pct" type="number" step="0.5" value="5" />
+          </div>
+        </div>
+
+        <div class="filter-group" data-group="sma10_sma20_dev" title="Filter to tickers whose 10-day SMA is within this % band of the 20-day SMA. Positive band = short-term uptrend (SMA10 above SMA20); negative = downtrend; tight band around 0 = transitioning. Off by default.">
+          <label class="group-toggle"><input type="checkbox" id="apply_sma10_sma20_dev" /> SMA(10) dev vs SMA(20)</label>
+          <div class="filter">
+            <label>min (%)</label>
+            <input id="sma10_sma20_dev_min_pct" type="number" step="0.5" value="-2" />
+          </div>
+          <div class="filter">
+            <label>max (%)</label>
+            <input id="sma10_sma20_dev_max_pct" type="number" step="0.5" value="4" />
+          </div>
+        </div>
+
         <div class="filter-group wide" data-group="sma_revival" title="Catches the early-stage bullish setup where the 10-day SMA has flattened and starts to slope up while price crosses above it from below. Two required signals:&#10;  • 10-SMA slope turned from ≤ 0 to > 0 within the last N bars&#10;  • Close crossed above 10-SMA from below within the last N bars&#10;The min-slope value gates today's slope so flat-line noise doesn't fire. Optional sub-toggles further restrict to early-stage (20-SMA still flat) or to crosses confirmed by above-average volume.">
           <label class="group-toggle"><input type="checkbox" id="apply_sma_revival" /> SMA Revival (10-SMA turn-up + cross)</label>
           <div class="filter-grid-inner">
@@ -703,6 +727,18 @@
             <label class="group-toggle"><input type="checkbox" id="cm_apply_ema_dev" checked /> EMA(21) dev vs EMA(50)</label>
             <div class="filter"><label>min (%)</label><input id="cm_ema_dev_min_pct" type="number" step="0.5" value="-3" /></div>
             <div class="filter"><label>max (%)</label><input id="cm_ema_dev_max_pct" type="number" step="0.5" value="3" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_price_sma10_dev">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_price_sma10_dev" /> Price dev vs SMA(10)</label>
+            <div class="filter"><label>min (%)</label><input id="cm_price_sma10_dev_min_pct" type="number" step="0.5" value="-3" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_price_sma10_dev_max_pct" type="number" step="0.5" value="5" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_sma10_sma20_dev">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_sma10_sma20_dev" /> SMA(10) dev vs SMA(20)</label>
+            <div class="filter"><label>min (%)</label><input id="cm_sma10_sma20_dev_min_pct" type="number" step="0.5" value="-2" /></div>
+            <div class="filter"><label>max (%)</label><input id="cm_sma10_sma20_dev_max_pct" type="number" step="0.5" value="4" /></div>
           </div>
 
           <div class="filter-group" data-group="cm_macd_vs_signal">

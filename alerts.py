@@ -80,6 +80,11 @@ DEFAULT_ALERT_PARAMS: dict = {
     "apply_rvol": True, "apply_avg_volume": False,
     "apply_price": True, "apply_price_dev": True,
     "apply_ema_dev": True,
+    # Standalone SMA-trend deviation gates (off by default).
+    "apply_price_sma10_dev": False,
+    "price_sma10_dev_min_pct": -3.0, "price_sma10_dev_max_pct": 5.0,
+    "apply_sma10_sma20_dev": False,
+    "sma10_sma20_dev_min_pct": -2.0, "sma10_sma20_dev_max_pct": 4.0,
     "apply_turnover": False,
     # Latest-bar % gain.
     "apply_pct_change": False, "pct_change_min": 5.0,

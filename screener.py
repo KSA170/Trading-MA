@@ -85,6 +85,12 @@ class ScreenHit:
     sma10_slope_pct: float | None = None
     cross_days_ago: int | None = None
     slope_turn_days_ago: int | None = None
+    # Standalone SMA-trend deviation fields (% deviation). Populated
+    # whenever the underlying SMA values are available, regardless of
+    # whether the corresponding filter is enabled, so the values are
+    # visible for diagnose / debugging.
+    price_sma10_dev_pct: float | None = None
+    sma10_sma20_dev_pct: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -1298,6 +1304,17 @@ def evaluate_ticker(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
+    # --- Standalone SMA-trend deviation gates (independent of SMA Revival)
+    # apply_price_sma10_dev:  gate on (close − sma10) / sma10
+    # apply_sma10_sma20_dev:  gate on (sma10 − sma20) / sma20
+    # Both default off and have wide ranges so they're no-ops unless the
+    # user explicitly toggles them on.
+    apply_price_sma10_dev: bool = False,
+    price_sma10_dev_min_pct: float = -3.0,
+    price_sma10_dev_max_pct: float = 5.0,
+    apply_sma10_sma20_dev: bool = False,
+    sma10_sma20_dev_min_pct: float = -2.0,
+    sma10_sma20_dev_max_pct: float = 4.0,
     apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
@@ -1462,6 +1479,32 @@ def evaluate_ticker(
     )
     if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
         return None
+
+    # Standalone SMA-trend deviations. Independent of the SMA-Revival
+    # filter — these are simple % deviation gates on close-vs-SMA10
+    # and SMA10-vs-SMA20. Computed unconditionally so the ScreenHit
+    # carries the values for the diagnose view; gated only when the
+    # corresponding `apply_*` flag is on.
+    sma10_for_dev = _scalar("sma10")
+    sma20_for_dev = _scalar("sma20")
+    price_sma10_dev_pct = (
+        (prev_close - sma10_for_dev) / sma10_for_dev * 100.0
+        if (sma10_for_dev not in (None, 0)) else None
+    )
+    if apply_price_sma10_dev:
+        if price_sma10_dev_pct is None:
+            return None
+        if not (price_sma10_dev_min_pct <= price_sma10_dev_pct <= price_sma10_dev_max_pct):
+            return None
+    sma10_sma20_dev_pct = (
+        (sma10_for_dev - sma20_for_dev) / sma20_for_dev * 100.0
+        if (sma10_for_dev not in (None,) and sma20_for_dev not in (None, 0)) else None
+    )
+    if apply_sma10_sma20_dev:
+        if sma10_sma20_dev_pct is None:
+            return None
+        if not (sma10_sma20_dev_min_pct <= sma10_sma20_dev_pct <= sma10_sma20_dev_max_pct):
+            return None
 
     # MACD(12, 26, 9) — scalars used by the MACD-vs-signal gate and the
     # momentum_score / results columns. Only hard-reject when the gate
@@ -1642,6 +1685,8 @@ def evaluate_ticker(
         sma10_slope_pct=round(sma10_slope, 4) if sma10_slope is not None else None,
         cross_days_ago=cross_days,
         slope_turn_days_ago=slope_turn_days,
+        price_sma10_dev_pct=round(price_sma10_dev_pct, 2) if price_sma10_dev_pct is not None else None,
+        sma10_sma20_dev_pct=round(sma10_sma20_dev_pct, 2) if sma10_sma20_dev_pct is not None else None,
     )
 
 
@@ -1736,6 +1781,13 @@ def _evaluate_from_snapshot(
     apply_price: bool,
     apply_price_dev: bool,
     apply_ema_dev: bool,
+    # Standalone SMA-trend dev gates — mirror of evaluate_ticker.
+    apply_price_sma10_dev: bool = False,
+    price_sma10_dev_min_pct: float = -3.0,
+    price_sma10_dev_max_pct: float = 5.0,
+    apply_sma10_sma20_dev: bool = False,
+    sma10_sma20_dev_min_pct: float = -2.0,
+    sma10_sma20_dev_max_pct: float = 4.0,
     apply_macd_vs_signal: bool,
     apply_turnover: bool,
     apply_market_cap: bool,
@@ -1869,6 +1921,28 @@ def _evaluate_from_snapshot(
     )
     if apply_ema_dev and not (ema_dev_min_pct <= ema21_ema50_dev_pct <= ema_dev_max_pct):
         return None
+
+    # Standalone SMA-trend deviations (mirror of evaluate_ticker block).
+    sma10_for_dev = row.get("sma10")
+    sma20_for_dev = row.get("sma20")
+    price_sma10_dev_pct = (
+        (close - sma10_for_dev) / sma10_for_dev * 100.0
+        if (sma10_for_dev not in (None, 0)) else None
+    )
+    if apply_price_sma10_dev:
+        if price_sma10_dev_pct is None:
+            return None
+        if not (price_sma10_dev_min_pct <= price_sma10_dev_pct <= price_sma10_dev_max_pct):
+            return None
+    sma10_sma20_dev_pct = (
+        (sma10_for_dev - sma20_for_dev) / sma20_for_dev * 100.0
+        if (sma10_for_dev not in (None,) and sma20_for_dev not in (None, 0)) else None
+    )
+    if apply_sma10_sma20_dev:
+        if sma10_sma20_dev_pct is None:
+            return None
+        if not (sma10_sma20_dev_min_pct <= sma10_sma20_dev_pct <= sma10_sma20_dev_max_pct):
+            return None
 
     macd_hist_val = row.get("macd_hist")
     macd_hist_prev = row.get("macd_hist_prev")
@@ -2054,6 +2128,8 @@ def _evaluate_from_snapshot(
         sma10_slope_pct=round(sma10_slope, 4) if sma10_slope is not None else None,
         cross_days_ago=cross_days,
         slope_turn_days_ago=slope_turn_days,
+        price_sma10_dev_pct=round(price_sma10_dev_pct, 2) if price_sma10_dev_pct is not None else None,
+        sma10_sma20_dev_pct=round(sma10_sma20_dev_pct, 2) if sma10_sma20_dev_pct is not None else None,
     )
 
 
@@ -2090,6 +2166,13 @@ def run_screen(
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
+    # Standalone SMA-trend dev gates — see evaluate_ticker docstring.
+    apply_price_sma10_dev: bool = False,
+    price_sma10_dev_min_pct: float = -3.0,
+    price_sma10_dev_max_pct: float = 5.0,
+    apply_sma10_sma20_dev: bool = False,
+    sma10_sma20_dev_min_pct: float = -2.0,
+    sma10_sma20_dev_max_pct: float = 4.0,
     apply_macd_vs_signal: bool = False,
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
@@ -2181,6 +2264,12 @@ def run_screen(
                         apply_price=apply_price,
                         apply_price_dev=apply_price_dev,
                         apply_ema_dev=apply_ema_dev,
+                        apply_price_sma10_dev=apply_price_sma10_dev,
+                        price_sma10_dev_min_pct=price_sma10_dev_min_pct,
+                        price_sma10_dev_max_pct=price_sma10_dev_max_pct,
+                        apply_sma10_sma20_dev=apply_sma10_sma20_dev,
+                        sma10_sma20_dev_min_pct=sma10_sma20_dev_min_pct,
+                        sma10_sma20_dev_max_pct=sma10_sma20_dev_max_pct,
                         apply_macd_vs_signal=apply_macd_vs_signal,
                         apply_turnover=apply_turnover,
                         apply_market_cap=apply_market_cap,
@@ -2243,6 +2332,12 @@ def run_screen(
                 apply_price=apply_price,
                 apply_price_dev=apply_price_dev,
                 apply_ema_dev=apply_ema_dev,
+                apply_price_sma10_dev=apply_price_sma10_dev,
+                price_sma10_dev_min_pct=price_sma10_dev_min_pct,
+                price_sma10_dev_max_pct=price_sma10_dev_max_pct,
+                apply_sma10_sma20_dev=apply_sma10_sma20_dev,
+                sma10_sma20_dev_min_pct=sma10_sma20_dev_min_pct,
+                sma10_sma20_dev_max_pct=sma10_sma20_dev_max_pct,
                 apply_macd_vs_signal=apply_macd_vs_signal,
                 apply_turnover=apply_turnover,
                 apply_market_cap=apply_market_cap,
