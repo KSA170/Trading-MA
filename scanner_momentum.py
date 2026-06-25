@@ -1044,7 +1044,19 @@ def _format_telegram(ticker: str, m: dict, cfg: dict,
     silently omitting the line."""
     import enrich
     import html as _html
-    name = (fund or {}).get("name")
+    import tickers as _tickers
+    # Prefer the SEC-sourced local name over yfinance's .info["longName"].
+    # yfinance occasionally returns a wrong/stale name for delisted or
+    # ticker-recycled symbols (e.g. CCXI surfaced as "Churchill Capital
+    # Corp" after ChemoCentryx's 2022 delisting). Every other formatter
+    # in the codebase already goes through tickers.company_name; this
+    # brings the momentum scanner in line. company_name returns the
+    # ticker itself when the SEC dict has no entry — treat that as
+    # "no local name" and fall back to yfinance.
+    local_name = _tickers.company_name(ticker)
+    name = (local_name
+            if local_name and local_name.upper() != ticker.upper()
+            else (fund or {}).get("name"))
     name_part = f" — {_html.escape(name)}" if name else ""
     today_vol = _fmt_compact_vol(m.get("today_vol") or 0)
     avg_vol   = _fmt_compact_vol(m.get("avg_vol") or 0)
