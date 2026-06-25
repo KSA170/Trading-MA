@@ -903,6 +903,31 @@ def api_alerts_rule_update_criteria():
     return jsonify({"updated": ok, "rules": alerts.list_rules()})
 
 
+@app.route("/api/alerts/rules/update", methods=["POST"])
+def api_alerts_rule_update():
+    """Edit a rule's name / scope_type / scope_value. Body:
+        {id, name?, scope_type?, scope_value?}
+    Missing fields are left unchanged. rule_type is intentionally
+    immutable — switching it would invalidate params; delete + recreate
+    if that's the intent."""
+    if not alerts.enabled():
+        return jsonify({"error": "DATABASE_URL not set"}), 400
+    payload = request.get_json(silent=True) or {}
+    try:
+        rule_id = int(payload.get("id", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "id required"}), 400
+    if not rule_id:
+        return jsonify({"error": "id required"}), 400
+    ok = alerts.update_rule(
+        rule_id,
+        name=payload.get("name"),
+        scope_type=payload.get("scope_type"),
+        scope_value=payload.get("scope_value"),
+    )
+    return jsonify({"updated": ok, "rules": alerts.list_rules()})
+
+
 @app.route("/api/alerts/rules/history", methods=["GET"])
 def api_alerts_rule_history():
     """Recent trigger events for one rule — (timestamp, match count) per

@@ -2129,7 +2129,7 @@ function renderRules(data) {
         <span class="${lastClass}">${escapeHtml(lastTxt)}</span>
         <span class="rule-spacer"></span>
         <button type="button" data-act="toggle">${r.enabled ? 'Disable' : 'Enable'}</button>
-        <button type="button" data-act="update" title="Replace this rule's criteria with the filters currently set above">Update criteria</button>
+        <button type="button" data-act="update" title="Edit this rule — name, scope, sector/industry, and criteria are all editable in the dialog.">Edit rule</button>
         <button type="button" data-act="history" title="Show this rule's recent trigger events (date, time, match count)">History</button>
         <button type="button" class="rule-delete" data-act="delete" title="Delete rule">×</button>
       </div>
@@ -2367,6 +2367,11 @@ async function ruleAction(id, act) {
       ruleId: id,
       ruleName: rule.name || `#${id}`,
       scopeText,
+      // Pass current meta so the modal can pre-fill the editable
+      // name + scope fields (in addition to criteria).
+      currentName:       rule.name || '',
+      currentScopeType:  rule.scope_type || '',
+      currentScopeValue: rule.scope_value || '',
       prefill: rule.params || {},
     });
     return;
@@ -2404,7 +2409,8 @@ async function ruleAction(id, act) {
 let _criteriaModalState = { mode: 'create', ruleId: null, ruleType: 'screener' };
 
 function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
-                              seedName, seedScopeType, seedScopeValue, prefill }) {
+                              seedName, seedScopeType, seedScopeValue, prefill,
+                              currentName, currentScopeType, currentScopeValue }) {
   if (!els.cmModal) return;
   ruleType = ruleType || 'screener';
   _criteriaModalState = { mode, ruleId: ruleId || null, ruleType };
@@ -2461,16 +2467,39 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
     }
     if (els.cmSubmit) els.cmSubmit.textContent = 'Create rule';
   } else {
-    if (els.cmTitle) els.cmTitle.textContent = `Update criteria — ${ruleName || '(rule)'}`;
+    if (els.cmTitle) els.cmTitle.textContent = `Edit rule — ${ruleName || '(rule)'}`;
     if (els.cmSubtitle) {
-      els.cmSubtitle.textContent = "Adjust the criteria for this rule. Name and scope can't be edited here — delete and recreate to change them.";
+      els.cmSubtitle.textContent = 'Edit the rule\'s name, scope, and criteria. Rule type is fixed once the rule exists — delete and recreate to change it.';
     }
-    if (els.cmMeta) els.cmMeta.hidden = true;
-    if (els.cmContext) {
-      els.cmContext.textContent = scopeText ? `Scope: ${scopeText}` : '';
-      els.cmContext.hidden = !scopeText;
+    // Show + pre-populate the meta block. Rule type can't change
+    // (would invalidate the saved params), so the create-form's
+    // type select isn't part of this modal; we leave it as-is.
+    if (els.cmMeta) els.cmMeta.hidden = false;
+    if (els.cmContext) { els.cmContext.textContent = ''; els.cmContext.hidden = true; }
+    if (els.cmName) {
+      els.cmName.value = (currentName != null ? currentName : (ruleName || ''));
+      els.cmName.disabled = false;
     }
-    if (els.cmSubmit) els.cmSubmit.textContent = 'Save criteria';
+    if (els.cmScopeType) {
+      els.cmScopeType.value = currentScopeType || (ruleType === 'setup' ? 'all' : 'watchlist');
+      els.cmScopeType.disabled = false;
+    }
+    populateModalScopeValues();
+    // For sector/industry scope, the rule's stored value may not be
+    // in the populated dropdown (sector renamed, classify-universe
+    // hasn't run yet, etc.). Append it as a fallback so the user
+    // sees what's saved without losing it.
+    if (els.cmScopeValue && (currentScopeType === 'sector' || currentScopeType === 'industry') && currentScopeValue) {
+      const present = Array.from(els.cmScopeValue.options).some(o => o.value === currentScopeValue);
+      if (!present) {
+        const opt = document.createElement('option');
+        opt.value = currentScopeValue;
+        opt.textContent = currentScopeValue + ' (current)';
+        els.cmScopeValue.appendChild(opt);
+      }
+      els.cmScopeValue.value = currentScopeValue;
+    }
+    if (els.cmSubmit) els.cmSubmit.textContent = 'Save rule';
   }
 
   setModalMsg('');
@@ -2675,9 +2704,47 @@ async function submitCriteriaModal() {
     setModalMsg('Internal error: rule id missing.', 'error');
     return;
   }
-  setModalMsg('Saving criteria…');
+  // Read the now-editable meta fields. Validate same way as create.
+  const name = (els.cmName && els.cmName.value || '').trim();
+  const scopeType = (els.cmScopeType && els.cmScopeType.value)
+    || (ruleType === 'setup' ? 'all' : 'watchlist');
+  const scopeValue = (scopeType === 'watchlist' || scopeType === 'all')
+    ? '' : (els.cmScopeValue && els.cmScopeValue.value) || '';
+  if (!name) {
+    setModalMsg('Enter a rule name.', 'error');
+    if (els.cmName) els.cmName.focus();
+    return;
+  }
+  if (scopeType === 'all' && ruleType !== 'setup') {
+    setModalMsg('"All snapshot tickers" is only valid for setup rules.', 'error');
+    return;
+  }
+  if (scopeType !== 'watchlist' && scopeType !== 'all' && !scopeValue) {
+    setModalMsg('Pick a sector / industry — run "Classify universe" if the list is empty.', 'error');
+    return;
+  }
+
+  setModalMsg('Saving rule…');
   if (els.cmSubmit) els.cmSubmit.disabled = true;
   try {
+    // Two POSTs: meta first (cheap, fails fast on validation), then
+    // criteria. Either failure surfaces in setModalMsg and stops the
+    // flow — partial saves are visible to the user (no silent half-
+    // update).
+    const metaRes = await fetch('/api/alerts/rules/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: ruleId, name, scope_type: scopeType, scope_value: scopeValue,
+      }),
+    });
+    const metaData = await metaRes.json().catch(() => ({}));
+    if (!metaRes.ok) {
+      setModalMsg('Save rule failed (name/scope): '
+                  + (metaData.error || ('HTTP ' + metaRes.status)), 'error');
+      return;
+    }
+
     const url = ruleType === 'setup'
       ? '/api/alerts/rules/update-criteria'
       : '/api/alerts/rules/update-criteria?' + buildModalQuery();
@@ -2691,15 +2758,16 @@ async function submitCriteriaModal() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setModalMsg('Update failed: ' + (data.error || ('HTTP ' + res.status)), 'error');
+      setModalMsg('Save rule failed (criteria): '
+                  + (data.error || ('HTTP ' + res.status)), 'error');
       return;
     }
     renderRules({ enabled: true, rules: data.rules });
     loadRules();
-    setRulesMsg('Rule criteria updated.', 'ok');
+    setRulesMsg(`Rule "${name}" updated.`, 'ok');
     closeCriteriaModal();
   } catch (err) {
-    setModalMsg('Update failed: ' + (err && err.message ? err.message : 'network error'), 'error');
+    setModalMsg('Save rule failed: ' + (err && err.message ? err.message : 'network error'), 'error');
   } finally {
     if (els.cmSubmit) els.cmSubmit.disabled = false;
   }
