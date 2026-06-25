@@ -78,6 +78,13 @@ DEFAULT_PARAMS: dict = {
     "apply_price": True,
     "apply_price_dev": True,
     "apply_ema_dev": True,
+    # Standalone SMA-trend deviation gates (off by default; wide ranges).
+    "apply_price_sma10_dev": False,
+    "price_sma10_dev_min_pct": -3.0,
+    "price_sma10_dev_max_pct": 5.0,
+    "apply_sma10_sma20_dev": False,
+    "sma10_sma20_dev_min_pct": -2.0,
+    "sma10_sma20_dev_max_pct": 4.0,
     "apply_macd_vs_signal": False,
     "apply_turnover": False,
     "apply_market_cap": False,
@@ -108,6 +115,12 @@ def _cache_key(params: dict) -> tuple:
     price = (round(float(params["price_min"]), 4), round(float(params["price_max"]), 4)) if params["apply_price"] else ("off",)
     price_dev = (round(float(params["price_dev_min_pct"]), 3), round(float(params["price_dev_max_pct"]), 3)) if params["apply_price_dev"] else ("off",)
     ema_dev = (round(float(params["ema_dev_min_pct"]), 3), round(float(params["ema_dev_max_pct"]), 3)) if params["apply_ema_dev"] else ("off",)
+    price_sma10_dev = (round(float(params["price_sma10_dev_min_pct"]), 3),
+                       round(float(params["price_sma10_dev_max_pct"]), 3)) \
+                      if params["apply_price_sma10_dev"] else ("off",)
+    sma10_sma20_dev = (round(float(params["sma10_sma20_dev_min_pct"]), 3),
+                       round(float(params["sma10_sma20_dev_max_pct"]), 3)) \
+                      if params["apply_sma10_sma20_dev"] else ("off",)
     macd_vs_sig = (
         bool(params["macd_within_pct"]),
         round(float(params["macd_vs_signal_pct"]), 4),
@@ -134,7 +147,11 @@ def _cache_key(params: dict) -> tuple:
     # but mean different calendar dates → stale rows served under the
     # wrong date. Resolved-date keying is drift-proof.
     as_of_key = params.get("as_of_date_resolved") or int(params["as_of_offset"])
-    return ("v19", as_of_key, price, price_dev, ema_dev, macd_vs_sig, turnover, market_cap, pct_change, sma_rev, high, rsi, rsi_dev, rvol, avg_vol, lists)
+    # Bumped to v20 — adding price_sma10_dev / sma10_sma20_dev. Old v19
+    # entries would be served against the new filter-set otherwise.
+    return ("v20", as_of_key, price, price_dev, ema_dev, price_sma10_dev,
+            sma10_sma20_dev, macd_vs_sig, turnover, market_cap, pct_change,
+            sma_rev, high, rsi, rsi_dev, rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -224,6 +241,10 @@ def _parse_params() -> dict:
         "price_dev_max_pct": _flt("price_dev_max_pct", 4),
         "ema_dev_min_pct": _flt("ema_dev_min_pct", -3),
         "ema_dev_max_pct": _flt("ema_dev_max_pct", 3),
+        "price_sma10_dev_min_pct": _flt("price_sma10_dev_min_pct", -3),
+        "price_sma10_dev_max_pct": _flt("price_sma10_dev_max_pct", 5),
+        "sma10_sma20_dev_min_pct": _flt("sma10_sma20_dev_min_pct", -2),
+        "sma10_sma20_dev_max_pct": _flt("sma10_sma20_dev_max_pct", 4),
         "macd_within_pct": _parse_bool("macd_within_pct", True),
         "macd_vs_signal_pct": _flt("macd_vs_signal_pct", 5.0),
         "macd_above_signal": _parse_bool("macd_above_signal", False),
@@ -241,6 +262,8 @@ def _parse_params() -> dict:
         "apply_price": _parse_bool("apply_price", True),
         "apply_price_dev": _parse_bool("apply_price_dev", True),
         "apply_ema_dev": _parse_bool("apply_ema_dev", True),
+        "apply_price_sma10_dev": _parse_bool("apply_price_sma10_dev", False),
+        "apply_sma10_sma20_dev": _parse_bool("apply_sma10_sma20_dev", False),
         "apply_macd_vs_signal": _parse_bool("apply_macd_vs_signal", False),
         "apply_turnover": _parse_bool("apply_turnover", False),
         "apply_market_cap": _parse_bool("apply_market_cap", False),
