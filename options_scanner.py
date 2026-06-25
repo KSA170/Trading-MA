@@ -293,6 +293,8 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
                   price_floor: float = SCANNER_PRICE_FLOOR,
                   volume_floor: float = SCANNER_VOLUME_FLOOR,
                   min_directional_distance: float = PRE_SCORE_MIN_DISTANCE,
+                  mid_min: float = 0.0,
+                  mid_max: float = 1e9,
                   ) -> dict:
     """Run the full pipeline on the top N pre-scored candidates.
 
@@ -408,6 +410,27 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
     # Sort by |composite - 50| descending so the digest leads with the
     # strongest directional setups first.
     out_recs.sort(key=lambda r: -abs((r.get("composite_score") or 50) - 50))
+
+    # Post-filter on the chosen contract's mid price. Only applied when
+    # the user has narrowed the range from "no filter" defaults — a
+    # full-width range (0, 1e9) is treated as a no-op so existing
+    # callers and the nightly cron behave exactly as before.
+    pre_mid_filter_count = len(out_recs)
+    if mid_min > 0 or mid_max < 1e8:
+        def _in_mid_range(r: dict) -> bool:
+            c = r.get("contract") or {}
+            mid = c.get("mid")
+            try:
+                m = float(mid) if mid is not None else None
+            except (TypeError, ValueError):
+                m = None
+            if m is None:
+                return False   # no contract / no mid → drop when filter active
+            return mid_min <= m <= mid_max
+        out_recs = [r for r in out_recs if _in_mid_range(r)]
+        log.info("scan_universe: mid-price filter [%.2f, %.2f] kept %d of %d recs",
+                 mid_min, mid_max, len(out_recs), pre_mid_filter_count)
+
     digest = [r for r in out_recs if digest_filter(r)]
     log.info("scan_universe: %d recs, %d in digest", len(out_recs), len(digest))
 
@@ -422,6 +445,8 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
             "price_floor": price_floor,
             "volume_floor": int(volume_floor),
             "min_directional_distance": min_directional_distance,
+            "mid_min": mid_min,
+            "mid_max": mid_max,
         },
     }
 
@@ -554,6 +579,8 @@ def start_scan(top_n: int,
                price_floor: float = SCANNER_PRICE_FLOOR,
                volume_floor: float = SCANNER_VOLUME_FLOOR,
                min_directional_distance: float = PRE_SCORE_MIN_DISTANCE,
+               mid_min: float = 0.0,
+               mid_max: float = 1e9,
                ) -> dict:
     """Kick off scan_universe in a daemon thread. Returns a status snapshot
     with `started` = True if a new run kicked off, False if one was
@@ -612,6 +639,7 @@ def start_scan(top_n: int,
                 progress_cb=_progress, should_cancel=_should_cancel,
                 price_floor=price_floor, volume_floor=volume_floor,
                 min_directional_distance=min_directional_distance,
+                mid_min=mid_min, mid_max=mid_max,
             )
             with _scan_lock:
                 _scan_state["last_result"] = result
@@ -706,6 +734,12 @@ DEFAULT_SETTINGS: dict = {
     "top_n": DEFAULT_NIGHTLY_TOP_N,
     "dte_min": 15,
     "dte_max": 60,
+    # Mid-price bounds for the chosen contract. Defaults are wide
+    # enough that they act as "no filter" out of the box; user
+    # narrows them in the UI to e.g. ($0.50, $5) to only see
+    # candidates whose recommended contract premium is in range.
+    "mid_min": 0.0,
+    "mid_max": 1000.0,
 }
 
 # Per-field clamps. Looser than the UI's dropdown choices on purpose —
@@ -717,6 +751,8 @@ _SETTING_CLAMPS = {
     "top_n":                    (1,       200),
     "dte_min":                  (1,       365),
     "dte_max":                  (2,       365),
+    "mid_min":                  (0.0,     10_000.0),
+    "mid_max":                  (0.05,    10_000.0),
 }
 
 
@@ -738,6 +774,11 @@ def _clamp_settings(raw: dict) -> dict:
         out[k] = v
     if out["dte_max"] <= out["dte_min"]:
         out["dte_max"] = out["dte_min"] + 1
+    # mid_max must stay strictly above mid_min; bump by a penny if a
+    # bad pair came in. Lets the UI submit free-form values without
+    # extra validation while keeping the post-filter predicate sane.
+    if out["mid_max"] <= out["mid_min"]:
+        out["mid_max"] = out["mid_min"] + 0.01
     return out
 
 
@@ -752,7 +793,7 @@ def load_settings() -> dict:
         with snapshots._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT price_floor, volume_floor, min_directional_distance, "
-                "       top_n, dte_min, dte_max "
+                "       top_n, dte_min, dte_max, mid_min, mid_max "
                 "FROM options_scan_config WHERE id = 1"
             )
             row = cur.fetchone()
@@ -765,6 +806,8 @@ def load_settings() -> dict:
             "top_n": row[3],
             "dte_min": row[4],
             "dte_max": row[5],
+            "mid_min": row[6],
+            "mid_max": row[7],
         })
     except Exception as exc:
         log.warning("load_settings failed (using defaults): %s", exc)
@@ -785,8 +828,8 @@ def save_settings(raw: dict) -> dict:
             cur.execute(
                 "INSERT INTO options_scan_config "
                 "  (id, price_floor, volume_floor, min_directional_distance, "
-                "   top_n, dte_min, dte_max, updated_at) "
-                "VALUES (1, %s, %s, %s, %s, %s, %s, now()) "
+                "   top_n, dte_min, dte_max, mid_min, mid_max, updated_at) "
+                "VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
                 "ON CONFLICT (id) DO UPDATE SET "
                 "  price_floor = EXCLUDED.price_floor, "
                 "  volume_floor = EXCLUDED.volume_floor, "
@@ -794,10 +837,13 @@ def save_settings(raw: dict) -> dict:
                 "  top_n = EXCLUDED.top_n, "
                 "  dte_min = EXCLUDED.dte_min, "
                 "  dte_max = EXCLUDED.dte_max, "
+                "  mid_min = EXCLUDED.mid_min, "
+                "  mid_max = EXCLUDED.mid_max, "
                 "  updated_at = now()",
                 (settings["price_floor"], int(settings["volume_floor"]),
                  settings["min_directional_distance"],
-                 settings["top_n"], settings["dte_min"], settings["dte_max"]),
+                 settings["top_n"], settings["dte_min"], settings["dte_max"],
+                 settings["mid_min"], settings["mid_max"]),
             )
     except Exception as exc:
         log.warning("save_settings failed: %s", exc)

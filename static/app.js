@@ -242,6 +242,8 @@ const els = {
   optionsAdvPriceFloor: $('#options-adv-price-floor'),
   optionsAdvVolFloor: $('#options-adv-vol-floor'),
   optionsAdvMinDistance: $('#options-adv-min-distance'),
+  optionsAdvMidMin: $('#options-adv-mid-min'),
+  optionsAdvMidMax: $('#options-adv-mid-max'),
   optionsAdvSave: $('#options-adv-save'),
   optionsAdvReset: $('#options-adv-reset'),
   optionsAdvStatus: $('#options-adv-status'),
@@ -5218,6 +5220,14 @@ function _readAdvancedFilters() {
     out.volume_floor = parseFloat(els.optionsAdvVolFloor.value);
   if (els.optionsAdvMinDistance && els.optionsAdvMinDistance.value)
     out.min_directional_distance = parseFloat(els.optionsAdvMinDistance.value);
+  // Mid-price band on the chosen contract — number inputs (not
+  // dropdowns) so parseFloat handles them too. Only include when
+  // the user actually typed something so blank inputs fall back to
+  // the persisted/saved value on the backend.
+  if (els.optionsAdvMidMin && els.optionsAdvMidMin.value !== '')
+    out.mid_min = parseFloat(els.optionsAdvMidMin.value);
+  if (els.optionsAdvMidMax && els.optionsAdvMidMax.value !== '')
+    out.mid_max = parseFloat(els.optionsAdvMidMax.value);
   return out;
 }
 
@@ -5241,6 +5251,11 @@ function _applySettingsToUI(settings) {
   pickClosest(els.optionsAdvVolFloor,   settings.volume_floor);
   pickClosest(els.optionsAdvMinDistance, settings.min_directional_distance);
   pickClosest(els.optionsScanTopN,      settings.top_n);
+  // Mid-price inputs aren't dropdowns — set the literal value.
+  if (els.optionsAdvMidMin && settings.mid_min != null)
+    els.optionsAdvMidMin.value = settings.mid_min;
+  if (els.optionsAdvMidMax && settings.mid_max != null)
+    els.optionsAdvMidMax.value = settings.mid_max;
 }
 
 function _renderPreview(data) {

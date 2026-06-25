@@ -1252,6 +1252,8 @@ def api_options_scan():
         volume_floor = float(body.get("volume_floor", saved["volume_floor"]))
         min_dist     = float(body.get("min_directional_distance",
                                        saved["min_directional_distance"]))
+        mid_min      = float(body.get("mid_min", saved["mid_min"]))
+        mid_max      = float(body.get("mid_max", saved["mid_max"]))
     except (TypeError, ValueError):
         return jsonify({"error": "scan params must be numeric"}), 400
     top_n = max(1, min(top_n, 200))
@@ -1259,6 +1261,7 @@ def api_options_scan():
         top_n=top_n, dte_min=dte_min, dte_max=dte_max, persist=True,
         price_floor=price_floor, volume_floor=volume_floor,
         min_directional_distance=min_dist,
+        mid_min=mid_min, mid_max=mid_max,
     ))
 
 

@@ -162,6 +162,14 @@ CREATE TABLE IF NOT EXISTS options_scan_config (
     dte_max                  INT NOT NULL,
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- mid-price bounds for the chosen contract per ticker. Idempotent
+-- ALTER for the live deploy that already has the table; defaults
+-- (0, 1000) are wide enough to act as "no filter" until the user
+-- narrows the range from the UI.
+ALTER TABLE options_scan_config
+    ADD COLUMN IF NOT EXISTS mid_min REAL NOT NULL DEFAULT 0;
+ALTER TABLE options_scan_config
+    ADD COLUMN IF NOT EXISTS mid_max REAL NOT NULL DEFAULT 1000;
 
 -- User-pinned recommendations for later review. `snapshot` freezes
 -- the full rec dict at pin time so it survives even if the

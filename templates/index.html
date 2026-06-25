@@ -857,6 +857,12 @@
                 <option value="15">15 (strict)</option>
               </select>
             </div>
+            <div class="adv-row" title="Restrict the scan to candidates whose chosen contract has a mid price in this range. Useful when you want only cheap premium ($0.50–$3) or only specific dollar amounts. Set min=0 and max=1000 to disable.">
+              <label for="options-adv-mid-min">Mid $ min</label>
+              <input id="options-adv-mid-min" type="number" min="0" max="10000" step="0.05" value="0" />
+              <label for="options-adv-mid-max">Mid $ max</label>
+              <input id="options-adv-mid-max" type="number" min="0.05" max="10000" step="0.05" value="1000" />
+            </div>
             <div class="adv-row adv-row-actions">
               <button id="options-adv-save" type="button" title="Persist current filters as the default. The nightly alerts will use these too (unless overridden by an env var).">Save as defaults</button>
               <button id="options-adv-reset" type="button" title="Revert to the built-in defaults (price $20, volume 500k, min directional 8).">Reset</button>
