@@ -190,6 +190,13 @@ ALTER TABLE options_scan_config
 -- direction the user wants.
 ALTER TABLE options_scan_config
     ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT 'both';
+-- Skip-already-scanned toggle. When TRUE, the scanner excludes
+-- tickers already saved to options_recommendations for the current
+-- as_of date from the pre-score pool, so successive scans on the
+-- same date page through new candidates instead of re-evaluating
+-- the same top-N every time.
+ALTER TABLE options_scan_config
+    ADD COLUMN IF NOT EXISTS skip_scanned BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- User-pinned recommendations for later review. `snapshot` freezes
 -- the full rec dict at pin time so it survives even if the
@@ -1446,6 +1453,31 @@ def available_rec_dates(limit: int = 30) -> list[str]:
     except Exception as exc:
         log.warning("options.available_rec_dates failed: %s", exc)
         return []
+
+
+def tickers_scanned_on(as_of: str) -> set[str]:
+    """Return the set of tickers that already have a saved recommendation
+    for `as_of`. Used by the scanner's 'skip already-scanned tickers'
+    feature so successive scans on the same date page through new
+    candidates instead of re-evaluating the same top-N every time.
+
+    Only successful evaluations are in this table (recommend_for_ticker
+    saves when composite_score is not None), so tickers that failed
+    mid-pipeline (no chain, rate-limit, etc.) are absent and will be
+    retried on the next scan."""
+    import snapshots
+    if not snapshots.enabled() or not as_of:
+        return set()
+    try:
+        with snapshots._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT ticker FROM options_recommendations WHERE as_of = %s",
+                (as_of,),
+            )
+            return {row[0] for row in cur.fetchall() if row and row[0]}
+    except Exception as exc:
+        log.warning("options.tickers_scanned_on(%s) failed: %s", as_of, exc)
+        return set()
 
 
 # --- pinned recommendations -----------------------------------------------

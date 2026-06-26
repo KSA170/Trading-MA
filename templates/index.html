@@ -907,6 +907,12 @@
                 <option value="put">Puts only</option>
               </select>
             </div>
+            <div class="adv-row" title="When on, the scanner excludes tickers already evaluated for today's date from the pre-score pool BEFORE the top-N slice. Successive scans on the same date page through new candidates instead of re-running the same top-N. Note: chain cache misses for the new tickers, so each follow-up scan re-hits Yahoo — use sparingly when you actually want fresh candidates.">
+              <label class="inline-checkbox" for="options-adv-skip-scanned" style="display:inline-flex;gap:6px;align-items:center;">
+                <input type="checkbox" id="options-adv-skip-scanned" />
+                Skip tickers already scanned today
+              </label>
+            </div>
             <div class="adv-row adv-row-actions">
               <button id="options-adv-save" type="button" title="Persist current filters as the default. The nightly alerts will use these too (unless overridden by an env var).">Save as defaults</button>
               <button id="options-adv-reset" type="button" title="Revert to the built-in defaults (price $20, volume 500k, min directional 8).">Reset</button>
