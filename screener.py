@@ -1158,21 +1158,35 @@ def _resolve_as_of_date(as_of_offset: int) -> str | None:
 
 
 # --- daily auto-warm scheduler ---------------------------------------------
-# A daemon thread wakes every 30 minutes and triggers a warm if it's after
-# the configured trigger time (default 4:30pm ET, US weekdays only) and we
-# haven't already warmed today. Trigger time is overridable via the
-# AUTO_WARM_AFTER_ET env var, e.g. "16:30" or "17:00". Set DISABLE_AUTO_WARM
-# to "1" to turn the scheduler off.
+# A daemon thread wakes every 30 minutes and triggers a warm at each
+# configured trigger time (US weekdays only), once per trigger per day.
+#
+# Two triggers by default:
+#   - AUTO_WARM_AFTER_ET  (default "16:30") — 30 min after the 4pm ET close.
+#       Captures the liquid names whose EOD bars settle quickly.
+#   - AUTO_WARM_SECOND_ET (default "19:00") — evening re-warm. By 7pm ET
+#       the vast majority of thin names have settled their daily bar, so
+#       this run lifts the snapshot's latest-date count from "liquid only"
+#       to ~the full universe. Set to empty string to disable the 2nd run.
+#
+# Each warm's completion already spawns a Postgres snapshot (see the
+# post-warm hook in warm_cache._run), so the snapshot auto-updates after
+# every trigger — no separate scheduling needed.
 #
 # Caveat for free-tier hosts that idle the service after no traffic: the
 # thread can only fire while the worker process is alive. An external ping
-# near the trigger time (e.g. UptimeRobot hitting "/" at 4:25pm ET) keeps
-# the service awake long enough for the auto-warm to kick in.
+# near a trigger time keeps the service awake long enough to kick in. If
+# the worker was asleep through BOTH triggers and wakes late, we fire a
+# single warm (freshest data) and mark every past-due trigger done, so we
+# don't redundantly warm twice back-to-back.
 
 _AUTO_WARM_STATE: dict = {
-    "last_run_date": None,   # YYYY-MM-DD of the last successful auto-trigger
-    "next_check_at": None,   # unix ts of the next periodic check
-    "trigger_time": "16:30",
+    "last_run_date": None,    # YYYY-MM-DD of the last successful auto-trigger
+    "next_check_at": None,    # unix ts of the next periodic check
+    "trigger_time": "16:30",  # first trigger (kept for back-compat in status)
+    "trigger_times": ["16:30", "19:00"],  # all configured triggers, "HH:MM"
+    "fired_today": [],        # trigger times already fired for `fired_date`
+    "fired_date": None,       # the date `fired_today` applies to
     "started": False,
 }
 _auto_warm_lock = threading.Lock()
@@ -1191,13 +1205,43 @@ def _now_et() -> datetime:
     return datetime.utcnow() - _dt.timedelta(hours=4)
 
 
-def _parse_trigger_time() -> dt_time:
-    raw = os.environ.get("AUTO_WARM_AFTER_ET", "16:30").strip()
+def _parse_one_trigger(raw: str, default: dt_time) -> dt_time | None:
+    """Parse a single 'HH:MM' string. Empty/blank → None (disabled).
+    Malformed → default."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
     try:
         hh, mm = raw.split(":")
         return dt_time(int(hh), int(mm))
     except Exception:
-        return dt_time(16, 30)
+        return default
+
+
+def _parse_trigger_times() -> list[dt_time]:
+    """Return the sorted, de-duplicated list of daily trigger times.
+    First from AUTO_WARM_AFTER_ET (default 16:30), second from
+    AUTO_WARM_SECOND_ET (default 19:00; blank disables it)."""
+    out: list[dt_time] = []
+    first = _parse_one_trigger(
+        os.environ.get("AUTO_WARM_AFTER_ET", "16:30"), dt_time(16, 30))
+    if first is not None:
+        out.append(first)
+    # The second trigger defaults ON at 19:00 ET. Pass AUTO_WARM_SECOND_ET=""
+    # to turn it off.
+    second_raw = os.environ.get("AUTO_WARM_SECOND_ET", "19:00")
+    second = _parse_one_trigger(second_raw, dt_time(19, 0))
+    if second is not None:
+        out.append(second)
+    # Dedup + sort so a "HH:MM" comparison and ordering are stable.
+    seen: set[str] = set()
+    uniq: list[dt_time] = []
+    for t in sorted(out):
+        key = t.strftime("%H:%M")
+        if key not in seen:
+            seen.add(key)
+            uniq.append(t)
+    return uniq or [dt_time(16, 30)]
 
 
 def auto_warm_status() -> dict:
@@ -1206,25 +1250,40 @@ def auto_warm_status() -> dict:
 
 
 def _auto_warm_loop() -> None:
-    trigger = _parse_trigger_time()
+    triggers = _parse_trigger_times()
+    trigger_strs = [t.strftime("%H:%M") for t in triggers]
     interval_sec = 30 * 60  # check every 30 minutes
     with _auto_warm_lock:
-        _AUTO_WARM_STATE["trigger_time"] = trigger.strftime("%H:%M")
-    log.info("auto-warm scheduler started (trigger %s ET, weekdays)", trigger.strftime("%H:%M"))
+        _AUTO_WARM_STATE["trigger_time"] = trigger_strs[0]
+        _AUTO_WARM_STATE["trigger_times"] = trigger_strs
+    log.info("auto-warm scheduler started (triggers %s ET, weekdays)",
+             ", ".join(trigger_strs))
     while True:
         try:
             now = _now_et()
             today = now.strftime("%Y-%m-%d")
-            already = False
-            with _auto_warm_lock:
-                already = _AUTO_WARM_STATE["last_run_date"] == today
-                _AUTO_WARM_STATE["next_check_at"] = time.time() + interval_sec
             is_weekday = now.weekday() < 5
-            is_after_trigger = now.time() >= trigger
-            if is_weekday and is_after_trigger and not already and not warm_status()["running"]:
-                log.info("auto-warm: triggering cache warm for %s", today)
+            with _auto_warm_lock:
+                # Reset the per-day fired set when the date rolls over.
+                if _AUTO_WARM_STATE["fired_date"] != today:
+                    _AUTO_WARM_STATE["fired_date"] = today
+                    _AUTO_WARM_STATE["fired_today"] = []
+                fired = list(_AUTO_WARM_STATE["fired_today"])
+                _AUTO_WARM_STATE["next_check_at"] = time.time() + interval_sec
+            # Past-due triggers we haven't fired yet today.
+            past_due = [s for t, s in zip(triggers, trigger_strs)
+                        if now.time() >= t and s not in fired]
+            if is_weekday and past_due and not warm_status()["running"]:
+                log.info("auto-warm: triggering cache warm for %s "
+                         "(past-due triggers: %s)", today, ", ".join(past_due))
                 if warm_cache():
                     with _auto_warm_lock:
+                        # Mark EVERY past-due trigger fired — a single warm
+                        # covers them all, so a late wake-up doesn't warm
+                        # twice back-to-back.
+                        for s in past_due:
+                            if s not in _AUTO_WARM_STATE["fired_today"]:
+                                _AUTO_WARM_STATE["fired_today"].append(s)
                         _AUTO_WARM_STATE["last_run_date"] = today
         except Exception as exc:
             log.warning("auto-warm loop error: %s", exc)
