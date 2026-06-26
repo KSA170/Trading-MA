@@ -296,6 +296,7 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
                   mid_min: float = 0.0,
                   mid_max: float = 1e9,
                   direction: str = "both",
+                  skip_scanned: bool = False,
                   ) -> dict:
     """Run the full pipeline on the top N pre-scored candidates.
 
@@ -325,6 +326,25 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
         min_distance=min_directional_distance,
     )
     pre_scored = pre_result["pre_scored"]
+    # Skip-already-scanned filter — exclude tickers that already have
+    # a saved recommendation for today's as_of. Lets the user run
+    # successive scans on the same date and page through new
+    # candidates instead of re-evaluating the same top-N every time.
+    # Applied BEFORE the direction filter and top-N slice so the
+    # "remaining pool" is what we slice from.
+    if skip_scanned:
+        try:
+            today_iso = date.today().isoformat()
+            already = opt.tickers_scanned_on(today_iso)
+        except Exception as exc:
+            log.warning("skip_scanned lookup failed: %s — disabling for this run", exc)
+            already = set()
+        if already:
+            before = len(pre_scored)
+            pre_scored = [c for c in pre_scored if c.get("ticker") not in already]
+            log.info("scan_universe: skip_scanned filter excluded %d tickers already "
+                     "scanned today (%d → %d remaining)",
+                     before - len(pre_scored), before, len(pre_scored))
     # Direction filter — drop candidates whose pre-score direction_bias
     # doesn't match what the user wants BEFORE we slice to top N. This
     # doesn't reduce per-ticker fetch cost, but it concentrates the
@@ -645,6 +665,7 @@ def start_scan(top_n: int,
                mid_min: float = 0.0,
                mid_max: float = 1e9,
                direction: str = "both",
+               skip_scanned: bool = False,
                ) -> dict:
     """Kick off scan_universe in a daemon thread. Returns a status snapshot
     with `started` = True if a new run kicked off, False if one was
@@ -705,6 +726,7 @@ def start_scan(top_n: int,
                 min_directional_distance=min_directional_distance,
                 mid_min=mid_min, mid_max=mid_max,
                 direction=direction,
+                skip_scanned=skip_scanned,
             )
             with _scan_lock:
                 _scan_state["last_result"] = result
@@ -810,6 +832,12 @@ DEFAULT_SETTINGS: dict = {
     # pre-score pool BEFORE the top-N slice so the surviving
     # results all match the user's intent.
     "direction": "both",
+    # Skip-already-scanned toggle. Off by default so the existing
+    # behavior (re-run cache-warm scans on the same top-N) is
+    # preserved. On: successive scans on the same as_of page through
+    # new candidates by filtering out tickers already in
+    # options_recommendations for that date.
+    "skip_scanned": False,
 }
 _VALID_DIRECTIONS = ("call", "put", "both")
 
@@ -842,6 +870,15 @@ def _clamp_settings(raw: dict) -> dict:
             v = str(v).strip().lower()
             out[k] = v if v in _VALID_DIRECTIONS else default
             continue
+        # Skip-scanned is a boolean — coerce truthy strings ("1",
+        # "true", etc.) since the API surface accepts both JSON booleans
+        # and stringy query-style values.
+        if k == "skip_scanned":
+            if isinstance(v, bool):
+                out[k] = v
+            else:
+                out[k] = str(v).strip().lower() in ("1", "true", "yes", "on")
+            continue
         try:
             v = float(v) if isinstance(default, float) else int(v)
         except (TypeError, ValueError):
@@ -870,7 +907,8 @@ def load_settings() -> dict:
         with snapshots._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT price_floor, volume_floor, min_directional_distance, "
-                "       top_n, dte_min, dte_max, mid_min, mid_max, direction "
+                "       top_n, dte_min, dte_max, mid_min, mid_max, direction, "
+                "       skip_scanned "
                 "FROM options_scan_config WHERE id = 1"
             )
             row = cur.fetchone()
@@ -886,6 +924,7 @@ def load_settings() -> dict:
             "mid_min": row[6],
             "mid_max": row[7],
             "direction": row[8],
+            "skip_scanned": row[9],
         })
     except Exception as exc:
         log.warning("load_settings failed (using defaults): %s", exc)
@@ -906,8 +945,9 @@ def save_settings(raw: dict) -> dict:
             cur.execute(
                 "INSERT INTO options_scan_config "
                 "  (id, price_floor, volume_floor, min_directional_distance, "
-                "   top_n, dte_min, dte_max, mid_min, mid_max, direction, updated_at) "
-                "VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
+                "   top_n, dte_min, dte_max, mid_min, mid_max, direction, "
+                "   skip_scanned, updated_at) "
+                "VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
                 "ON CONFLICT (id) DO UPDATE SET "
                 "  price_floor = EXCLUDED.price_floor, "
                 "  volume_floor = EXCLUDED.volume_floor, "
@@ -918,11 +958,13 @@ def save_settings(raw: dict) -> dict:
                 "  mid_min = EXCLUDED.mid_min, "
                 "  mid_max = EXCLUDED.mid_max, "
                 "  direction = EXCLUDED.direction, "
+                "  skip_scanned = EXCLUDED.skip_scanned, "
                 "  updated_at = now()",
                 (settings["price_floor"], int(settings["volume_floor"]),
                  settings["min_directional_distance"],
                  settings["top_n"], settings["dte_min"], settings["dte_max"],
-                 settings["mid_min"], settings["mid_max"], settings["direction"]),
+                 settings["mid_min"], settings["mid_max"], settings["direction"],
+                 bool(settings["skip_scanned"])),
             )
     except Exception as exc:
         log.warning("save_settings failed: %s", exc)

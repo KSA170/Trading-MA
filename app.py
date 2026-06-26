@@ -1283,6 +1283,12 @@ def api_options_scan():
     direction = str(body.get("direction") or saved["direction"]).strip().lower()
     if direction not in ("call", "put", "both"):
         direction = "both"
+    # Skip-scanned is a boolean — accept JSON bool or stringy truthy.
+    raw_skip = body.get("skip_scanned", saved.get("skip_scanned", False))
+    if isinstance(raw_skip, bool):
+        skip_scanned = raw_skip
+    else:
+        skip_scanned = str(raw_skip).strip().lower() in ("1", "true", "yes", "on")
     top_n = max(1, min(top_n, 200))
     return jsonify(options_scanner.start_scan(
         top_n=top_n, dte_min=dte_min, dte_max=dte_max, persist=True,
@@ -1290,6 +1296,7 @@ def api_options_scan():
         min_directional_distance=min_dist,
         mid_min=mid_min, mid_max=mid_max,
         direction=direction,
+        skip_scanned=skip_scanned,
     ))
 
 

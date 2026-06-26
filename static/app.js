@@ -245,6 +245,7 @@ const els = {
   optionsAdvMidMin: $('#options-adv-mid-min'),
   optionsAdvMidMax: $('#options-adv-mid-max'),
   optionsAdvDirection: $('#options-adv-direction'),
+  optionsAdvSkipScanned: $('#options-adv-skip-scanned'),
   optionsAdvSave: $('#options-adv-save'),
   optionsAdvReset: $('#options-adv-reset'),
   optionsAdvStatus: $('#options-adv-status'),
@@ -5266,6 +5267,11 @@ function _readAdvancedFilters() {
   // value when the user explicitly flipped the dropdown.
   if (els.optionsAdvDirection && els.optionsAdvDirection.value)
     out.direction = els.optionsAdvDirection.value;
+  // Skip-scanned is a checkbox — always include the current state so
+  // the backend doesn't fall back to a stale saved value when the user
+  // explicitly toggles it.
+  if (els.optionsAdvSkipScanned)
+    out.skip_scanned = !!els.optionsAdvSkipScanned.checked;
   return out;
 }
 
@@ -5299,6 +5305,10 @@ function _applySettingsToUI(settings) {
     const want = String(settings.direction).toLowerCase();
     const opt = Array.from(els.optionsAdvDirection.options).find(o => o.value === want);
     if (opt) els.optionsAdvDirection.value = want;
+  }
+  // Skip-scanned checkbox — coerce truthy server values.
+  if (els.optionsAdvSkipScanned && settings.skip_scanned !== undefined) {
+    els.optionsAdvSkipScanned.checked = !!settings.skip_scanned;
   }
 }
 
