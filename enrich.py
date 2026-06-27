@@ -439,49 +439,7 @@ def _fmt_pe(x: float | None) -> str:
     return f"{x:.1f}"
 
 
-def format_insider_line(t: dict | None) -> str | None:
-    """One-line HTML summary for Telegram. Returns None if no data."""
-    if not t:
-        return None
-    code = t.get("code_label") or "transaction"
-    shares = t.get("shares") or 0
-    val = t.get("value") or 0
-    date = t.get("transaction_date") or t.get("filing_date") or "?"
-    who_parts = [p for p in (t.get("owner"), t.get("title")) if p]
-    who = " — ".join(who_parts) if who_parts else "insider"
-    val_str = _fmt_big(val) if val else "—"
-    return (
-        f"📋 Insider: <b>{code}</b> {int(shares):,} sh "
-        f"({val_str}) by {who} on {date}"
-    )
-
-
-def format_fundamentals_line(f: dict | None) -> str | None:
-    """One-line HTML summary for Telegram. Returns None if every
-    field is missing."""
-    if not f or not any(v is not None for v in f.values()):
-        return None
-    parts: list[str] = []
-    if f.get("market_cap") is not None:
-        parts.append(f"MCap {_fmt_big(f['market_cap'])}")
-    if f.get("trailing_pe") is not None or f.get("forward_pe") is not None:
-        parts.append(
-            f"P/E {_fmt_pe(f.get('trailing_pe'))} "
-            f"(fwd {_fmt_pe(f.get('forward_pe'))})"
-        )
-    if f.get("revenue") is not None:
-        rev = _fmt_big(f["revenue"])
-        if f.get("revenue_growth_yoy") is not None:
-            sign = "+" if f["revenue_growth_yoy"] >= 0 else ""
-            rev += f" ({sign}{_fmt_pct(f['revenue_growth_yoy'], 0)} YoY)"
-        parts.append(f"Rev {rev}")
-    if f.get("gross_margin") is not None:
-        parts.append(f"GM {_fmt_pct(f['gross_margin'], 0)}")
-    if f.get("operating_margin") is not None:
-        parts.append(f"OpM {_fmt_pct(f['operating_margin'], 0)}")
-    if f.get("debt_to_equity") is not None:
-        # yfinance returns 45.2 to mean 0.452 (i.e. 45.2%); show as 0.45×
-        parts.append(f"D/E {f['debt_to_equity'] / 100:.2f}")
-    if not parts:
-        return None
-    return "📊 " + " · ".join(parts)
+# NOTE: insider / fundamentals line formatting moved to tg_format
+# (tg_format.insider_row / tg_format.fundamentals_rows) so all Telegram
+# messages share one row style. format_news_block stays here since it's
+# news-data-specific (relative timestamps, summary truncation).

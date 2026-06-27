@@ -942,31 +942,36 @@ def _format_alert(rule_name: str, hit, as_of: datetime,
                   insider: dict | None = None,
                   fund: dict | None = None,
                   news: list | None = None) -> str:
-    """Telegram body for a screener-rule trigger. Header → metrics →
-    insider/fund/news enrichment → analysis + verdict + entry reco."""
-    import html as _html
+    """Telegram body for a screener-rule trigger, in the shared
+    tg_format style: header → metric rows (with severity callouts) →
+    enrichment rows → analysis + verdict + entry reco."""
     import enrich
-    name = getattr(hit, "name", None) or ""
-    name_part = f" — {_html.escape(name)}" if name else ""
-    lines = [
-        f"<b>[{_html.escape(rule_name)}]</b>",
-        f"🚀 <b>{_html.escape(hit.ticker)}</b>{name_part}",
-        f"💵 Price <b>${hit.close:.2f}</b> ({hit.pct_change:+.2f}%)",
-        "",
-        f"📈 Momentum <b>{hit.momentum_score:.0f}/100</b>  ·  "
-        f"🔥 RVOL <b>{hit.rel_volume:.2f}×</b>  ·  "
-        f"RSI {hit.rsi:.1f}  ·  MACD hist {hit.macd_hist:+.3f}",
-    ]
-    insider_line = enrich.format_insider_line(insider)
+    import tg_format as T
+    name = getattr(hit, "name", None) or None
+    rvol = getattr(hit, "rel_volume", None)
+    pct = getattr(hit, "pct_change", None)
+
+    lines = T.header("SCREENER ALERT", hit.ticker, name=name,
+                     when=T.time_et(as_of))
+    lines.append(T.row("🏷", "Rule", T.b(rule_name)))
     lines.append("")
-    if insider_line: lines.append(insider_line)
-    else:            lines.append("📋 Insider: ❌ <i>(no recent Form 4 activity)</i>")
-    fund_line = enrich.format_fundamentals_line(fund)
-    if fund_line: lines.append(fund_line)
+    lines += [
+        T.severity_row("💰", "Price",
+                       T.b(T.money(getattr(hit, "close", None)))
+                       + f" ({T.signed_pct(pct)})",
+                       T.pct_change_level(pct)),
+        T.row("📈", "Momentum", T.b(f"{hit.momentum_score:.0f}/100")),
+        T.severity_row("🔥", "RVOL", T.b(T.multiple(rvol)), T.rvol_level(rvol)),
+        T.row("📊", "RSI / MACD",
+              f"RSI {hit.rsi:.1f} · MACD hist {hit.macd_hist:+.3f}"),
+    ]
+    lines += T.fundamentals_rows(fund)
+    lines.append(T.insider_row(insider))
     news_block = enrich.format_news_block(news)
     if news_block:
         lines.append("")
         lines.append(news_block)
+
     v = _verdict_screener(hit)
     lines.append("")
     lines.append(_analysis_screener(hit, v, insider, news))
@@ -975,8 +980,8 @@ def _format_alert(rule_name: str, hit, as_of: datetime,
         f"<i>({v['score']}/{v['max']})</i>"
     )
     entry = _entry_reco_screener(hit)
-    if entry: lines.append(entry)
-    lines.append(f"<i>Market data as of {as_of.strftime('%Y-%m-%d %H:%M')} ET</i>")
+    if entry:
+        lines.append(entry)
     return "\n".join(lines)
 
 
@@ -984,34 +989,33 @@ def _format_setup_alert(rule_name: str, result: dict, snapshot_date: str,
                         insider: dict | None = None,
                         fund: dict | None = None,
                         news: list | None = None) -> str:
-    """Telegram body for a setup-rule trigger. Same enrichment shape as
-    _format_alert; metrics block surfaces the three sub-scores (base /
-    ignition / earliness) which explain *why* the overall score is what
-    it is."""
-    import html as _html
+    """Telegram body for a setup-rule trigger. Same shared style as
+    _format_alert; the score row surfaces the three sub-scores
+    (base / ignition / earliness) that explain the overall score."""
     import enrich
-    name = result.get("name") or ""
-    name_part = f" — {_html.escape(name)}" if name else ""
-    lines = [
-        f"<b>[{_html.escape(rule_name)}]</b>  Setup",
-        f"🚀 <b>{_html.escape(result['ticker'])}</b>{name_part}",
-        f"💵 Price <b>${result['close']:.2f}</b>",
-        "",
-        f"⚡ Setup score <b>{result['score']:.0f}</b>/100  "
-        f"<i>(base {result['base_quality']*100:.0f} · "
-        f"ign {result['ignition']*100:.0f} · "
-        f"early {result['earliness']*100:.0f})</i>",
-    ]
-    insider_line = enrich.format_insider_line(insider)
+    import tg_format as T
+    name = result.get("name") or None
+
+    lines = T.header("SETUP ALERT", result["ticker"], name=name,
+                     emoji="⚡")
+    lines.append(T.row("🏷", "Rule", T.b(rule_name)))
+    lines.append(T.row("🗓", "Snapshot", snapshot_date))
     lines.append("")
-    if insider_line: lines.append(insider_line)
-    else:            lines.append("📋 Insider: ❌ <i>(no recent Form 4 activity)</i>")
-    fund_line = enrich.format_fundamentals_line(fund)
-    if fund_line: lines.append(fund_line)
+    lines += [
+        T.row("💰", "Price", T.b(T.money(result.get("close")))),
+        T.row("⚡", "Setup score", T.b(f"{result['score']:.0f}/100")),
+        T.row("🔬", "Sub-scores",
+              f"base {result['base_quality']*100:.0f} · "
+              f"ign {result['ignition']*100:.0f} · "
+              f"early {result['earliness']*100:.0f}"),
+    ]
+    lines += T.fundamentals_rows(fund)
+    lines.append(T.insider_row(insider))
     news_block = enrich.format_news_block(news)
     if news_block:
         lines.append("")
         lines.append(news_block)
+
     v = _verdict_setup(result)
     lines.append("")
     lines.append(_analysis_setup(result, v))
@@ -1020,8 +1024,8 @@ def _format_setup_alert(rule_name: str, result: dict, snapshot_date: str,
         f"<i>({v['score']:.0f}/{v['max']})</i>"
     )
     entry = _entry_reco_setup(result)
-    if entry: lines.append(entry)
-    lines.append(f"<i>Snapshot {snapshot_date}</i>")
+    if entry:
+        lines.append(entry)
     return "\n".join(lines)
 
 

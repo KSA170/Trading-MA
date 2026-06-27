@@ -1036,57 +1036,51 @@ def compute_verdict(m: dict,
 def _format_telegram(ticker: str, m: dict, cfg: dict,
                      insider: dict | None = None,
                      fund: dict | None = None,
-                     news: list[dict] | None = None) -> str:
-    """Build the HTML Telegram body. Header (ticker + name, price)
-    followed by a bold-metric block, then enrichment sections, then
-    the verdict footer. Insider line is ALWAYS emitted — when there's
-    no Form 4 data we surface that explicitly with ❌ rather than
-    silently omitting the line."""
+                     news: list[dict] | None = None,
+                     when: "datetime | None" = None) -> str:
+    """Build the HTML Telegram body in the shared tg_format style:
+    header (category — ticker / company / time) → a vertical block of
+    label:value metric rows with severity callouts → enrichment rows
+    (insider / fundamentals / catalysts) → verdict footer."""
     import enrich
-    import html as _html
     import tickers as _tickers
-    # Prefer the SEC-sourced local name over yfinance's .info["longName"].
-    # yfinance occasionally returns a wrong/stale name for delisted or
-    # ticker-recycled symbols (e.g. CCXI surfaced as "Churchill Capital
-    # Corp" after ChemoCentryx's 2022 delisting). Every other formatter
-    # in the codebase already goes through tickers.company_name; this
-    # brings the momentum scanner in line. company_name returns the
-    # ticker itself when the SEC dict has no entry — treat that as
-    # "no local name" and fall back to yfinance.
+    import tg_format as T
+    # Prefer the SEC-sourced local name over yfinance's .info["longName"]
+    # (yfinance returns wrong/stale names for delisted/recycled tickers).
     local_name = _tickers.company_name(ticker)
     name = (local_name
             if local_name and local_name.upper() != ticker.upper()
             else (fund or {}).get("name"))
-    name_part = f" — {_html.escape(name)}" if name else ""
     today_vol = _fmt_compact_vol(m.get("today_vol") or 0)
     avg_vol   = _fmt_compact_vol(m.get("avg_vol") or 0)
     rvol_lb   = int(cfg.get("rvol_lookback", 20))
-    lines = [
-        f"🚀 <b>{_html.escape(ticker)}</b>{name_part}",
-        f"💵 Price <b>${m['price']:.2f}</b>",
-        "",
-        f"📈 <b>+{m['pct_change']:.2f}%</b> today  ·  "
-        f"🔥 RVOL <b>{m['rvol']:.2f}×</b> "
-        f"<i>({today_vol} ÷ {avg_vol} {rvol_lb}d avg)</i>",
-        f"🎯 <b>New {cfg['high_lookback']}-day high</b> "
-        f"(prior ${m['prior_high_n']:.2f})  ·  "
-        f"🌊 <b>{m['vol_mcap_pct']:.2f}%</b> of float",
+
+    pct = m.get("pct_change")
+    rvol = m.get("rvol")
+    vmp = m.get("vol_mcap_pct")
+
+    lines = T.header("LIVE ALERT", ticker, name=name, when=T.time_et(when))
+    lines += [
+        T.row("💰", "Price", T.b(T.money(m.get("price")))),
+        T.severity_row("📊", "Change",
+                       T.b(T.signed_pct(pct)) + " today",
+                       T.pct_change_level(pct)),
+        T.severity_row("🔥", f"RVOL({rvol_lb})",
+                       T.b(T.multiple(rvol)) + f" <i>({today_vol} ÷ {avg_vol} {rvol_lb}d avg)</i>",
+                       T.rvol_level(rvol)),
+        T.severity_row("🌊", "Vol/Float",
+                       T.b(T.signed_pct(vmp, 2).lstrip("+")),
+                       T.vol_float_level(vmp)),
+        T.row("🎯", f"New {cfg['high_lookback']}-day high",
+              f"prior {T.money(m.get('prior_high_n'))}"),
     ]
-    # Insider always shows — placeholder when no Form 4 data.
-    insider_line = enrich.format_insider_line(insider)
-    lines.append("")
-    if insider_line:
-        lines.append(insider_line)
-    else:
-        lines.append("📋 Insider: ❌ <i>(no recent Form 4 activity)</i>")
-    fund_line = enrich.format_fundamentals_line(fund)
-    if fund_line:
-        lines.append(fund_line)
+    lines += T.fundamentals_rows(fund)
+    lines.append(T.insider_row(insider))
     news_block = enrich.format_news_block(news)
     if news_block:
         lines.append("")
         lines.append(news_block)
-    # Verdict footer — based on the collective signal + catalysts.
+    # Verdict footer.
     v = compute_verdict(m, insider, news)
     lines.append("")
     lines.append(
@@ -1191,7 +1185,8 @@ def run() -> int:
         insider = enrich.last_insider_transaction(ticker)
         fund = enrich.fundamentals(ticker)
         news = enrich.recent_news(ticker)
-        msg = _format_telegram(ticker, m, cfg, insider=insider, fund=fund, news=news)
+        msg = _format_telegram(ticker, m, cfg, insider=insider, fund=fund,
+                               news=news, when=now_et)
         try:
             ok = alerts_mod.send_telegram(msg)
             if not ok:

@@ -535,21 +535,27 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
 
 
 def format_digest_for_telegram(scan_result: dict) -> str:
-    """Markdown body for the Telegram nightly digest. Kept under
-    ~4000 chars to fit one message. Truncates the digest list with a
-    "+N more" line if it overflows."""
+    """HTML body for the Telegram nightly options digest. Kept under
+    ~4000 chars to fit one message; truncates with a "+N more" line if
+    it overflows. (Previously Markdown — which rendered with literal
+    '*'/'_' under send_telegram's HTML parse mode.)"""
+    import tg_format as T
     as_of = scan_result.get("as_of") or date.today().isoformat()
     digest = scan_result.get("digest") or []
+    scanned = scan_result.get("scanned", 0)
+
     if not digest:
-        return (
-            f"📊 *Options scan — {as_of}*\n"
-            f"_{scan_result.get('scanned', 0)} tickers scanned, "
-            f"none cleared BUY or high-conviction WATCH._\n"
-            f"Sit out today; no setups stacked enough across the 5 layers."
-        )
+        return "\n".join([
+            f"📊 <b>OPTIONS SCAN — {T.esc(as_of)}</b>",
+            T.i(f"{scanned} tickers scanned · none cleared "
+                f"BUY or high-conviction WATCH"),
+            "",
+            "Sit out today; no setups stacked enough across the 5 layers.",
+        ])
+
     header = (
-        f"📊 *Options scan — {as_of}*\n"
-        f"_{len(digest)} setup(s) from {scan_result.get('scanned', 0)} scanned_\n"
+        f"📊 <b>OPTIONS SCAN — {T.esc(as_of)}</b>\n"
+        f"{T.i(f'{len(digest)} setup(s) from {scanned} scanned')}\n"
     )
 
     glyph = {"BUY": "🟢", "WATCH": "🟡"}
@@ -566,10 +572,10 @@ def format_digest_for_telegram(scan_result: dict) -> str:
         contract = r.get("contract") or {}
         post_e = r.get("post_earnings_override")
         head = (
-            f"{glyph.get(verdict, '⚪')} *{ticker}*  "
+            f"{glyph.get(verdict, '⚪')} <b>{T.esc(ticker)}</b>  "
             f"{arrow.get(direction, '·')} · "
-            f"composite *{score}/100*"
-            f"{' · ' + conv + ' conv' if conv and conv != 'none' else ''}"
+            f"composite <b>{score}/100</b>"
+            f"{' · ' + T.esc(conv) + ' conv' if conv and conv != 'none' else ''}"
         )
         if contract:
             strike = contract.get("strike")
@@ -577,17 +583,17 @@ def format_digest_for_telegram(scan_result: dict) -> str:
             mid = contract.get("mid")
             delta = contract.get("delta")
             sub = (
-                f"   {exp} ${strike:.2f} · "
-                f"Δ {(delta or 0):+.2f} · mid ${(mid or 0):.2f}"
+                f"   {T.esc(exp)} {T.money(strike)} · "
+                f"Δ {(delta or 0):+.2f} · mid {T.money(mid)}"
                 f"{' · post-earn expiry' if post_e else ''}"
             )
         else:
-            reason = (r.get("reason") or "")[:60]
+            reason = T.esc((r.get("reason") or "")[:60])
             sub = f"   {reason}"
         block = head + "\n" + sub
         if used_chars + len(block) + 2 > 3900:
             remaining = len(digest) - len(lines)
-            lines.append(f"_…+{remaining} more (see UI)_")
+            lines.append(T.i(f"…+{remaining} more (see UI)"))
             break
         lines.append(block)
         used_chars += len(block) + 2
