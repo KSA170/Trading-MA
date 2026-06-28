@@ -53,21 +53,24 @@ def main() -> int:
     n = picker.save_picks(picks, as_of)
     log.info("wrote %d picks for %s", n, as_of)
 
-    # Telegram digest. Format: rank · ticker · composite · sub-score
-    # breakdown so the recipient sees at-a-glance which signals are
-    # driving each pick. Kept terse (≤ 4000 chars) to fit in one
-    # Telegram message.
+    # Telegram digest (HTML — send_telegram forces parse_mode=HTML, so
+    # the old Markdown '*'/'_' rendered as literal characters). Format:
+    # rank · ticker · composite · sub-score breakdown so the recipient
+    # sees at-a-glance which signals drive each pick. Kept terse
+    # (≤ 4000 chars) to fit one message.
+    import tg_format as T
     header = (
-        f"📊 *Nightly watchlist for {as_of}*\n"
-        f"_Top {len(picks)} by composite — VC/RS/VA/MT/DP_\n"
+        f"📊 <b>NIGHTLY WATCHLIST — {T.esc(as_of)}</b>\n"
+        f"{T.i(f'Top {len(picks)} by composite · VC/RS/VA/MT/DP')}\n"
     )
     body_lines = []
     for p in picks:
         body_lines.append(
-            f"{p['rank']:>2}. *{p['ticker']}* · {p['composite']:.0f}  "
-            f"(VC {p['vc_score']:.0f} · RS {p['rs_score']:.0f} · "
+            f"{p['rank']:>2}. <b>{T.esc(p['ticker'])}</b> · "
+            f"<b>{p['composite']:.0f}</b>  "
+            f"<i>VC {p['vc_score']:.0f} · RS {p['rs_score']:.0f} · "
             f"VA {p['va_score']:.0f} · MT {p['mt_score']:.0f} · "
-            f"DP {p['dp_score']:.0f})"
+            f"DP {p['dp_score']:.0f}</i>"
         )
     body = header + "\n".join(body_lines)
     try:

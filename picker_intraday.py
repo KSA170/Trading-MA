@@ -320,24 +320,30 @@ def _evaluate_orb(bars: list[dict],
 # --- Telegram -------------------------------------------------------------
 
 def _format_telegram(ticker: str, trigger_type: str, evt: dict) -> str:
-    """One-line Telegram payload, dispatched on trigger type. HTML mode
-    (matches scanner_momentum); the picks-intraday channel uses the
-    same parse-mode wrapper in alerts.send_telegram."""
-    if trigger_type == "pivot_breakout":
-        return (
-            f"🎯 <b>{ticker}</b> · 20-day pivot breakout · "
-            f"<b>${evt['price']:.2f}</b>\n"
-            f"<i>Closed above prior 20-day high ${evt['ref_level']:.2f} "
-            f"on {evt['rvol']:.1f}× avg 5-min volume.</i>"
-        )
-    if trigger_type == "orb":
-        return (
-            f"🚀 <b>{ticker}</b> · Opening Range Breakout · "
-            f"<b>${evt['price']:.2f}</b>\n"
-            f"<i>Closed above 15-min opening high ${evt['ref_level']:.2f} "
-            f"on {evt['rvol']:.1f}× opening-range volume.</i>"
-        )
-    return f"⚡ <b>{ticker}</b> · {trigger_type} · ${evt.get('price', 0):.2f}"
+    """Telegram body for an intraday breakout, in the shared tg_format
+    style. HTML mode (send_telegram forces parse_mode=HTML)."""
+    import tg_format as T
+    label = {
+        "pivot_breakout": "20-day pivot breakout",
+        "orb": "Opening Range Breakout",
+    }.get(trigger_type, trigger_type)
+    emoji = {"pivot_breakout": "🎯", "orb": "🚀"}.get(trigger_type, "⚡")
+    level_desc = {
+        "pivot_breakout": "closed above prior 20-day high",
+        "orb": "closed above 15-min opening high",
+    }.get(trigger_type)
+
+    lines = T.header("INTRADAY BREAKOUT", ticker, emoji=emoji)
+    lines.append(T.row("🏷", "Trigger", T.b(label)))
+    lines.append(T.row("💰", "Price", T.b(T.money(evt.get("price")))))
+    ref = evt.get("ref_level")
+    if level_desc and ref is not None:
+        lines.append(T.row("📈", "Level", f"{level_desc} {T.money(ref)}"))
+    rvol = evt.get("rvol")
+    if rvol is not None:
+        lines.append(T.severity_row("🔥", "RVOL", T.b(T.multiple(rvol)),
+                                    T.rvol_level(rvol)))
+    return "\n".join(lines)
 
 
 def run() -> int:
