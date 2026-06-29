@@ -750,6 +750,12 @@ const FILTER_DEFAULTS_KEY = 'filter_defaults_v1'; // legacy single-default
 const MAX_PRESETS = 5;
 let _presetCache = { presets: [], last_used: null, max: MAX_PRESETS };
 let _presetsHydrated = false;
+// The name of the preset whose values are currently loaded. Tracked
+// separately from the dropdown because the dropdown snaps back to its
+// placeholder after each load (so the same preset can be re-selected —
+// a native <select> won't re-fire 'change' for the option it already
+// shows). Drives the Delete button.
+let _presetActiveName = '';
 
 function setDefaultsMsg(text, kind) {
   if (!els.defaultsMsg) return;
@@ -825,8 +831,17 @@ function renderPresetOptions(store, selectedName) {
 
 function updatePresetButtonState(store) {
   const count = store.presets.length;
-  const hasSelection = els.presetsSelect && !!els.presetsSelect.value;
-  if (els.presetDeleteBtn) els.presetDeleteBtn.disabled = !hasSelection;
+  // Delete keys off the tracked active preset, not the live dropdown
+  // value, because the dropdown snaps back to its placeholder after each
+  // load (see onPresetSelect).
+  const hasActive = !!_presetActiveName
+    && store.presets.some((p) => p.name === _presetActiveName);
+  if (els.presetDeleteBtn) {
+    els.presetDeleteBtn.disabled = !hasActive;
+    els.presetDeleteBtn.title = hasActive
+      ? `Delete the loaded filter "${_presetActiveName}".`
+      : 'Load a saved filter to delete it.';
+  }
   if (els.presetSaveBtn) {
     els.presetSaveBtn.title = count >= (store.max || MAX_PRESETS)
       ? `You have ${count} saved (the max). Saving will overwrite an existing name.`
@@ -846,7 +861,11 @@ function _applyStoreFromResponse(data, selectedName) {
 }
 
 async function savePreset() {
-  const current = (els.presetsSelect && els.presetsSelect.value) || '';
+  // Pre-fill with the loaded preset's name (the dropdown snaps back to
+  // its placeholder after loading) so "Save as…" defaults to overwriting
+  // the filter you're currently working from.
+  const current = _presetActiveName
+    || (els.presetsSelect && els.presetsSelect.value) || '';
   let name = window.prompt(
     `Name this filter setup (up to ${_presetCache.max || MAX_PRESETS} saved). ` +
     `Re-use a name to overwrite it.`, current);
@@ -857,7 +876,8 @@ async function savePreset() {
   setDefaultsMsg('Saving…', '');
   const { ok, status, data } = await mutatePresets('save', { name, state: collectFilterState() });
   if (ok) {
-    _applyStoreFromResponse(data, data.name || name);
+    _presetActiveName = data.name || name;
+    _applyStoreFromResponse(data, '');
     setDefaultsMsg(`Saved "${data.name || name}".`, 'ok');
   } else if (status === 409 && data.error === 'cap_reached') {
     setDefaultsMsg(
@@ -872,11 +892,18 @@ async function savePreset() {
 
 async function onPresetSelect() {
   const name = (els.presetsSelect && els.presetsSelect.value) || '';
-  updatePresetButtonState(_presetCache);
-  if (!name) return;
+  // Snap the dropdown back to the placeholder so the SAME preset can be
+  // selected again later. A native <select> doesn't re-fire 'change'
+  // when you re-pick the option it already shows, so without this the
+  // last-loaded / last-used preset silently fails to re-apply — the
+  // reported bug where the pre-selected filter "does not populate".
+  if (els.presetsSelect) els.presetsSelect.value = '';
+  if (!name) { updatePresetButtonState(_presetCache); return; }
   const preset = _presetCache.presets.find((p) => p.name === name);
-  if (!preset) return;
+  if (!preset) { updatePresetButtonState(_presetCache); return; }
+  _presetActiveName = name;
   applyFilterState(preset.state);
+  updatePresetButtonState(_presetCache);
   setDefaultsMsg(`Loaded "${name}".`, 'ok');
   // Best-effort touch — failure is fine, the values are already loaded.
   mutatePresets('select', { name }).then(({ data, ok }) => {
@@ -885,11 +912,15 @@ async function onPresetSelect() {
 }
 
 async function deletePreset() {
-  const name = (els.presetsSelect && els.presetsSelect.value) || '';
+  // Delete the loaded preset (the dropdown has snapped back to its
+  // placeholder), falling back to the dropdown value just in case.
+  const name = _presetActiveName
+    || (els.presetsSelect && els.presetsSelect.value) || '';
   if (!name) return;
   setDefaultsMsg('Deleting…', '');
   const { ok, data } = await mutatePresets('delete', { name });
   if (ok) {
+    if (_presetActiveName === name) _presetActiveName = '';
     _applyStoreFromResponse(data, '');
     setDefaultsMsg(`Deleted "${name}".`, '');
   } else {
@@ -956,10 +987,17 @@ async function loadFilterDefaults() {
     try { localStorage.removeItem(FILTER_PRESETS_KEY); } catch (_) {}
     try { localStorage.removeItem(FILTER_DEFAULTS_KEY); } catch (_) {}
   }
-  _applyStoreFromResponse(data, data.last_used || '');
+  // Leave the dropdown on its placeholder (don't pre-select last_used),
+  // so that selecting last_used later still fires 'change' and loads.
+  _applyStoreFromResponse(data, '');
   if (data.last_used) {
     const preset = (data.presets || []).find((p) => p.name === data.last_used);
-    if (preset) applyFilterState(preset.state);
+    if (preset) {
+      _presetActiveName = data.last_used;
+      applyFilterState(preset.state);
+      updatePresetButtonState(_presetCache);
+      setDefaultsMsg(`Loaded "${data.last_used}" (last used).`, '');
+    }
   }
   _presetsHydrated = true;
 }
