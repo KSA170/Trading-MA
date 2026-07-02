@@ -18,11 +18,9 @@
 <body>
   <header class="topbar">
     <h1>Trading MA <span class="muted">— Breakout Screener</span></h1>
-    <nav class="app-tabs" role="tablist" aria-label="Workspace">
-      <button id="tab-btn-stock"          type="button" class="app-tab active" role="tab" aria-selected="true"  aria-controls="tab-stock"          data-tab="stock">Stock screener</button>
-      <button id="tab-btn-stock-report"   type="button" class="app-tab"        role="tab" aria-selected="false" aria-controls="tab-stock-report"   data-tab="stock-report">Stock Strategy Report</button>
-      <button id="tab-btn-options"        type="button" class="app-tab"        role="tab" aria-selected="false" aria-controls="tab-options"        data-tab="options">Options screener</button>
-      <button id="tab-btn-options-report" type="button" class="app-tab"        role="tab" aria-selected="false" aria-controls="tab-options-report" data-tab="options-report">Options Strategy Report</button>
+    <nav class="app-tabs workspaces" role="tablist" aria-label="Workspace">
+      <button id="tab-btn-stock"   type="button" class="app-tab active" role="tab" aria-selected="true"  data-ws="stocks">Stocks</button>
+      <button id="tab-btn-options" type="button" class="app-tab"        role="tab" aria-selected="false" data-ws="options">Options</button>
     </nav>
     <div class="status">
       <span id="status-text">idle</span>
@@ -34,13 +32,26 @@
     </div>
   </header>
 
-  <div id="tab-stock" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-stock">
+  <nav class="subtabs" id="subtabs-stocks" role="tablist" aria-label="Stocks tools">
+    <button type="button" class="subtab active" role="tab" aria-selected="true"  data-sub="screener">Screener</button>
+    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="watchlist">Watchlist</button>
+    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="momentum">Momentum</button>
+    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="setups">Setups</button>
+    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="alerts">Alerts</button>
+    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="report">Report</button>
+  </nav>
+  <nav class="subtabs" id="subtabs-options" role="tablist" aria-label="Options tools" hidden>
+    <button type="button" class="subtab active" role="tab" aria-selected="true"  data-sub="screener">Screener</button>
+    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="report">Report</button>
+  </nav>
 
-  <button id="filters-toggle" type="button" class="section-toggle" aria-controls="filters-section" aria-expanded="true">
+  <div id="tab-stock" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-stock" data-active-tool="screener">
+
+  <button id="filters-toggle" type="button" class="section-toggle" aria-controls="filters-section" aria-expanded="true" data-tool="screener">
     <span class="chevron">▾</span> Filters
   </button>
 
-  <section class="filters" id="filters-section">
+  <section class="filters" id="filters-section" data-tool="screener">
     <div class="filter-section">
       <div class="filter-section-header">Universe &amp; price</div>
       <div class="filter-section-grid">
@@ -304,7 +315,7 @@
   </section>
 
   <main class="content">
-    <section class="results">
+    <section class="results" data-tool="screener">
       <h2>
         Matches <span id="match-count" class="muted"></span>
         <span id="as-of-label" class="as-of-label muted"></span>
@@ -351,7 +362,7 @@
       </div>
     </section>
 
-    <section class="match-history picks-panel">
+    <section class="match-history picks-panel" data-tool="watchlist">
       <button id="picks-toggle" type="button" class="section-toggle" aria-controls="picks-body" aria-expanded="true">
         <span class="chevron">▾</span> Watchlist — tonight's picks <span class="muted">(top <span id="picks-count-label">25</span>, ranked by composite signal — nightly at close+1hr · gated on prior uptrend + ≤80% in 60d · intraday triggers on US names · set count in Tune…)</span>
       </button>
@@ -425,7 +436,7 @@
       </div>
     </section>
 
-    <section class="match-history momentum-panel">
+    <section class="match-history momentum-panel" data-tool="momentum">
       <button id="momentum-toggle" type="button" class="section-toggle" aria-controls="momentum-body" aria-expanded="true">
         <span class="chevron">▾</span> Real-time momentum scanner <span class="muted">(scans the full universe every ~5 min in market hours · fires when all four filters pass · Telegram + this panel)</span>
       </button>
@@ -508,7 +519,7 @@
       </div>
     </section>
 
-    <section class="match-history setups-panel">
+    <section class="match-history setups-panel" data-tool="setups">
       <button id="setups-toggle" type="button" class="section-toggle" aria-controls="setups-body" aria-expanded="true">
         <span class="chevron">▾</span> Setups <span class="muted">(base-breakout / momentum-ignition candidates from the latest snapshot)</span>
       </button>
@@ -558,7 +569,7 @@
       </div>
     </section>
 
-    <section class="match-history alerts-rules-panel">
+    <section class="match-history alerts-rules-panel" data-tool="alerts">
       <button id="rules-toggle" type="button" class="section-toggle" aria-controls="rules-body" aria-expanded="true">
         <span class="chevron">▾</span> Alert rules <span class="muted">(realtime Telegram alerts, checked every ~15 min in market hours)</span>
       </button>
@@ -800,7 +811,7 @@
 
   </div><!-- /#tab-stock -->
 
-  <div id="tab-stock-report" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-stock-report">
+  <div id="tab-stock-report" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-stock">
     <section class="report-tab">
       <div class="report-controls">
         <label class="muted">Lookback
@@ -964,7 +975,7 @@
     </section>
   </div><!-- /#tab-options -->
 
-  <div id="tab-options-report" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-options-report">
+  <div id="tab-options-report" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-options">
     <section class="report-tab">
       <div class="report-controls">
         <label class="muted">Lookback

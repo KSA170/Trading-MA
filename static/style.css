@@ -1601,6 +1601,45 @@ table.sortable th.th-drag-over {
 .tab-content.hidden { display: none; }
 button.hidden { display: none; }
 
+/* --- workspace + sub-tab navigation ---------------------------------- */
+/* Two workspace tabs (Stocks | Options) reuse the .app-tab look above.   */
+.subtabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 24px;
+  margin: 2px 0 14px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.subtabs[hidden] { display: none; }
+.subtab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 9px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  margin-bottom: -1px;
+}
+.subtab:hover { color: var(--text); }
+.subtab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+/* Inside the Stocks panel, show only the active tool's section(s). Each
+   tool section is tagged data-tool; the active tool keeps its natural
+   display, the rest are hidden. */
+#tab-stock[data-active-tool="screener"]  [data-tool]:not([data-tool="screener"]),
+#tab-stock[data-active-tool="watchlist"] [data-tool]:not([data-tool="watchlist"]),
+#tab-stock[data-active-tool="momentum"]  [data-tool]:not([data-tool="momentum"]),
+#tab-stock[data-active-tool="setups"]    [data-tool]:not([data-tool="setups"]),
+#tab-stock[data-active-tool="alerts"]    [data-tool]:not([data-tool="alerts"]) {
+  display: none !important;
+}
+
 /* --- Strategy report tabs --------------------------------------------- */
 .report-tab { padding: 16px 20px; }
 .report-controls {
