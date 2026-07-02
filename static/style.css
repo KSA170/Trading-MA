@@ -2333,3 +2333,89 @@ button.hidden { display: none; }
   line-height: 1.45;
   color: var(--text);
 }
+
+/* ===================================================================== */
+/* UI reorg phase 2 — sticky chrome + screener filter rail               */
+/* ===================================================================== */
+
+/* Keep the top bar (workspaces + Run + Warm + status) pinned so the
+   primary action stays reachable while the filters or results scroll.
+   It has a solid background and a higher z-index than the rail, so it
+   cleanly covers the sticky rail's top edge regardless of its height. */
+.topbar { position: sticky; top: 0; z-index: 30; }
+
+/* Screener workbench: filter rail on the left, results on the right.
+   Only the Screener sub-tab gets the two-column grid — the other Stocks
+   tools stay full-width (their sections just flow inside .content). */
+.screener-rail { min-width: 0; }
+#tab-stock[data-active-tool="screener"] {
+  display: grid;
+  grid-template-columns: 296px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  padding: 16px 20px;
+}
+#tab-stock[data-active-tool="screener"] > .content { padding: 0; }
+#tab-stock[data-active-tool="screener"] > .screener-rail {
+  position: sticky;
+  top: 72px;
+  align-self: start;
+  max-height: calc(100vh - 88px);
+  overflow: auto;
+}
+#tab-stock[data-active-tool="screener"] .filters {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+/* Preset bar pinned to the top of the rail. */
+.preset-bar {
+  gap: 7px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.preset-bar .presets-label { flex-basis: 100%; }
+.preset-bar #presets-select { flex: 1; min-width: 0; }
+
+/* Active-filter count badge in each section header. */
+.filter-section-header { display: flex; align-items: center; gap: 8px; }
+.fsec-count {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  border-radius: 10px;
+  padding: 1px 7px;
+  background: rgba(88, 166, 255, 0.14);
+  color: var(--accent);
+}
+.fsec-count.zero { background: var(--panel-2); color: var(--muted); }
+
+/* Active-filter chips summarizing the screen, above the results table. */
+.active-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 12px; }
+.active-chips[hidden] { display: none; }
+.active-chips .chips-label {
+  align-self: center; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+.active-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 20px; padding: 3px 5px 3px 11px; font-size: 12px;
+}
+.active-chip b { color: var(--muted); font-weight: 600; }
+.active-chip .chip-x {
+  cursor: pointer; border: none; background: transparent; color: var(--muted);
+  font-size: 14px; line-height: 1; padding: 0 3px; border-radius: 4px;
+}
+.active-chip .chip-x:hover { color: var(--red); }
+
+/* Stack the rail above the results on narrow screens. */
+@media (max-width: 900px) {
+  #tab-stock[data-active-tool="screener"] { grid-template-columns: 1fr; }
+  #tab-stock[data-active-tool="screener"] > .screener-rail {
+    position: static; max-height: none;
+  }
+}

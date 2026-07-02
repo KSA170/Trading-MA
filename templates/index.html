@@ -47,11 +47,22 @@
 
   <div id="tab-stock" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-stock" data-active-tool="screener">
 
-  <button id="filters-toggle" type="button" class="section-toggle" aria-controls="filters-section" aria-expanded="true" data-tool="screener">
+  <aside class="screener-rail" data-tool="screener">
+  <button id="filters-toggle" type="button" class="section-toggle" aria-controls="filters-section" aria-expanded="true">
     <span class="chevron">▾</span> Filters
   </button>
 
-  <section class="filters" id="filters-section" data-tool="screener">
+  <section class="filters" id="filters-section">
+    <div class="filter-actions preset-bar">
+      <label class="presets-label" for="presets-select">Saved filters</label>
+      <select id="presets-select" title="Select one of your saved filter setups to load its values, toggles and exchange selection. The last setup you select or save loads automatically next visit.">
+        <option value="">— none —</option>
+      </select>
+      <button id="preset-save-btn" type="button" title="Save the current filter values, group toggles and exchange selection under a name. You can keep up to 5. Re-using an existing name overwrites it.">Save as…</button>
+      <button id="preset-delete-btn" type="button" title="Delete the currently selected saved filter setup.">Delete</button>
+      <button id="reset-defaults-btn" type="button" title="Clear the selection and restore the built-in filter values.">Reset to built-in</button>
+      <span id="defaults-msg" class="muted"></span>
+    </div>
     <div class="filter-section">
       <div class="filter-section-header">Universe &amp; price</div>
       <div class="filter-section-grid">
@@ -298,21 +309,11 @@
       </div>
     </div>
 
-    <div class="filter-actions">
-      <label class="presets-label" for="presets-select">Saved filters</label>
-      <select id="presets-select" title="Select one of your saved filter setups to load its values, toggles and exchange selection. The last setup you select or save loads automatically next visit.">
-        <option value="">— none —</option>
-      </select>
-      <button id="preset-save-btn" type="button" title="Save the current filter values, group toggles and exchange selection under a name. You can keep up to 5. Re-using an existing name overwrites it.">Save as…</button>
-      <button id="preset-delete-btn" type="button" title="Delete the currently selected saved filter setup.">Delete</button>
-      <button id="reset-defaults-btn" type="button" title="Clear the selection and restore the built-in filter values.">Reset to built-in</button>
-      <span id="defaults-msg" class="muted"></span>
-    </div>
-
     <div class="filter-notes">
       Daily bars based on previous close. Source: Yahoo Finance. Uncheck a group to ignore that filter.
     </div>
   </section>
+  </aside>
 
   <main class="content">
     <section class="results" data-tool="screener">
@@ -320,6 +321,7 @@
         Matches <span id="match-count" class="muted"></span>
         <span id="as-of-label" class="as-of-label muted"></span>
       </h2>
+      <div id="active-chips" class="active-chips" hidden></div>
       <div class="diagnose-bar">
         <button id="diagnose-toggle" type="button" class="section-toggle" aria-controls="diagnose-body diagnose-output" aria-expanded="true">
           <span class="chevron">▾</span>

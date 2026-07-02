@@ -791,6 +791,9 @@ function applyFilterState(state) {
   syncDisabledStates();
   updateListAllState();
   updateHighHeader();
+  // Programmatic value changes don't fire input/change, so tell the
+  // filter-summary (section badges + active chips) to recompute.
+  document.dispatchEvent(new Event('filters:changed'));
 }
 
 // --- server-backed preset store -----------------------------------------
@@ -5638,3 +5641,93 @@ fetch('/api/admin/warm-status').then((r) => r.json()).then((s) => {
 }).catch(() => {});
 
 loadDates();
+
+// --- filter summary: section badges + active-filter chips -----------------
+// Additive & self-contained. Reads the live filter DOM (group toggles +
+// their inputs) to (a) badge each section header with its active-filter
+// count and (b) render removable chips above the results table. Recomputes
+// on any filter input/change and on the 'filters:changed' event that
+// applyFilterState() dispatches after loading a preset. Touches no
+// existing state and no alert/notification code.
+(function () {
+  const filters = document.getElementById('filters-section');
+  const chips = document.getElementById('active-chips');
+  if (!filters) return;
+
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+
+  function isActive(group) {
+    const t = group.querySelector('.group-toggle input[type="checkbox"]');
+    return t ? t.checked : false;
+  }
+  function groupLabel(group) {
+    const t = group.querySelector('.group-toggle');
+    if (t) return norm(t.textContent);
+    const l = group.querySelector('.group-label');
+    return l ? norm(l.textContent) : '';
+  }
+  function groupValues(group) {
+    const vals = [];
+    group.querySelectorAll('input[type="number"], input[type="text"]').forEach((inp) => {
+      if (inp.value !== '' && !inp.disabled) vals.push(inp.value);
+    });
+    return vals.slice(0, 2); // range-style groups have min/max; keep it terse
+  }
+
+  function refresh() {
+    // Section header badges.
+    filters.querySelectorAll('.filter-section').forEach((sec) => {
+      const hdr = sec.querySelector('.filter-section-header');
+      if (!hdr) return;
+      let n = 0;
+      sec.querySelectorAll('.filter-group').forEach((g) => { if (isActive(g)) n++; });
+      let badge = hdr.querySelector('.fsec-count');
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'fsec-count';
+        hdr.appendChild(badge);
+      }
+      badge.textContent = String(n);
+      badge.classList.toggle('zero', n === 0);
+    });
+
+    // Active-filter chips.
+    if (!chips) return;
+    const active = [];
+    filters.querySelectorAll('.filter-group').forEach((g) => { if (isActive(g)) active.push(g); });
+    chips.textContent = '';
+    if (!active.length) { chips.hidden = true; return; }
+    chips.hidden = false;
+    const lab = document.createElement('span');
+    lab.className = 'chips-label';
+    lab.textContent = 'Active';
+    chips.appendChild(lab);
+    active.forEach((g) => {
+      const label = groupLabel(g);
+      const vals = groupValues(g);
+      const chip = document.createElement('span');
+      chip.className = 'active-chip';
+      const b = document.createElement('b');
+      b.textContent = label;
+      chip.appendChild(b);
+      if (vals.length) chip.appendChild(document.createTextNode(' ' + vals.join('–')));
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'chip-x';
+      x.textContent = '×';
+      x.title = 'Turn off ' + label;
+      x.addEventListener('click', () => {
+        const t = g.querySelector('.group-toggle input[type="checkbox"]');
+        if (t) { t.checked = false; t.dispatchEvent(new Event('change', { bubbles: true })); }
+        refresh();
+      });
+      chip.appendChild(x);
+      chips.appendChild(chip);
+    });
+  }
+
+  filters.addEventListener('change', refresh);
+  filters.addEventListener('input', refresh);
+  document.addEventListener('filters:changed', refresh);
+  refresh();
+})();
