@@ -284,6 +284,27 @@ def digest_filter(rec: dict) -> bool:
     return False
 
 
+def _mid_filter_active(mid_min: float, mid_max: float) -> bool:
+    """The option-price (contract mid) filter is a no-op only when the
+    range is left wide open — a narrowed min OR max activates it."""
+    return mid_min > 0 or mid_max < 1e8
+
+
+def _mid_in_range(rec: dict, mid_min: float, mid_max: float) -> bool:
+    """True if the rec's chosen contract mid price is within
+    [mid_min, mid_max]. A rec with no contract / no parsable mid is
+    treated as out-of-range (dropped) when the filter is active."""
+    c = rec.get("contract") or {}
+    mid = c.get("mid")
+    try:
+        m = float(mid) if mid is not None else None
+    except (TypeError, ValueError):
+        m = None
+    if m is None:
+        return False
+    return mid_min <= m <= mid_max
+
+
 def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
                   dte_min: int = 15,
                   dte_max: int = 60,
@@ -364,6 +385,13 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
              len(pool), len(pre_scored), "HIT" if was_cached else "MISS")
 
     out_recs: list[dict] = []
+    # Option-price (contract mid) filter. Applied INSIDE the loop, before
+    # persisting, so contracts outside the user's range never reach the
+    # DB — otherwise the UI (which reads recommendations from the DB) and
+    # any DB-backed view would show them and the setting would appear
+    # ignored.
+    mid_filter_on = _mid_filter_active(mid_min, mid_max)
+    mid_filtered_out = 0
     # Per-ticker hard cap (seconds). recommend_for_ticker makes ~10-15
     # yfinance + Finnhub calls per ticker with no built-in timeout — a
     # single hung call could stall the whole scan. Wrap each call in a
@@ -474,6 +502,12 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
             # Tag with the pre-score for transparency in the digest.
             rec["pre_composite"] = cand["pre_composite"]
             rec["pre_direction_bias"] = cand["direction_bias"]
+            # Drop contracts outside the user's option-price range BEFORE
+            # persisting — keeps out-of-range recs out of both the DB/UI
+            # and the returned recommendations + Telegram digest.
+            if mid_filter_on and not _mid_in_range(rec, mid_min, mid_max):
+                mid_filtered_out += 1
+                continue
             out_recs.append(rec)
             if persist:
                 try:
@@ -494,25 +528,11 @@ def scan_universe(top_n: int = DEFAULT_NIGHTLY_TOP_N,
     # strongest directional setups first.
     out_recs.sort(key=lambda r: -abs((r.get("composite_score") or 50) - 50))
 
-    # Post-filter on the chosen contract's mid price. Only applied when
-    # the user has narrowed the range from "no filter" defaults — a
-    # full-width range (0, 1e9) is treated as a no-op so existing
-    # callers and the nightly cron behave exactly as before.
-    pre_mid_filter_count = len(out_recs)
-    if mid_min > 0 or mid_max < 1e8:
-        def _in_mid_range(r: dict) -> bool:
-            c = r.get("contract") or {}
-            mid = c.get("mid")
-            try:
-                m = float(mid) if mid is not None else None
-            except (TypeError, ValueError):
-                m = None
-            if m is None:
-                return False   # no contract / no mid → drop when filter active
-            return mid_min <= m <= mid_max
-        out_recs = [r for r in out_recs if _in_mid_range(r)]
-        log.info("scan_universe: mid-price filter [%.2f, %.2f] kept %d of %d recs",
-                 mid_min, mid_max, len(out_recs), pre_mid_filter_count)
+    # The option-price (contract mid) filter was applied per-rec above,
+    # before persistence — see the loop. Just report what it dropped.
+    if mid_filter_on:
+        log.info("scan_universe: mid-price filter [%.2f, %.2f] kept %d, dropped %d",
+                 mid_min, mid_max, len(out_recs), mid_filtered_out)
 
     digest = [r for r in out_recs if digest_filter(r)]
     log.info("scan_universe: %d recs, %d in digest", len(out_recs), len(digest))

@@ -66,9 +66,21 @@ def main() -> int:
     price_floor  = _env_float("OPTIONS_PRICE_FLOOR",    saved["price_floor"])
     volume_floor = _env_float("OPTIONS_VOLUME_FLOOR",   saved["volume_floor"])
     min_dist     = _env_float("OPTIONS_MIN_DISTANCE",   saved["min_directional_distance"])
+    # Option-price (contract mid) range and direction are saved UI
+    # settings too — the nightly digest must honor them, otherwise the
+    # alert shows contracts the user filtered out. (Previously omitted,
+    # so the cron always ran with the wide-open defaults.)
+    mid_min      = _env_float("OPTIONS_MID_MIN",        saved["mid_min"])
+    mid_max      = _env_float("OPTIONS_MID_MAX",        saved["mid_max"])
+    direction    = (os.environ.get("OPTIONS_DIRECTION", "").strip().lower()
+                    or saved["direction"])
+    if direction not in ("call", "put", "both"):
+        direction = "both"
 
-    log.info("options scan: top_n=%d dte=%d-%d price>=%.2f vol>=%d dist>=%.1f",
-             top_n, dte_min, dte_max, price_floor, int(volume_floor), min_dist)
+    log.info("options scan: top_n=%d dte=%d-%d price>=%.2f vol>=%d dist>=%.1f "
+             "mid=[%.2f,%.2f] dir=%s",
+             top_n, dte_min, dte_max, price_floor, int(volume_floor), min_dist,
+             mid_min, mid_max, direction)
 
     def _progress(i: int, total: int, ticker: str) -> None:
         log.info("[%d/%d] %s", i, total, ticker)
@@ -78,6 +90,8 @@ def main() -> int:
         persist=True, progress_cb=_progress,
         price_floor=price_floor, volume_floor=volume_floor,
         min_directional_distance=min_dist,
+        mid_min=mid_min, mid_max=mid_max,
+        direction=direction,
     )
 
     log.info(
