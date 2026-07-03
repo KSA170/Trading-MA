@@ -1598,6 +1598,34 @@ table.sortable th.th-drag-over {
   border-bottom-color: var(--accent);
   background: var(--panel-2);
 }
+
+/* Workspace switcher — a segmented pill (matches the prototype), instead
+   of the underline-tab look the sub-tabs use. Overrides .app-tab for the
+   two top-level workspace buttons only. */
+.app-tabs.workspaces {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+}
+.workspaces .app-tab {
+  border: none;
+  border-bottom: none;
+  border-radius: 16px;
+  padding: 6px 18px;
+  margin-bottom: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.workspaces .app-tab:hover { color: var(--text); }
+.workspaces .app-tab.active {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+  border-bottom-color: transparent;
+}
+
 .tab-content.hidden { display: none; }
 button.hidden { display: none; }
 
