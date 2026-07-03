@@ -313,6 +313,11 @@
       Daily bars based on previous close. Source: Yahoo Finance. Uncheck a group to ignore that filter.
     </div>
   </section>
+    <div class="rail-run">
+      <button id="rail-run-btn" type="button" class="primary">Run screen</button>
+      <span id="rail-match-count" class="rail-count"></span>
+      <button id="rail-reset-btn" type="button">Reset</button>
+    </div>
   </aside>
 
   <main class="content">
@@ -338,12 +343,18 @@
 
       <div class="results-toolbar">
         <span id="selection-count" class="muted">0 selected</span>
-        <button id="email-btn" type="button" disabled>Email</button>
-        <button id="share-btn" type="button" disabled>Share</button>
-        <button id="export-tv-btn" type="button" disabled title="Download selected tickers as a TradingView-importable watchlist (.txt)">Export for TradingView</button>
-        <button id="alerts-add-btn" type="button" disabled title="Add selected tickers to the realtime alert watchlist (Telegram)">Add to alerts</button>
-        <button id="report-add-btn" type="button" disabled title="Track the selected tickers in the Stock Strategy Report — uses each row's latest close + as-of date as the entry, then forward-fills returns nightly.">Add to Strategy Report</button>
-        <button id="export-btn" type="button" disabled>Export to Excel</button>
+        <div class="actions-menu-wrap">
+          <button id="actions-menu-btn" type="button" disabled title="Actions for the selected tickers">Actions ▾</button>
+          <div id="actions-menu" class="actions-menu hidden">
+            <button id="alerts-add-btn" type="button" disabled title="Add selected tickers to the realtime alert watchlist (Telegram)">Add to alerts</button>
+            <button id="report-add-btn" type="button" disabled title="Track the selected tickers in the Stock Strategy Report — uses each row's latest close + as-of date as the entry, then forward-fills returns nightly.">Add to Strategy Report</button>
+            <button id="export-tv-btn" type="button" disabled title="Download selected tickers as a TradingView-importable watchlist (.txt)">Export for TradingView</button>
+            <button id="export-btn" type="button" disabled>Export to Excel</button>
+            <button id="email-btn" type="button" disabled>Email</button>
+            <button id="share-btn" type="button" disabled>Share</button>
+          </div>
+        </div>
+        <span class="toolbar-spacer"></span>
         <button id="clear-selection-btn" type="button" disabled>Clear</button>
         <div class="column-menu-wrap">
           <button id="columns-btn" type="button" title="Show, hide, and reorder table columns (drag column headers to reorder)">Columns ▾</button>
