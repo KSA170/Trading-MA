@@ -2345,28 +2345,63 @@ button.hidden { display: none; }
 .topbar { position: sticky; top: 0; z-index: 30; }
 
 /* Screener workbench: filter rail on the left, results on the right.
-   Only the Screener sub-tab gets the two-column grid — the other Stocks
-   tools stay full-width (their sections just flow inside .content). */
+   Only the Screener sub-tab gets the two-column grid. The :not(.hidden)
+   guard is essential — this rule has id-level specificity and would
+   otherwise beat `.tab-content.hidden { display:none }`, leaving the
+   whole panel (and its rail) visible on the Options workspace. */
 .screener-rail { min-width: 0; }
-#tab-stock[data-active-tool="screener"] {
+#tab-stock[data-active-tool="screener"]:not(.hidden) {
   display: grid;
-  grid-template-columns: 296px minmax(0, 1fr);
+  grid-template-columns: 344px minmax(0, 1fr);
   gap: 18px;
   align-items: start;
   padding: 16px 20px;
 }
-#tab-stock[data-active-tool="screener"] > .content { padding: 0; }
-#tab-stock[data-active-tool="screener"] > .screener-rail {
+#tab-stock[data-active-tool="screener"]:not(.hidden) > .content { padding: 0; }
+
+/* The rail is a self-contained panel: a fixed toggle + preset bar and a
+   scrolling filter list, with the Run bar pinned to the bottom so it's
+   always reachable and it's obvious the filters scroll above it. */
+#tab-stock[data-active-tool="screener"]:not(.hidden) > .screener-rail {
   position: sticky;
   top: 72px;
   align-self: start;
   max-height: calc(100vh - 88px);
-  overflow: auto;
-}
-#tab-stock[data-active-tool="screener"] .filters {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 9px;
   overflow: hidden;
+}
+.screener-rail > #filters-toggle { flex: none; padding: 10px 14px; }
+.screener-rail > .filters {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border: none;
+}
+/* Stack every filter group full-width in the narrow rail (the section
+   grid's auto-fill columns get squished otherwise). */
+.screener-rail .filter-section-grid { grid-template-columns: 1fr; }
+
+/* Run bar pinned to the bottom of the rail — the primary action lives
+   with the filters, per the prototype. */
+.rail-run {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.rail-run #rail-run-btn { flex: 1; }
+.rail-run .rail-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
 }
 
 /* Preset bar pinned to the top of the rail. */
@@ -2414,8 +2449,42 @@ button.hidden { display: none; }
 
 /* Stack the rail above the results on narrow screens. */
 @media (max-width: 900px) {
-  #tab-stock[data-active-tool="screener"] { grid-template-columns: 1fr; }
-  #tab-stock[data-active-tool="screener"] > .screener-rail {
+  #tab-stock[data-active-tool="screener"]:not(.hidden) { grid-template-columns: 1fr; }
+  #tab-stock[data-active-tool="screener"]:not(.hidden) > .screener-rail {
     position: static; max-height: none;
   }
 }
+
+/* Grouped selection actions in the results toolbar (prototype parity). */
+.actions-menu-wrap { position: relative; }
+.actions-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 25;
+  min-width: 214px;
+  padding: 5px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.actions-menu.hidden { display: none; }
+.actions-menu button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 7px 10px;
+}
+.actions-menu button:not(:disabled):hover {
+  background: var(--accent);
+  color: #0b0f15;
+  border-color: var(--accent);
+}
+.actions-menu button:disabled { opacity: 0.4; }
+.toolbar-spacer { flex: 1 1 auto; }

@@ -112,6 +112,8 @@ const els = {
   thead: document.querySelector('#results-table thead'),
   selectAll: $('#select-all'),
   selectionCount: $('#selection-count'),
+  actionsMenuBtn: $('#actions-menu-btn'),
+  actionsMenu: $('#actions-menu'),
   emailBtn: $('#email-btn'),
   shareBtn: $('#share-btn'),
   exportTvBtn: $('#export-tv-btn'),
@@ -1383,10 +1385,12 @@ function updateSelectionUI() {
   if (els.selectionCount) {
     els.selectionCount.textContent = count === 1 ? '1 selected' : `${count} selected`;
   }
-  [els.emailBtn, els.shareBtn, els.exportTvBtn, els.alertsAddBtn,
+  [els.actionsMenuBtn, els.emailBtn, els.shareBtn, els.exportTvBtn, els.alertsAddBtn,
    els.reportAddBtn, els.exportBtn, els.clearSelectionBtn].forEach((b) => {
     if (b) b.disabled = count === 0;
   });
+  // Close the actions menu when the selection empties out.
+  if (count === 0 && els.actionsMenu) els.actionsMenu.classList.add('hidden');
   if (els.selectAll) {
     if (!lastResults.length) {
       els.selectAll.checked = false;
@@ -4331,11 +4335,14 @@ function goTo(ws, sub, persist = true) {
   const stock = document.getElementById('tab-stock');
   if (stock && panelId === 'tab-stock') stock.setAttribute('data-active-tool', sub);
 
-  // "Run screen" + "Warm cache" belong to the stock screener only.
+  // "Warm cache" belongs to the stock screener only. "Run screen" now
+  // lives at the bottom of the filter rail (#rail-run-btn), so the
+  // top-bar Run button is kept only as the wired click target and stays
+  // hidden.
   const isScreener = ws === 'stocks' && sub === 'screener';
   const runBtn  = document.getElementById('run-btn');
   const warmBtn = document.getElementById('warm-btn');
-  if (runBtn)  runBtn.classList.toggle('hidden', !isScreener);
+  if (runBtn)  runBtn.classList.add('hidden');
   if (warmBtn) warmBtn.classList.toggle('hidden', !isScreener);
 
   if (persist) {
@@ -5730,4 +5737,49 @@ loadDates();
   filters.addEventListener('input', refresh);
   document.addEventListener('filters:changed', refresh);
   refresh();
+})();
+
+// --- rail run bar: delegate to the existing Run / Reset, mirror count -----
+// The Run + Reset buttons at the bottom of the filter rail reuse the
+// original handlers (bound to #run-btn / #reset-defaults-btn) via a
+// synthetic click, so no run/reset logic is duplicated. The rail also
+// mirrors the live match count from the results header.
+(function () {
+  const railRun = document.getElementById('rail-run-btn');
+  const railReset = document.getElementById('rail-reset-btn');
+  const runBtn = document.getElementById('run-btn');
+  const resetBtn = document.getElementById('reset-defaults-btn');
+  const src = document.getElementById('match-count');
+  const dst = document.getElementById('rail-match-count');
+  if (railRun && runBtn) railRun.addEventListener('click', () => runBtn.click());
+  if (railReset && resetBtn) railReset.addEventListener('click', () => resetBtn.click());
+  if (src && dst) {
+    const mirror = () => { dst.textContent = (src.textContent || '').trim(); };
+    mirror();
+    new MutationObserver(mirror).observe(src, { childList: true, characterData: true, subtree: true });
+  }
+})();
+
+// --- actions dropdown (results toolbar) -----------------------------------
+// Groups the selection actions behind one "Actions ▾" button. The action
+// buttons keep their ids/handlers and disabled state (driven by
+// updateSelectionUI); this only toggles the menu's visibility.
+(function () {
+  const btn = document.getElementById('actions-menu-btn');
+  const menu = document.getElementById('actions-menu');
+  if (!btn || !menu) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (btn.disabled) return;
+    menu.classList.toggle('hidden');
+  });
+  menu.addEventListener('click', (e) => {
+    const t = e.target.closest('button');
+    if (t && !t.disabled) menu.classList.add('hidden'); // action's own handler still runs
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.classList.contains('hidden') && !e.target.closest('.actions-menu-wrap')) {
+      menu.classList.add('hidden');
+    }
+  });
 })();
