@@ -425,6 +425,11 @@
               <input id="picks-w-sr" type="range" min="0" max="100" step="5" value="25" />
               <span id="picks-w-sr-out" class="picks-weight-out">25</span>
             </label>
+            <label class="picks-weight" title="CF — Confirmation / ignition&#10;&#10;Rewards a base that is starting to WORK, so the composite leans toward names showing demand NOW (the other signals favour quiet, contracting price):&#10;  +40  close back above the 21-EMA&#10;  +30  recent volume expanding (5-day avg vs 20-day avg)&#10;  +15  MACD histogram positive&#10;  +15  5-day return positive&#10;&#10;Raise this to surface igniting setups; lower it to favour the quietest pre-breakout bases.">
+              <span class="picks-weight-name">CF <span class="muted">Confirmation / ignition</span></span>
+              <input id="picks-w-confirm" type="range" min="0" max="100" step="5" value="15" />
+              <span id="picks-w-confirm-out" class="picks-weight-out">15</span>
+            </label>
           </div>
           <h4 class="picks-tune-h">Price range</h4>
           <div class="picks-price-grid">
@@ -444,6 +449,20 @@
               <input id="picks-limit" type="number" min="5" max="100" step="1" value="25" />
             </label>
           </div>
+          <h4 class="picks-tune-h" title="Absolute quality gates. The composite is ranked relative to the day's universe, so its top always scores high even in a weak tape. These let the watchlist return FEWER (or zero) picks when nothing is genuinely set up. Leave off (0 / unchecked) to always fill the list.">Quality gates <span class="muted">(optional)</span></h4>
+          <div class="picks-price-grid">
+            <label class="picks-price" title="Drop any pick whose final composite is below this. 0 = off. Composite is roughly 0-100; try 55-65 to trim weak days. Calibrate with eval_picks.py first.">
+              <span>Min composite</span>
+              <input id="picks-min-composite" type="number" min="0" max="100" step="1" value="0" />
+            </label>
+            <label class="picks-price" title="When 'Require confirmation' is on, drop picks whose Confirmation (CF) score is below this — so only bases actually igniting make the list.">
+              <span>Confirm min (CF)</span>
+              <input id="picks-confirm-min" type="number" min="0" max="100" step="5" value="50" />
+            </label>
+          </div>
+          <label class="picks-gate-toggle" title="Require the Confirmation gate above. Off by default; enable once eval_picks.py confirms the CF signal actually helps.">
+            <input id="picks-require-confirm" type="checkbox" /> Require confirmation (apply CF min)
+          </label>
           <p class="muted picks-tune-help">Saved settings are reused by the nightly cron at close+1hr.</p>
         </div>
       </div>

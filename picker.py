@@ -147,6 +147,16 @@ ALTER TABLE picker_config
 -- so existing deployments pick up the column without manual migration.
 ALTER TABLE picker_config
     ADD COLUMN IF NOT EXISTS pick_limit INT NOT NULL DEFAULT 25;
+-- Absolute-quality gates, tunable from the picks "Tune…" panel. Default
+-- OFF (min_composite 0, require_confirmation false) so behaviour only
+-- changes once the user opts in. When on, weak days return fewer / no
+-- picks instead of always emitting `pick_limit` names.
+ALTER TABLE picker_config
+    ADD COLUMN IF NOT EXISTS min_composite REAL NOT NULL DEFAULT 0;
+ALTER TABLE picker_config
+    ADD COLUMN IF NOT EXISTS require_confirmation BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE picker_config
+    ADD COLUMN IF NOT EXISTS confirm_min REAL NOT NULL DEFAULT 50;
 
 -- Stage 2: intraday triggers that fire on the nightly top-25 watchlist.
 -- One row per (date, ticker, trigger_type) — dedupes so the cron can
@@ -902,6 +912,9 @@ def get_config() -> dict:
         "price_max": DEFAULT_PRICE_MAX,
         "intraday_alerts_enabled": True,
         "pick_limit": DEFAULT_LIMIT,
+        "min_composite": 0.0,
+        "require_confirmation": False,
+        "confirm_min": 50.0,
     }
     if not snapshots.enabled():
         return cfg
@@ -909,7 +922,7 @@ def get_config() -> dict:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
                 "SELECT weights, price_min, price_max, intraday_alerts_enabled, "
-                "pick_limit "
+                "pick_limit, min_composite, require_confirmation, confirm_min "
                 "FROM picker_config WHERE id = 1"
             )
             row = cur.fetchone()
@@ -936,6 +949,12 @@ def get_config() -> dict:
         cfg["intraday_alerts_enabled"] = bool(row[3])
     if row[4] is not None:
         cfg["pick_limit"] = _clamp_limit(row[4])
+    if row[5] is not None:
+        cfg["min_composite"] = float(row[5])
+    if row[6] is not None:
+        cfg["require_confirmation"] = bool(row[6])
+    if row[7] is not None:
+        cfg["confirm_min"] = float(row[7])
     return cfg
 
 
@@ -964,28 +983,47 @@ def set_intraday_alerts_enabled(enabled: bool) -> bool:
 
 
 def save_config(weights: dict, price_min: float, price_max: float,
-                pick_limit: int | None = None) -> bool:
+                pick_limit: int | None = None,
+                min_composite: float | None = None,
+                require_confirmation: bool | None = None,
+                confirm_min: float | None = None) -> bool:
     if not snapshots.enabled():
         return False
     # Filter the weights dict down to the known keys to keep the schema
     # honest if the caller throws extra keys at us.
     clean = {k: float(weights.get(k, DEFAULT_WEIGHTS[k])) for k in DEFAULT_WEIGHTS}
-    # When pick_limit isn't supplied, preserve whatever is stored (or the
-    # default) rather than clobbering it.
-    limit = _clamp_limit(pick_limit) if pick_limit is not None else get_config()["pick_limit"]
+    # Preserve any optional field the caller didn't supply rather than
+    # clobbering it (single config read, only when something is missing).
+    _cur = None
+    def _keep(val, key):
+        nonlocal _cur
+        if val is not None:
+            return val
+        if _cur is None:
+            _cur = get_config()
+        return _cur[key]
+    limit = _clamp_limit(pick_limit) if pick_limit is not None else _keep(None, "pick_limit")
+    mc = float(_keep(min_composite, "min_composite"))
+    rc = bool(_keep(require_confirmation, "require_confirmation"))
+    cm = float(_keep(confirm_min, "confirm_min"))
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
                 "INSERT INTO picker_config "
-                "(id, weights, price_min, price_max, pick_limit, updated_at) "
-                "VALUES (1, %s, %s, %s, %s, now()) "
+                "(id, weights, price_min, price_max, pick_limit, "
+                " min_composite, require_confirmation, confirm_min, updated_at) "
+                "VALUES (1, %s, %s, %s, %s, %s, %s, %s, now()) "
                 "ON CONFLICT (id) DO UPDATE SET "
                 "weights = EXCLUDED.weights, "
                 "price_min = EXCLUDED.price_min, "
                 "price_max = EXCLUDED.price_max, "
                 "pick_limit = EXCLUDED.pick_limit, "
+                "min_composite = EXCLUDED.min_composite, "
+                "require_confirmation = EXCLUDED.require_confirmation, "
+                "confirm_min = EXCLUDED.confirm_min, "
                 "updated_at = now()",
-                (json.dumps(clean), float(price_min), float(price_max), int(limit)),
+                (json.dumps(clean), float(price_min), float(price_max), int(limit),
+                 mc, rc, cm),
             )
         return True
     except Exception as exc:

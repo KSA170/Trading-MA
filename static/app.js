@@ -186,9 +186,14 @@ const els = {
   picksWmtOut: $('#picks-w-mt-out'),
   picksWdpOut: $('#picks-w-dp-out'),
   picksWsrOut: $('#picks-w-sr-out'),
+  picksWconfirm: $('#picks-w-confirm'),
+  picksWconfirmOut: $('#picks-w-confirm-out'),
   picksPriceMin: $('#picks-price-min'),
   picksPriceMax: $('#picks-price-max'),
   picksLimit: $('#picks-limit'),
+  picksMinComposite: $('#picks-min-composite'),
+  picksConfirmMin: $('#picks-confirm-min'),
+  picksRequireConfirm: $('#picks-require-confirm'),
   picksCountLabel: $('#picks-count-label'),
   momentumToggle: $('#momentum-toggle'),
   momentumBody: $('#momentum-body'),
@@ -2887,7 +2892,7 @@ startRulesPolling();
 // weights + price range, and re-ranks live via /api/picks/run. Saved
 // settings are picked up by the nightly cron at close+1hr.
 
-const _PICKS_WEIGHT_KEYS = ['vc', 'rs', 'va', 'mt', 'dp', 'sr'];
+const _PICKS_WEIGHT_KEYS = ['vc', 'rs', 'va', 'mt', 'dp', 'sr', 'confirm'];
 
 function picksWeightFromUI() {
   const out = {};
@@ -2957,6 +2962,9 @@ function renderPicks(data) {
     if (els.picksPriceMin && cfg.price_min != null) els.picksPriceMin.value = String(cfg.price_min);
     if (els.picksPriceMax && cfg.price_max != null) els.picksPriceMax.value = String(cfg.price_max);
     if (els.picksLimit && cfg.pick_limit != null) els.picksLimit.value = String(cfg.pick_limit);
+    if (els.picksMinComposite && cfg.min_composite != null) els.picksMinComposite.value = String(cfg.min_composite);
+    if (els.picksConfirmMin && cfg.confirm_min != null) els.picksConfirmMin.value = String(cfg.confirm_min);
+    if (els.picksRequireConfirm) els.picksRequireConfirm.checked = !!cfg.require_confirmation;
     _picksTuningHydrated = true;
   }
   // Count label always reflects the latest saved limit (re-ranks change it).
@@ -3090,6 +3098,9 @@ async function runPicks() {
       price_min: Number(els.picksPriceMin && els.picksPriceMin.value) || 0,
       price_max: Number(els.picksPriceMax && els.picksPriceMax.value) || 1000,
       pick_limit: Number(els.picksLimit && els.picksLimit.value) || 25,
+      min_composite: Number(els.picksMinComposite && els.picksMinComposite.value) || 0,
+      confirm_min: Number(els.picksConfirmMin && els.picksConfirmMin.value) || 0,
+      require_confirmation: !!(els.picksRequireConfirm && els.picksRequireConfirm.checked),
       save: true,
     };
     const res = await fetch('/api/picks/run', {

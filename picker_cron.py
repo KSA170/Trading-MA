@@ -53,12 +53,14 @@ def main() -> int:
     picker.init_tables()
 
     cfg = picker.get_config()
-    # Optional absolute-quality gates (default OFF). Once calibrated with
-    # eval_picks.py, enable via Render env vars so weak days return fewer
-    # (or no) picks instead of always emitting `limit` names.
-    min_composite = _env_float("PICKER_MIN_COMPOSITE", 0.0)
-    require_confirmation = _env_bool("PICKER_REQUIRE_CONFIRMATION", False)
-    confirm_min = _env_float("PICKER_CONFIRM_MIN", 50.0)
+    # Optional absolute-quality gates. Source of truth is the saved picks
+    # config (tuned from the "Tune…" panel); env vars still override for
+    # ops. When on, weak days return fewer (or no) picks instead of always
+    # emitting `limit` names.
+    min_composite = _env_float("PICKER_MIN_COMPOSITE", cfg.get("min_composite", 0.0))
+    require_confirmation = _env_bool("PICKER_REQUIRE_CONFIRMATION",
+                                     cfg.get("require_confirmation", False))
+    confirm_min = _env_float("PICKER_CONFIRM_MIN", cfg.get("confirm_min", 50.0))
     log.info(
         "picker config: weights=%s price=%g-%g limit=%d "
         "gates[min_composite=%.1f require_confirmation=%s confirm_min=%.0f]",
