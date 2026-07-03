@@ -42,14 +42,35 @@ a { color: var(--accent); }
   color: var(--muted);
 }
 
+/* Status indicators as pill badges (matches the prototype): a bordered
+   rounded chip with a state-coloured dot and muted text. The .warn /
+   .cold state (set by the JS) recolours the dot rather than the text. */
 .status .cache-status {
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
-  color: var(--green);
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 3px 11px 3px 9px;
 }
-.status .cache-status.warn { color: var(--yellow); }
-.status .cache-status.cold { color: var(--red); }
+.status .cache-status::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.status .cache-status.warn::before { background: var(--yellow); }
+.status .cache-status.cold::before { background: var(--red); }
+/* Keep empty / hidden pills from rendering (inline-flex would otherwise
+   override the `hidden` attribute and the old :empty rule). */
 .status .cache-status:empty { display: none; }
+.status .cache-status[hidden] { display: none; }
 
 button {
   border-radius: 6px;
