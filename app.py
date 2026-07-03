@@ -1010,13 +1010,27 @@ def api_picks_run():
         return jsonify({"error": "price_min / price_max must be numeric"}), 400
     pick_limit = picker._clamp_limit(payload.get("pick_limit", cfg["pick_limit"]))
     save = bool(payload.get("save", True))
+    # Absolute-quality gates (tunable from the "Tune…" panel).
+    try:
+        min_composite = float(payload.get("min_composite", cfg["min_composite"]))
+        confirm_min = float(payload.get("confirm_min", cfg["confirm_min"]))
+    except (TypeError, ValueError):
+        return jsonify({"error": "min_composite / confirm_min must be numeric"}), 400
+    require_confirmation = bool(payload.get("require_confirmation",
+                                           cfg["require_confirmation"]))
 
     picks, as_of = picker.rank_universe(
         weights=weights, price_min=price_min, price_max=price_max,
         limit=pick_limit,
+        min_composite=min_composite,
+        require_confirmation=require_confirmation,
+        confirm_min=confirm_min,
     )
     if save:
-        picker.save_config(weights, price_min, price_max, pick_limit=pick_limit)
+        picker.save_config(weights, price_min, price_max, pick_limit=pick_limit,
+                           min_composite=min_composite,
+                           require_confirmation=require_confirmation,
+                           confirm_min=confirm_min)
         if picks and as_of:
             picker.save_picks(picks, as_of)
     return jsonify({
@@ -1058,9 +1072,16 @@ def api_picks_config():
     try:
         price_min = float(payload.get("price_min", cfg["price_min"]))
         price_max = float(payload.get("price_max", cfg["price_max"]))
+        min_composite = float(payload.get("min_composite", cfg["min_composite"]))
+        confirm_min = float(payload.get("confirm_min", cfg["confirm_min"]))
     except (TypeError, ValueError):
-        return jsonify({"error": "price_min / price_max must be numeric"}), 400
-    ok = picker.save_config(weights, price_min, price_max)
+        return jsonify({"error": "numeric fields must be numeric"}), 400
+    require_confirmation = bool(payload.get("require_confirmation",
+                                           cfg["require_confirmation"]))
+    ok = picker.save_config(weights, price_min, price_max,
+                            min_composite=min_composite,
+                            require_confirmation=require_confirmation,
+                            confirm_min=confirm_min)
     return jsonify({"saved": ok, "config": picker.get_config()})
 
 
