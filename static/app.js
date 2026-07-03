@@ -791,6 +791,9 @@ function applyFilterState(state) {
   syncDisabledStates();
   updateListAllState();
   updateHighHeader();
+  // Programmatic value changes don't fire input/change, so tell the
+  // filter-summary (section badges + active chips) to recompute.
+  document.dispatchEvent(new Event('filters:changed'));
 }
 
 // --- server-backed preset store -----------------------------------------
@@ -3849,6 +3852,9 @@ if (els.setupsCreateAlertBtn) {
       if (target && srcEl && srcEl.value !== '') target.value = srcEl.value;
     }
     syncRuleTypeUI();
+    // The Alert rules live on a different sub-tab now — switch to it first,
+    // then focus the name field so the user lands on the create-rule row.
+    goTo('stocks', 'alerts');
     if (els.ruleName) {
       els.ruleName.focus();
       els.ruleName.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -4270,61 +4276,117 @@ async function loadOptionsHistory(opts) {
   } catch (_) { /* silent */ }
 }
 
-// --- tab switching --------------------------------------------------------
-const TABS = [
-  { name: 'stock',          panel: 'tabStock',         btn: 'tabBtnStock'         },
-  { name: 'stock-report',   panel: 'tabStockReport',   btn: 'tabBtnStockReport'   },
-  { name: 'options',        panel: 'tabOptions',       btn: 'tabBtnOptions'       },
-  { name: 'options-report', panel: 'tabOptionsReport', btn: 'tabBtnOptionsReport' },
-];
-const TAB_NAMES = TABS.map(t => t.name);
+// --- workspace + sub-tab navigation ---------------------------------------
+// Two levels: a workspace (Stocks | Options) and, within it, a tool sub-tab.
+// The Stocks tools all live in the #tab-stock panel and are shown one at a
+// time via its data-active-tool attribute (CSS-driven visibility of the
+// [data-tool] sections); the Reports and the Options screener are their own
+// panels. No DOM is moved and every tool's interactive elements keep their
+// original ids, so all handlers — including alert / momentum / picks config
+// and the endpoints they call — are untouched.
+const WS = {
+  stocks:  { btn: 'tab-btn-stock',   strip: 'subtabs-stocks',
+             subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts', 'report'] },
+  options: { btn: 'tab-btn-options', strip: 'subtabs-options',
+             subs: ['screener', 'report'] },
+};
+const _ALL_PANELS = ['tab-stock', 'tab-stock-report', 'tab-options', 'tab-options-report'];
+const _lastSub = { stocks: 'screener', options: 'screener' };
+let _route = { ws: 'stocks', sub: 'screener' };
 
-function activateTab(name, persist = true) {
-  if (!TAB_NAMES.includes(name)) name = 'stock';
-  for (const t of TABS) {
-    const isActive = t.name === name;
-    if (els[t.panel]) els[t.panel].classList.toggle('hidden', !isActive);
-    if (els[t.btn]) {
-      els[t.btn].classList.toggle('active', isActive);
-      els[t.btn].setAttribute('aria-selected', isActive);
-    }
+// Which top-level panel a (workspace, sub-tab) route shows. When it resolves
+// to #tab-stock, `sub` also picks which [data-tool] section is visible.
+function _panelFor(ws, sub) {
+  if (ws === 'stocks')  return sub === 'report' ? 'tab-stock-report' : 'tab-stock';
+  return sub === 'report' ? 'tab-options-report' : 'tab-options';
+}
+
+function goTo(ws, sub, persist = true) {
+  if (!WS[ws]) ws = 'stocks';
+  if (!WS[ws].subs.includes(sub)) sub = WS[ws].subs[0];
+  _route = { ws, sub };
+  _lastSub[ws] = sub;
+
+  // Workspace buttons + which sub-tab strip is shown.
+  for (const w of Object.keys(WS)) {
+    const b = document.getElementById(WS[w].btn);
+    if (b) { b.classList.toggle('active', w === ws); b.setAttribute('aria-selected', w === ws); }
+    const strip = document.getElementById(WS[w].strip);
+    if (strip) strip.hidden = w !== ws;
   }
-  // Hide the global "Run screen" + Warm cache buttons on every tab
-  // except the Stock screener — they belong to that pipeline only.
-  const isStockScreener = name === 'stock';
+  // Sub-tab buttons within the active strip.
+  const strip = document.getElementById(WS[ws].strip);
+  if (strip) strip.querySelectorAll('.subtab').forEach((b) => {
+    const on = b.dataset.sub === sub;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on);
+  });
+  // Panels.
+  const panelId = _panelFor(ws, sub);
+  for (const p of _ALL_PANELS) {
+    const el = document.getElementById(p);
+    if (el) el.classList.toggle('hidden', p !== panelId);
+  }
+  // Which tool shows inside the stock panel.
+  const stock = document.getElementById('tab-stock');
+  if (stock && panelId === 'tab-stock') stock.setAttribute('data-active-tool', sub);
+
+  // "Run screen" + "Warm cache" belong to the stock screener only.
+  const isScreener = ws === 'stocks' && sub === 'screener';
   const runBtn  = document.getElementById('run-btn');
   const warmBtn = document.getElementById('warm-btn');
-  if (runBtn)  runBtn.classList.toggle('hidden', !isStockScreener);
-  if (warmBtn) warmBtn.classList.toggle('hidden', !isStockScreener);
+  if (runBtn)  runBtn.classList.toggle('hidden', !isScreener);
+  if (warmBtn) warmBtn.classList.toggle('hidden', !isScreener);
+
   if (persist) {
-    uiPrefs.set('app_tab', name);
+    uiPrefs.set('app_route', ws + '/' + sub);
     if (history && history.replaceState) {
-      const hash = '#' + name;
+      const hash = '#' + ws + '/' + sub;
       if (location.hash !== hash) history.replaceState(null, '', hash);
     }
   }
   // Lazy-load report data on first activation.
-  if (name === 'stock-report'   && !_stockReportLoaded)   loadStockReport();
-  if (name === 'options-report' && !_optionsReportLoaded) loadOptionsReport();
+  if (ws === 'stocks'  && sub === 'report' && !_stockReportLoaded)   loadStockReport();
+  if (ws === 'options' && sub === 'report' && !_optionsReportLoaded) loadOptionsReport();
 }
 
-function _initialTab() {
-  const fromHash = (location.hash || '').replace('#', '');
-  if (TAB_NAMES.includes(fromHash)) return fromHash;
-  const saved = uiPrefs.get('app_tab', 'stock');
-  return TAB_NAMES.includes(saved) ? saved : 'stock';
+function _initialRoute() {
+  const parse = (s) => {
+    const [w, sub] = String(s || '').replace(/^#/, '').split('/');
+    if (WS[w] && WS[w].subs.includes(sub)) return { ws: w, sub };
+    // Back-compat: an old single-name route/hash ("stock", "options",
+    // "stock-report", "options-report") maps onto the new two-level model.
+    const legacy = { stock: ['stocks', 'screener'], options: ['options', 'screener'],
+                     'stock-report': ['stocks', 'report'], 'options-report': ['options', 'report'] };
+    const m = legacy[String(s || '').replace(/^#/, '')];
+    return m ? { ws: m[0], sub: m[1] } : null;
+  };
+  return parse(location.hash) || parse(uiPrefs.get('app_route', ''))
+      || parse(uiPrefs.get('app_tab', '')) || { ws: 'stocks', sub: 'screener' };
 }
 
-if (els.tabBtnStock)         els.tabBtnStock        .addEventListener('click', () => activateTab('stock'));
-if (els.tabBtnStockReport)   els.tabBtnStockReport  .addEventListener('click', () => activateTab('stock-report'));
-if (els.tabBtnOptions)       els.tabBtnOptions      .addEventListener('click', () => activateTab('options'));
-if (els.tabBtnOptionsReport) els.tabBtnOptionsReport.addEventListener('click', () => activateTab('options-report'));
-activateTab(_initialTab(), false);
+// Workspace buttons return you to the tool you last had open in that space.
+document.querySelectorAll('.workspaces .app-tab').forEach((b) => {
+  b.addEventListener('click', () => {
+    const ws = b.dataset.ws;
+    goTo(ws, _lastSub[ws] || WS[ws].subs[0]);
+  });
+});
+document.querySelectorAll('.subtabs').forEach((strip) => {
+  const ws = strip.id === 'subtabs-options' ? 'options' : 'stocks';
+  strip.querySelectorAll('.subtab').forEach((b) => {
+    b.addEventListener('click', () => goTo(ws, b.dataset.sub));
+  });
+});
 
 // --- Strategy report tabs ---------------------------------------------------
 
 let _stockReportLoaded = false;
 let _optionsReportLoaded = false;
+
+// Apply the initial route now that the report-load flags exist (a saved
+// route may point straight at a Report sub-tab).
+{ const r = _initialRoute(); goTo(r.ws, r.sub, false); }
 
 function _fmtPct(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return '—';
@@ -5579,3 +5641,93 @@ fetch('/api/admin/warm-status').then((r) => r.json()).then((s) => {
 }).catch(() => {});
 
 loadDates();
+
+// --- filter summary: section badges + active-filter chips -----------------
+// Additive & self-contained. Reads the live filter DOM (group toggles +
+// their inputs) to (a) badge each section header with its active-filter
+// count and (b) render removable chips above the results table. Recomputes
+// on any filter input/change and on the 'filters:changed' event that
+// applyFilterState() dispatches after loading a preset. Touches no
+// existing state and no alert/notification code.
+(function () {
+  const filters = document.getElementById('filters-section');
+  const chips = document.getElementById('active-chips');
+  if (!filters) return;
+
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+
+  function isActive(group) {
+    const t = group.querySelector('.group-toggle input[type="checkbox"]');
+    return t ? t.checked : false;
+  }
+  function groupLabel(group) {
+    const t = group.querySelector('.group-toggle');
+    if (t) return norm(t.textContent);
+    const l = group.querySelector('.group-label');
+    return l ? norm(l.textContent) : '';
+  }
+  function groupValues(group) {
+    const vals = [];
+    group.querySelectorAll('input[type="number"], input[type="text"]').forEach((inp) => {
+      if (inp.value !== '' && !inp.disabled) vals.push(inp.value);
+    });
+    return vals.slice(0, 2); // range-style groups have min/max; keep it terse
+  }
+
+  function refresh() {
+    // Section header badges.
+    filters.querySelectorAll('.filter-section').forEach((sec) => {
+      const hdr = sec.querySelector('.filter-section-header');
+      if (!hdr) return;
+      let n = 0;
+      sec.querySelectorAll('.filter-group').forEach((g) => { if (isActive(g)) n++; });
+      let badge = hdr.querySelector('.fsec-count');
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'fsec-count';
+        hdr.appendChild(badge);
+      }
+      badge.textContent = String(n);
+      badge.classList.toggle('zero', n === 0);
+    });
+
+    // Active-filter chips.
+    if (!chips) return;
+    const active = [];
+    filters.querySelectorAll('.filter-group').forEach((g) => { if (isActive(g)) active.push(g); });
+    chips.textContent = '';
+    if (!active.length) { chips.hidden = true; return; }
+    chips.hidden = false;
+    const lab = document.createElement('span');
+    lab.className = 'chips-label';
+    lab.textContent = 'Active';
+    chips.appendChild(lab);
+    active.forEach((g) => {
+      const label = groupLabel(g);
+      const vals = groupValues(g);
+      const chip = document.createElement('span');
+      chip.className = 'active-chip';
+      const b = document.createElement('b');
+      b.textContent = label;
+      chip.appendChild(b);
+      if (vals.length) chip.appendChild(document.createTextNode(' ' + vals.join('–')));
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'chip-x';
+      x.textContent = '×';
+      x.title = 'Turn off ' + label;
+      x.addEventListener('click', () => {
+        const t = g.querySelector('.group-toggle input[type="checkbox"]');
+        if (t) { t.checked = false; t.dispatchEvent(new Event('change', { bubbles: true })); }
+        refresh();
+      });
+      chip.appendChild(x);
+      chips.appendChild(chip);
+    });
+  }
+
+  filters.addEventListener('change', refresh);
+  filters.addEventListener('input', refresh);
+  document.addEventListener('filters:changed', refresh);
+  refresh();
+})();

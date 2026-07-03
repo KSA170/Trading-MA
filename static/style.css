@@ -1601,6 +1601,45 @@ table.sortable th.th-drag-over {
 .tab-content.hidden { display: none; }
 button.hidden { display: none; }
 
+/* --- workspace + sub-tab navigation ---------------------------------- */
+/* Two workspace tabs (Stocks | Options) reuse the .app-tab look above.   */
+.subtabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 24px;
+  margin: 2px 0 14px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.subtabs[hidden] { display: none; }
+.subtab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 9px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  margin-bottom: -1px;
+}
+.subtab:hover { color: var(--text); }
+.subtab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+/* Inside the Stocks panel, show only the active tool's section(s). Each
+   tool section is tagged data-tool; the active tool keeps its natural
+   display, the rest are hidden. */
+#tab-stock[data-active-tool="screener"]  [data-tool]:not([data-tool="screener"]),
+#tab-stock[data-active-tool="watchlist"] [data-tool]:not([data-tool="watchlist"]),
+#tab-stock[data-active-tool="momentum"]  [data-tool]:not([data-tool="momentum"]),
+#tab-stock[data-active-tool="setups"]    [data-tool]:not([data-tool="setups"]),
+#tab-stock[data-active-tool="alerts"]    [data-tool]:not([data-tool="alerts"]) {
+  display: none !important;
+}
+
 /* --- Strategy report tabs --------------------------------------------- */
 .report-tab { padding: 16px 20px; }
 .report-controls {
@@ -2293,4 +2332,90 @@ button.hidden { display: none; }
   font-size: 12px;
   line-height: 1.45;
   color: var(--text);
+}
+
+/* ===================================================================== */
+/* UI reorg phase 2 — sticky chrome + screener filter rail               */
+/* ===================================================================== */
+
+/* Keep the top bar (workspaces + Run + Warm + status) pinned so the
+   primary action stays reachable while the filters or results scroll.
+   It has a solid background and a higher z-index than the rail, so it
+   cleanly covers the sticky rail's top edge regardless of its height. */
+.topbar { position: sticky; top: 0; z-index: 30; }
+
+/* Screener workbench: filter rail on the left, results on the right.
+   Only the Screener sub-tab gets the two-column grid — the other Stocks
+   tools stay full-width (their sections just flow inside .content). */
+.screener-rail { min-width: 0; }
+#tab-stock[data-active-tool="screener"] {
+  display: grid;
+  grid-template-columns: 296px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  padding: 16px 20px;
+}
+#tab-stock[data-active-tool="screener"] > .content { padding: 0; }
+#tab-stock[data-active-tool="screener"] > .screener-rail {
+  position: sticky;
+  top: 72px;
+  align-self: start;
+  max-height: calc(100vh - 88px);
+  overflow: auto;
+}
+#tab-stock[data-active-tool="screener"] .filters {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+/* Preset bar pinned to the top of the rail. */
+.preset-bar {
+  gap: 7px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.preset-bar .presets-label { flex-basis: 100%; }
+.preset-bar #presets-select { flex: 1; min-width: 0; }
+
+/* Active-filter count badge in each section header. */
+.filter-section-header { display: flex; align-items: center; gap: 8px; }
+.fsec-count {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  border-radius: 10px;
+  padding: 1px 7px;
+  background: rgba(88, 166, 255, 0.14);
+  color: var(--accent);
+}
+.fsec-count.zero { background: var(--panel-2); color: var(--muted); }
+
+/* Active-filter chips summarizing the screen, above the results table. */
+.active-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 12px; }
+.active-chips[hidden] { display: none; }
+.active-chips .chips-label {
+  align-self: center; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+.active-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 20px; padding: 3px 5px 3px 11px; font-size: 12px;
+}
+.active-chip b { color: var(--muted); font-weight: 600; }
+.active-chip .chip-x {
+  cursor: pointer; border: none; background: transparent; color: var(--muted);
+  font-size: 14px; line-height: 1; padding: 0 3px; border-radius: 4px;
+}
+.active-chip .chip-x:hover { color: var(--red); }
+
+/* Stack the rail above the results on narrow screens. */
+@media (max-width: 900px) {
+  #tab-stock[data-active-tool="screener"] { grid-template-columns: 1fr; }
+  #tab-stock[data-active-tool="screener"] > .screener-rail {
+    position: static; max-height: none;
+  }
 }
