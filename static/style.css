@@ -42,14 +42,35 @@ a { color: var(--accent); }
   color: var(--muted);
 }
 
+/* Status indicators as pill badges (matches the prototype): a bordered
+   rounded chip with a state-coloured dot and muted text. The .warn /
+   .cold state (set by the JS) recolours the dot rather than the text. */
 .status .cache-status {
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
-  color: var(--green);
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 3px 11px 3px 9px;
 }
-.status .cache-status.warn { color: var(--yellow); }
-.status .cache-status.cold { color: var(--red); }
+.status .cache-status::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.status .cache-status.warn::before { background: var(--yellow); }
+.status .cache-status.cold::before { background: var(--red); }
+/* Keep empty / hidden pills from rendering (inline-flex would otherwise
+   override the `hidden` attribute and the old :empty rule). */
 .status .cache-status:empty { display: none; }
+.status .cache-status[hidden] { display: none; }
 
 button {
   border-radius: 6px;
@@ -1598,6 +1619,34 @@ table.sortable th.th-drag-over {
   border-bottom-color: var(--accent);
   background: var(--panel-2);
 }
+
+/* Workspace switcher — a segmented pill (matches the prototype), instead
+   of the underline-tab look the sub-tabs use. Overrides .app-tab for the
+   two top-level workspace buttons only. */
+.app-tabs.workspaces {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+}
+.workspaces .app-tab {
+  border: none;
+  border-bottom: none;
+  border-radius: 16px;
+  padding: 6px 18px;
+  margin-bottom: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.workspaces .app-tab:hover { color: var(--text); }
+.workspaces .app-tab.active {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+  border-bottom-color: transparent;
+}
+
 .tab-content.hidden { display: none; }
 button.hidden { display: none; }
 
