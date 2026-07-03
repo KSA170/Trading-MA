@@ -5783,3 +5783,30 @@ loadDates();
     }
   });
 })();
+
+// --- collapsible filter sections (rail) -----------------------------------
+// Each filter-section header folds its grid, reusing the app's wireCollapse
+// helper so the state persists like every other collapsible panel. The
+// active-count badge stays in the header when collapsed, so a folded
+// section still shows e.g. "Trend  1".
+(function () {
+  const filters = document.getElementById('filters-section');
+  if (!filters || typeof wireCollapse !== 'function') return;
+  filters.querySelectorAll('.filter-section').forEach((sec, idx) => {
+    const hdr = sec.querySelector('.filter-section-header');
+    const grid = sec.querySelector('.filter-section-grid');
+    if (!hdr || !grid) return;
+    if (!hdr.querySelector('.chevron')) {
+      const chev = document.createElement('span');
+      chev.className = 'chevron';
+      chev.textContent = '▾';
+      hdr.insertBefore(chev, hdr.firstChild);
+    }
+    hdr.setAttribute('role', 'button');
+    hdr.setAttribute('tabindex', '0');
+    hdr.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); hdr.click(); }
+    });
+    wireCollapse(hdr, grid, 'collapse_fsec_' + idx);
+  });
+})();
