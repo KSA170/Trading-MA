@@ -70,6 +70,12 @@ log = logging.getLogger("picker")
 
 DEFAULT_WEIGHTS: dict[str, float] = {
     "vc": 20.0, "rs": 15.0, "va": 15.0, "mt": 10.0, "dp": 15.0, "sr": 25.0,
+    # CF (Confirmation / ignition) — added to tilt the composite toward
+    # bases that are actually starting to work (price back above the
+    # 21-EMA, volume expanding, near-term momentum up), rather than only
+    # the quietest, most contracted bases. Weight chosen so it meaningfully
+    # reorders without dominating; validate/retune with eval_picks.py.
+    "confirm": 15.0,
 }
 DEFAULT_PRICE_MIN: float = 5.0
 DEFAULT_PRICE_MAX: float = 1000.0
@@ -120,6 +126,7 @@ CREATE TABLE IF NOT EXISTS nightly_picks (
 -- bullish with SMA10 leading. Captures Stage 1 → Stage 2 transitions
 -- that the original 5 IBD-style signals didn't reward.
 ALTER TABLE nightly_picks ADD COLUMN IF NOT EXISTS sr_score REAL;
+ALTER TABLE nightly_picks ADD COLUMN IF NOT EXISTS confirm_score REAL;
 CREATE INDEX IF NOT EXISTS nightly_picks_ticker_idx
     ON nightly_picks (ticker, pick_date DESC);
 
@@ -156,6 +163,37 @@ CREATE TABLE IF NOT EXISTS picker_intraday_alerts (
 );
 CREATE INDEX IF NOT EXISTS picker_intraday_alerts_date_idx
     ON picker_intraday_alerts (pick_date DESC, fired_at DESC);
+
+-- ML groundwork: a per-(ticker, date) feature log over the WHOLE eligible
+-- universe (not just the top-N picks), so a future model has negatives as
+-- well as positives to learn from. Unlike daily_snapshot (pruned to the
+-- last few dates), this is NOT trimmed — it accumulates. `close` is kept
+-- so forward-return labels can be derived later by self-joining across
+-- dates without needing the raw snapshots to still exist.
+CREATE TABLE IF NOT EXISTS feature_log (
+    as_of         DATE NOT NULL,
+    ticker        TEXT NOT NULL,
+    close         REAL,
+    vc_ratio      REAL,
+    ret_60d       REAL,
+    va_ratio      REAL,
+    mt_raw        REAL,
+    dp_pct        REAL,
+    sr_raw        REAL,
+    confirm_raw   REAL,
+    vc_score      REAL,
+    rs_score      REAL,
+    va_score      REAL,
+    mt_score      REAL,
+    dp_score      REAL,
+    sr_score      REAL,
+    confirm_score REAL,
+    composite     REAL,
+    created_at    TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (as_of, ticker)
+);
+CREATE INDEX IF NOT EXISTS feature_log_ticker_idx
+    ON feature_log (ticker, as_of);
 """
 
 
@@ -380,6 +418,29 @@ def _compute_raw_metrics(row: dict) -> dict | None:
     if ret_60d > 0.80:
         return None
 
+    # --- CF: Confirmation / ignition (0-100 absolute) -----------------
+    # The base signals above reward quiet, contracting price; this rewards
+    # a base that's starting to WORK, so the composite leans toward names
+    # with demand showing up now:
+    #   +40  close back above the 21-EMA (short-term trend reclaimed)
+    #   +30  recent volume expanding (5d avg vs 20d avg, 0.8x→0 .. 1.6x→30)
+    #   +15  MACD histogram positive (momentum turning up)
+    #   +15  5-day return positive
+    above_ema21 = ema21 is not None and last_close > float(ema21)
+    v5  = float(np.nanmean(vols[-5:]))
+    v20 = float(np.nanmean(vols[-20:]))
+    vol_expansion = (v5 / v20) if (np.isfinite(v5) and np.isfinite(v20) and v20 > 0) else 1.0
+    ret_5d = float(closes[-1] / closes[-6] - 1.0) if (n >= 6 and closes[-6] > 0) else 0.0
+    macd_hist = row.get("macd_hist")
+    confirm_raw = 0.0
+    if above_ema21:
+        confirm_raw += 40.0
+    confirm_raw += 30.0 * max(0.0, min(1.0, (vol_expansion - 0.8) / 0.8))
+    if macd_hist is not None and float(macd_hist) > 0:
+        confirm_raw += 15.0
+    if ret_5d > 0:
+        confirm_raw += 15.0
+
     return {
         "close":     last_close,
         "vc_ratio":  vc_ratio,
@@ -391,6 +452,7 @@ def _compute_raw_metrics(row: dict) -> dict | None:
         "mt_raw":    mt_raw,
         "dp_pct":    dp_pct,
         "sr_raw":    sr_raw,
+        "confirm_raw": confirm_raw,
     }
 
 
@@ -551,12 +613,56 @@ def _sr_score(closes_arr: np.ndarray) -> float:
     return float(100.0 * (0.40 * tightness + 0.30 * freshness + 0.30 * fan_out))
 
 
+def _apply_scores(raw_rows: list[dict], norm: dict) -> None:
+    """Percentile-rank the relative signals across the given pool, combine
+    with the absolute signals (SR / MT / DP / confirm), and stamp the per-
+    signal scores + weighted composite onto each row in place. Shared by
+    rank_universe() and log_features() so the watchlist and the ML feature
+    log score identically."""
+    if not raw_rows:
+        return
+    vc_pct = 100.0 - _percentile_rank(
+        [r["vc_ratio"] for r in raw_rows], ascending=True
+    )  # low ratio (contracting) = high score
+    rs_pct = _percentile_rank([r["ret_20d"] for r in raw_rows], ascending=True)
+    va_pct = _percentile_rank([r["va_ratio"] for r in raw_rows], ascending=True)
+    mt_arr = np.array([r["mt_raw"] for r in raw_rows], dtype=float)
+    dp_arr = np.array([_dp_bell_score(r["dp_pct"]) for r in raw_rows], dtype=float)
+    # SR / confirm are already absolute [0, 100] — used raw (not
+    # percentile-ranked) so their magnitude, not just their rank in the
+    # surviving pool, drives the composite.
+    sr_arr = np.array([r.get("sr_raw", 0.0) for r in raw_rows], dtype=float)
+    cf_arr = np.array([r.get("confirm_raw", 0.0) for r in raw_rows], dtype=float)
+
+    composites = (
+        norm.get("vc", 0.0) * np.nan_to_num(vc_pct)
+        + norm.get("rs", 0.0) * np.nan_to_num(rs_pct)
+        + norm.get("va", 0.0) * np.nan_to_num(va_pct)
+        + norm.get("mt", 0.0) * np.nan_to_num(mt_arr)
+        + norm.get("dp", 0.0) * np.nan_to_num(dp_arr)
+        + norm.get("sr", 0.0) * np.nan_to_num(sr_arr)
+        + norm.get("confirm", 0.0) * np.nan_to_num(cf_arr)
+    )
+    for i, r in enumerate(raw_rows):
+        r["vc_score"]  = float(vc_pct[i]) if np.isfinite(vc_pct[i]) else None
+        r["rs_score"]  = float(rs_pct[i]) if np.isfinite(rs_pct[i]) else None
+        r["va_score"]  = float(va_pct[i]) if np.isfinite(va_pct[i]) else None
+        r["mt_score"]  = float(mt_arr[i]) if np.isfinite(mt_arr[i]) else None
+        r["dp_score"]  = float(dp_arr[i]) if np.isfinite(dp_arr[i]) else None
+        r["sr_score"]  = float(sr_arr[i]) if np.isfinite(sr_arr[i]) else None
+        r["confirm_score"] = float(cf_arr[i]) if np.isfinite(cf_arr[i]) else None
+        r["composite"] = float(composites[i])
+
+
 def rank_universe(
     as_of: str | None = None,
     weights: dict | None = None,
     price_min: float = DEFAULT_PRICE_MIN,
     price_max: float = DEFAULT_PRICE_MAX,
     limit: int = DEFAULT_LIMIT,
+    min_composite: float = 0.0,
+    require_confirmation: bool = False,
+    confirm_min: float = 50.0,
 ) -> tuple[list[dict], str | None]:
     """Read the latest daily snapshot, compute the 5-signal composite
     per ticker, and return the top `limit` rows sorted by composite
@@ -600,44 +706,28 @@ def rank_universe(
                     "(price %g-%g)", as_of, price_min, price_max)
         return [], as_of
 
-    # Percentile-rank the universe per signal.
-    vc_pct = 100.0 - _percentile_rank(
-        [r["vc_ratio"] for r in raw_rows], ascending=True
-    )  # low ratio = high score
-    rs_pct = _percentile_rank(
-        [r["ret_20d"] for r in raw_rows], ascending=True
-    )
-    va_pct = _percentile_rank(
-        [r["va_ratio"] for r in raw_rows], ascending=True
-    )
-    mt_arr = np.array([r["mt_raw"] for r in raw_rows], dtype=float)
-    dp_arr = np.array([_dp_bell_score(r["dp_pct"]) for r in raw_rows], dtype=float)
-    # SR is already absolute [0, 100] (not percentile-ranked) — using
-    # the raw bell score directly so the magnitude of the SR signal
-    # matters, not just its rank in the surviving pool. A pool of weak
-    # SR scores shouldn't get artificially promoted.
-    sr_arr = np.array([r.get("sr_raw", 0.0) for r in raw_rows], dtype=float)
-
-    composites = (
-        norm["vc"] * np.nan_to_num(vc_pct)
-        + norm["rs"] * np.nan_to_num(rs_pct)
-        + norm["va"] * np.nan_to_num(va_pct)
-        + norm["mt"] * np.nan_to_num(mt_arr)
-        + norm["dp"] * np.nan_to_num(dp_arr)
-        + norm.get("sr", 0.0) * np.nan_to_num(sr_arr)
-    )
-
-    for i, r in enumerate(raw_rows):
-        r["vc_score"]  = float(vc_pct[i]) if np.isfinite(vc_pct[i]) else None
-        r["rs_score"]  = float(rs_pct[i]) if np.isfinite(rs_pct[i]) else None
-        r["va_score"]  = float(va_pct[i]) if np.isfinite(va_pct[i]) else None
-        r["mt_score"]  = float(mt_arr[i]) if np.isfinite(mt_arr[i]) else None
-        r["dp_score"]  = float(dp_arr[i]) if np.isfinite(dp_arr[i]) else None
-        r["sr_score"]  = float(sr_arr[i]) if np.isfinite(sr_arr[i]) else None
-        r["composite"] = float(composites[i])
-
+    # Score + rank the whole eligible pool.
+    _apply_scores(raw_rows, norm)
     raw_rows.sort(key=lambda r: -r["composite"])
-    top = raw_rows[:limit]
+
+    # --- absolute quality gates (tunable; default off) -----------------
+    # The composite is percentile-relative, so its top always scores high
+    # even in a weak tape. These optional gates let the watchlist return
+    # FEWER (or zero) picks when nothing is genuinely set up, instead of
+    # always emitting `limit` names. Wired from picker_cron via env vars.
+    pool = raw_rows
+    if require_confirmation:
+        before = len(pool)
+        pool = [r for r in pool if (r.get("confirm_score") or 0.0) >= confirm_min]
+        log.info("picker: confirmation gate (>= %.0f) kept %d of %d",
+                 confirm_min, len(pool), before)
+    if min_composite and min_composite > 0:
+        before = len(pool)
+        pool = [r for r in pool if r["composite"] >= min_composite]
+        log.info("picker: min-composite gate (>= %.1f) kept %d of %d",
+                 min_composite, len(pool), before)
+
+    top = pool[:limit]
     # Stamp rank + pick_date + persistence-name aliases so the live
     # response from /api/picks/run has the same shape as a load_picks()
     # response. The UI reads atr_ratio / dvol_ratio / dist_pivot — the
@@ -670,11 +760,13 @@ def save_picks(picks: list[dict], as_of: str) -> int:
                     "INSERT INTO nightly_picks ("
                     "  pick_date, rank, ticker, composite, "
                     "  vc_score, rs_score, va_score, mt_score, dp_score, sr_score, "
+                    "  confirm_score, "
                     "  close, atr_ratio, ret_20d, dvol_ratio, dist_pivot"
-                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (as_of, rank, p["ticker"], p["composite"],
                      p.get("vc_score"), p.get("rs_score"), p.get("va_score"),
                      p.get("mt_score"), p.get("dp_score"), p.get("sr_score"),
+                     p.get("confirm_score"),
                      p.get("close"), p.get("vc_ratio"),
                      p.get("ret_20d"), p.get("va_ratio"), p.get("dp_pct")),
                 )
@@ -702,7 +794,7 @@ def load_picks(as_of: str | None = None) -> list[dict]:
                 cur.execute(
                     "SELECT pick_date, rank, ticker, composite, "
                     "vc_score, rs_score, va_score, mt_score, dp_score, sr_score, "
-                    "close, atr_ratio, ret_20d, dvol_ratio, dist_pivot "
+                    "close, atr_ratio, ret_20d, dvol_ratio, dist_pivot, confirm_score "
                     "FROM nightly_picks WHERE pick_date = %s ORDER BY rank",
                     (as_of,),
                 )
@@ -710,7 +802,7 @@ def load_picks(as_of: str | None = None) -> list[dict]:
                 cur.execute(
                     "SELECT pick_date, rank, ticker, composite, "
                     "vc_score, rs_score, va_score, mt_score, dp_score, sr_score, "
-                    "close, atr_ratio, ret_20d, dvol_ratio, dist_pivot "
+                    "close, atr_ratio, ret_20d, dvol_ratio, dist_pivot, confirm_score "
                     "FROM nightly_picks WHERE pick_date = "
                     "(SELECT MAX(pick_date) FROM nightly_picks) ORDER BY rank"
                 )
@@ -733,11 +825,72 @@ def load_picks(as_of: str | None = None) -> list[dict]:
                 "ret_20d":    float(r[12]) if r[12] is not None else None,
                 "dvol_ratio": float(r[13]) if r[13] is not None else None,
                 "dist_pivot": float(r[14]) if r[14] is not None else None,
+                "confirm_score": float(r[15]) if r[15] is not None else None,
             })
         return out
     except Exception as exc:
         log.warning("picker.load_picks failed: %s", exc)
         return []
+
+
+def log_features(as_of: str | None = None,
+                 weights: dict | None = None,
+                 price_min: float = DEFAULT_PRICE_MIN,
+                 price_max: float = DEFAULT_PRICE_MAX) -> int:
+    """Score the WHOLE eligible universe for `as_of` and persist one row
+    per ticker to feature_log — the ML groundwork. Unlike nightly_picks,
+    which keeps only the top-N, this keeps every eligible name so a future
+    model has negatives as well as positives, and unlike daily_snapshot it
+    is never pruned. Best-effort: returns rows written, never raises."""
+    if not snapshots.enabled():
+        return 0
+    try:
+        from psycopg2.extras import execute_values
+        weights = {**DEFAULT_WEIGHTS, **(weights or {})}
+        total_w = sum(weights.values()) or 1.0
+        norm = {k: v / total_w for k, v in weights.items()}
+        if as_of is None:
+            dates = snapshots.available_dates(1)
+            if not dates:
+                return 0
+            as_of = dates[0]
+        raw_rows: list[dict] = []
+        for ticker, row in snapshots.iter_for_date(as_of):
+            if _is_warrant_unit_or_right(ticker):
+                continue
+            close = row.get("close")
+            if close is None or not (price_min <= float(close) <= price_max):
+                continue
+            m = _compute_raw_metrics(row)
+            if m is None:
+                continue
+            m["ticker"] = ticker
+            raw_rows.append(m)
+        if not raw_rows:
+            return 0
+        _apply_scores(raw_rows, norm)
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute("DELETE FROM feature_log WHERE as_of = %s", (as_of,))
+            execute_values(
+                cur,
+                "INSERT INTO feature_log ("
+                "  as_of, ticker, close, vc_ratio, ret_60d, va_ratio, mt_raw, "
+                "  dp_pct, sr_raw, confirm_raw, vc_score, rs_score, va_score, "
+                "  mt_score, dp_score, sr_score, confirm_score, composite"
+                ") VALUES %s",
+                [(as_of, r["ticker"], r.get("close"), r.get("vc_ratio"),
+                  r.get("ret_20d"), r.get("va_ratio"), r.get("mt_raw"),
+                  r.get("dp_pct"), r.get("sr_raw"), r.get("confirm_raw"),
+                  r.get("vc_score"), r.get("rs_score"), r.get("va_score"),
+                  r.get("mt_score"), r.get("dp_score"), r.get("sr_score"),
+                  r.get("confirm_score"), r.get("composite"))
+                 for r in raw_rows],
+            )
+        log.info("picker.log_features: wrote %d rows for %s", len(raw_rows), as_of)
+        return len(raw_rows)
+    except Exception as exc:
+        log.warning("picker.log_features failed: %s", exc)
+        return 0
 
 
 def get_config() -> dict:
