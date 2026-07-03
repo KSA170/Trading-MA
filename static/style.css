@@ -2383,7 +2383,24 @@ button.hidden { display: none; }
 }
 /* Stack every filter group full-width in the narrow rail (the section
    grid's auto-fill columns get squished otherwise). */
-.screener-rail .filter-section-grid { grid-template-columns: 1fr; }
+.screener-rail .filter-section-grid { grid-template-columns: 1fr; gap: 8px; }
+/* The SMA-Revival group is `.wide { grid-column: span 2 }` for the old
+   full-width layout. In the single-column rail that span spawns a phantom
+   implicit column that squashes the real one to ~0 and garbles the whole
+   section — pin every group back to one column. */
+.screener-rail .filter-group.wide { grid-column: auto; }
+
+/* Collapsible filter sections: click a section header to fold it. The
+   active-count badge stays visible when collapsed. */
+.filter-section-header { cursor: pointer; }
+.filter-section-header .chevron {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted);
+  transition: transform 0.12s ease;
+}
+.filter-section-header.collapsed .chevron { transform: rotate(-90deg); }
+.filter-section-header:hover { color: var(--text); }
 
 /* Run bar pinned to the bottom of the rail — the primary action lives
    with the filters, per the prototype. */
