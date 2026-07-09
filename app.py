@@ -1085,6 +1085,82 @@ def api_picks_config():
     return jsonify({"saved": ok, "config": picker.get_config()})
 
 
+# --- paper portfolio ------------------------------------------------------
+# A simulated $500k book. Buys are booked from the stock screener (day's
+# close) or the options screener (contract mid), each lot tagged with the
+# filter setup it came from. Mark-to-market + the equity curve are filled
+# by a nightly cron (added separately).
+
+@app.route("/api/portfolio", methods=["GET"])
+def api_portfolio():
+    import paper_portfolio as pp
+    return jsonify({
+        "portfolio": pp.get_portfolio(),
+        "summary": pp.summary(),
+        "positions": {
+            "open": pp.list_positions("open"),
+            "closed": pp.list_positions("closed"),
+        },
+    })
+
+
+@app.route("/api/portfolio/buy", methods=["POST"])
+def api_portfolio_buy():
+    """Book a lot. Body (stock): {asset_type:'stock', ticker, qty, price,
+    entry_date?, source_label?, source_filter?}. Body (option):
+    {asset_type:'option', ticker, option_type, strike, expiration,
+    contracts, mid, entry_date?, source_label?, source_filter?}."""
+    import paper_portfolio as pp
+    payload = request.get_json(silent=True) or {}
+    atype = str(payload.get("asset_type") or "").strip().lower()
+    src_label = payload.get("source_label")
+    src_filter = payload.get("source_filter")
+    entry_date = payload.get("entry_date")
+    if atype == "stock":
+        r = pp.buy_stock(payload.get("ticker"), payload.get("qty"),
+                         payload.get("price"), entry_date, src_label, src_filter)
+    elif atype == "option":
+        r = pp.buy_option(payload.get("ticker"), payload.get("option_type"),
+                          payload.get("strike"), payload.get("expiration"),
+                          payload.get("contracts"), payload.get("mid"),
+                          entry_date, src_label, src_filter)
+    else:
+        return jsonify({"ok": False, "error": "asset_type must be 'stock' or 'option'"}), 400
+    status = 200 if r.get("ok") else (409 if r.get("error") == "insufficient_cash" else 400)
+    return jsonify(r), status
+
+
+@app.route("/api/portfolio/sell", methods=["POST"])
+def api_portfolio_sell():
+    """Close a whole lot. Body: {position_id, price?}. Without `price`, the
+    lot's last mark is used, else a live price is fetched."""
+    import paper_portfolio as pp
+    payload = request.get_json(silent=True) or {}
+    pid = payload.get("position_id")
+    if pid is None:
+        return jsonify({"ok": False, "error": "position_id required"}), 400
+    raw_price = payload.get("price")
+    try:
+        price = float(raw_price) if raw_price not in (None, "") else None
+        r = pp.sell_position(int(pid), price)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "position_id / price must be numeric"}), 400
+    status = 200 if r.get("ok") else (404 if r.get("error") == "not_found" else 400)
+    return jsonify(r), status
+
+
+@app.route("/api/portfolio/equity", methods=["GET"])
+def api_portfolio_equity():
+    import paper_portfolio as pp
+    return jsonify({"equity": pp.equity_curve()})
+
+
+@app.route("/api/portfolio/by-source", methods=["GET"])
+def api_portfolio_by_source():
+    import paper_portfolio as pp
+    return jsonify({"by_source": pp.pnl_by_source()})
+
+
 # --- filter presets (cross-device persistence) ----------------------------
 # Stored in Postgres so the same saved filter setups load on every device.
 # Cap is enforced server-side via filter_presets.MAX_PRESETS. Falls back
@@ -1526,6 +1602,8 @@ def api_outcomes_option_delete():
 snapshots.init()
 alerts.init_tables()
 picker.init_tables()
+import paper_portfolio  # noqa: E402
+paper_portfolio.init_tables()
 filter_presets.init_tables()
 ui_prefs.init_tables()
 scanner_momentum.init_tables()
