@@ -507,3 +507,80 @@ def latest_mark(asset_type: str, ticker: str, option_type=None, strike=None,
     if under is not None and strike is not None:
         return option_intrinsic(_normalize_option_type(option_type), under, float(strike))
     return None
+
+
+# --- nightly mark-to-market (phase 2) -------------------------------------
+
+def mark_to_market(as_of: str | None = None) -> dict:
+    """Value every open lot at its latest price, auto-settle expired
+    options at intrinsic value, and append today's equity snapshot to
+    paper_equity (with SPY for benchmarking). Idempotent per date.
+
+    Options re-fetch the live chain; once the expiration date has passed
+    the lot is closed at intrinsic (underlying close vs strike) and the
+    proceeds booked to cash. Positions we can't price are left at their
+    prior mark and counted as `stale`.
+    """
+    if not snapshots.enabled():
+        return {"ok": False, "error": "no_db"}
+    as_of = as_of or date.today().isoformat()
+    today = date.today()
+    settled = stale = 0
+    updates: list[tuple] = []
+    for p in list_positions("open"):
+        atype, tk = p["asset_type"], p["ticker"]
+        otype, strike, exp = p["option_type"], p["strike"], p["expiration"]
+        # Expired option → settle at intrinsic value and close the lot.
+        if atype == "option" and exp:
+            try:
+                exp_d = date.fromisoformat(exp)
+            except Exception:
+                exp_d = None
+            if exp_d is not None and exp_d < today:
+                under = latest_stock_price(tk)
+                intrinsic = (option_intrinsic(otype, under, strike)
+                             if (under is not None and strike is not None) else 0.0)
+                if sell_position(p["id"], exit_price=intrinsic,
+                                 exit_date=as_of, action="expire").get("ok"):
+                    settled += 1
+                continue
+        mark = latest_mark(atype, tk, otype, strike, exp)
+        if mark is None:
+            stale += 1
+            continue
+        updates.append((float(mark), as_of, p["id"]))
+
+    if updates:
+        try:
+            with snapshots._conn() as c, c.cursor() as cur:
+                for mark, d, pid in updates:
+                    cur.execute(
+                        "UPDATE paper_positions SET last_price=%s, last_priced_at=%s "
+                        "WHERE id=%s AND status='open'", (mark, d, pid))
+        except Exception as exc:
+            log.warning("paper_portfolio.mark_to_market updates failed: %s", exc)
+
+    # Re-read after settlements/updates so the equity snapshot is current.
+    s = summary()
+    spy = latest_stock_price("SPY")
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO paper_equity "
+                "(as_of, cash, positions_value, total_equity, spy_close) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (as_of) DO UPDATE SET "
+                "  cash = EXCLUDED.cash, "
+                "  positions_value = EXCLUDED.positions_value, "
+                "  total_equity = EXCLUDED.total_equity, "
+                "  spy_close = EXCLUDED.spy_close",
+                (as_of, s["cash"], s["positions_value"], s["total_equity"], spy),
+            )
+    except Exception as exc:
+        log.warning("paper_portfolio.mark_to_market equity snapshot failed: %s", exc)
+
+    log.info("mark_to_market %s: marked=%d settled=%d stale=%d "
+             "equity=%.2f cash=%.2f", as_of, len(updates), settled, stale,
+             s["total_equity"], s["cash"])
+    return {"ok": True, "as_of": as_of, "marked": len(updates),
+            "settled": settled, "stale": stale, "spy_close": spy, **s}
