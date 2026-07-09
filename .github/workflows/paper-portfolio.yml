@@ -1,0 +1,33 @@
+name: Nightly paper-portfolio mark-to-market
+
+# Marks every open lot in the paper portfolio to its latest price,
+# auto-settles expired options at intrinsic value, and appends today's
+# equity point (with SPY) for the performance graph. Idempotent per date.
+#
+# Cron: 22:45 UTC weekdays = 15 min after the nightly outcomes filler, so
+# the day's closes are available from yfinance.
+on:
+  schedule:
+    - cron: '45 22 * * 1-5'
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly-paper-portfolio
+  cancel-in-progress: false
+
+jobs:
+  mark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Mark portfolio to market
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python paper_portfolio_cron.py
