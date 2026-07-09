@@ -114,6 +114,7 @@ const els = {
   selectionCount: $('#selection-count'),
   actionsMenuBtn: $('#actions-menu-btn'),
   actionsMenu: $('#actions-menu'),
+  portfolioBuyBtn: $('#portfolio-buy-btn'),
   emailBtn: $('#email-btn'),
   shareBtn: $('#share-btn'),
   exportTvBtn: $('#export-tv-btn'),
@@ -1391,7 +1392,7 @@ function updateSelectionUI() {
     els.selectionCount.textContent = count === 1 ? '1 selected' : `${count} selected`;
   }
   [els.actionsMenuBtn, els.emailBtn, els.shareBtn, els.exportTvBtn, els.alertsAddBtn,
-   els.reportAddBtn, els.exportBtn, els.clearSelectionBtn].forEach((b) => {
+   els.reportAddBtn, els.exportBtn, els.clearSelectionBtn, els.portfolioBuyBtn].forEach((b) => {
     if (b) b.disabled = count === 0;
   });
   // Close the actions menu when the selection empties out.
@@ -1761,6 +1762,13 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (m) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[m]));
+}
+
+// JSON-serialize a payload for embedding in an HTML attribute (e.g.
+// data-buy='...') — escapeHtml already turns quotes into entities, which
+// is exactly what's needed to sit safely inside a double-quoted attribute.
+function _jsonAttr(obj) {
+  return escapeHtml(JSON.stringify(obj));
 }
 
 // --- hover chart popover --------------------------------------------------
@@ -4040,6 +4048,11 @@ function renderOptionsResult(rec) {
         <div class="options-contract-line">
           <span class="muted">Suggested contract:</span>
           <span><b>${escapeHtml(c.contract_symbol || '')}</b></span>
+          <button type="button" class="scan-buy-btn" data-action="buy" data-buy="${_jsonAttr({
+            asset_type: 'option', ticker: rec.ticker, option_type: rec.direction,
+            strike: c.strike, expiration: c.expiration, price: c.mid,
+            source_label: 'options-analyze',
+          })}" title="Buy this contract into the paper portfolio at mid $${fmtNum(c.mid, 2)}">Buy…</button>
         </div>
         <div class="options-contract-grid">
           <div><span class="muted">Strike</span><span>$${fmtNum(c.strike, 2)}</span></div>
@@ -4300,20 +4313,25 @@ async function loadOptionsHistory(opts) {
 // original ids, so all handlers — including alert / momentum / picks config
 // and the endpoints they call — are untouched.
 const WS = {
-  stocks:  { btn: 'tab-btn-stock',   strip: 'subtabs-stocks',
-             subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts', 'report'] },
-  options: { btn: 'tab-btn-options', strip: 'subtabs-options',
-             subs: ['screener', 'report'] },
+  stocks:    { btn: 'tab-btn-stock',     strip: 'subtabs-stocks',
+               subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts', 'report'] },
+  options:   { btn: 'tab-btn-options',   strip: 'subtabs-options',
+               subs: ['screener', 'report'] },
+  // No sub-tab strip — a single view, so `strip` resolves to
+  // document.getElementById(undefined) === null everywhere it's read,
+  // which every call site already guards with `if (strip)`.
+  portfolio: { btn: 'tab-btn-portfolio', strip: null, subs: ['overview'] },
 };
-const _ALL_PANELS = ['tab-stock', 'tab-stock-report', 'tab-options', 'tab-options-report'];
-const _lastSub = { stocks: 'screener', options: 'screener' };
+const _ALL_PANELS = ['tab-stock', 'tab-stock-report', 'tab-options', 'tab-options-report', 'tab-portfolio'];
+const _lastSub = { stocks: 'screener', options: 'screener', portfolio: 'overview' };
 let _route = { ws: 'stocks', sub: 'screener' };
 
 // Which top-level panel a (workspace, sub-tab) route shows. When it resolves
 // to #tab-stock, `sub` also picks which [data-tool] section is visible.
 function _panelFor(ws, sub) {
   if (ws === 'stocks')  return sub === 'report' ? 'tab-stock-report' : 'tab-stock';
-  return sub === 'report' ? 'tab-options-report' : 'tab-options';
+  if (ws === 'options') return sub === 'report' ? 'tab-options-report' : 'tab-options';
+  return 'tab-portfolio';
 }
 
 function goTo(ws, sub, persist = true) {
@@ -4366,6 +4384,10 @@ function goTo(ws, sub, persist = true) {
   // Lazy-load report data on first activation.
   if (ws === 'stocks'  && sub === 'report' && !_stockReportLoaded)   loadStockReport();
   if (ws === 'options' && sub === 'report' && !_optionsReportLoaded) loadOptionsReport();
+  // Portfolio state changes from buys/sells made anywhere in the app, so
+  // (unlike the reports above) refresh every time the tab is opened
+  // rather than lazy-loading once.
+  if (ws === 'portfolio' && typeof loadPortfolio === 'function') loadPortfolio();
 }
 
 function _initialRoute() {
@@ -5100,6 +5122,13 @@ function renderScanCard(rec) {
     badges.push('<span class="scan-badge badge-override">post-earn expiry</span>');
   if (rec.earnings_spans_expiration)
     badges.push('<span class="scan-badge badge-warn">spans earnings</span>');
+  const buyBtn = c.contract_symbol
+    ? `<button type="button" class="scan-buy-btn" data-action="buy" data-buy="${_jsonAttr({
+        asset_type: 'option', ticker: rec.ticker, option_type: rec.direction,
+        strike: c.strike, expiration: c.expiration, price: c.mid,
+        source_label: 'options-scan',
+      })}" title="Buy this contract into the paper portfolio at mid $${fmtNum(c.mid, 2)}">Buy…</button>`
+    : '';
   return `
     <div class="scan-card verdict-${verdict.toLowerCase()}" data-ticker="${escapeHtml(rec.ticker)}">
       <div class="scan-card-head">
@@ -5108,6 +5137,7 @@ function renderScanCard(rec) {
         <span class="scan-ticker"><b>${escapeHtml(rec.ticker)}</b></span>
         <span class="muted">· composite <b>${score != null ? Math.round(score) : '—'}</b>/100</span>
         ${badges.join(' ')}
+        ${buyBtn}
       </div>
       ${contractLine}
       ${prose}
@@ -5338,6 +5368,12 @@ if (els.optionsScanCancelBtn) els.optionsScanCancelBtn.addEventListener('click',
 })();
 if (els.optionsScanList) {
   els.optionsScanList.addEventListener('click', (ev) => {
+    const buyBtn = ev.target.closest('[data-action="buy"]');
+    if (buyBtn) {
+      ev.stopPropagation();
+      try { openOptionBuyModal(JSON.parse(buyBtn.dataset.buy)); } catch (_) { /* ignore */ }
+      return;
+    }
     const card = ev.target.closest('.scan-card');
     if (card && card.dataset.ticker && els.optionsTicker) {
       els.optionsTicker.value = card.dataset.ticker;
@@ -5355,6 +5391,13 @@ if (els.optionsScanList) {
         }), 50);
       }
     }
+  });
+}
+if (els.optionsResult) {
+  els.optionsResult.addEventListener('click', (ev) => {
+    const buyBtn = ev.target.closest('[data-action="buy"]');
+    if (!buyBtn) return;
+    try { openOptionBuyModal(JSON.parse(buyBtn.dataset.buy)); } catch (_) { /* ignore */ }
   });
 }
 wireCollapse(els.optionsScanToggle, els.optionsScanBody, 'collapse_options_scan');
@@ -5821,3 +5864,438 @@ loadDates();
     wireCollapse(hdr, grid, 'collapse_fsec_' + idx);
   });
 })();
+
+// ===========================================================================
+// Paper portfolio (phase 3 UI) — buy modal + Portfolio tab
+// ===========================================================================
+// Backend already exists (paper_portfolio.py + /api/portfolio* endpoints,
+// phases 1-2). This wires: a shared "Buy" modal opened from the stock
+// screener's Actions menu and from options recommendation cards, and the
+// Portfolio tab itself (summary, equity chart vs SPY, open/closed
+// positions with Sell, and P&L grouped by the filter setup each buy came
+// from). All reads/writes go through the existing REST endpoints; no new
+// backend surface.
+
+// --- element refs (appended to the shared `els` object) --------------------
+els.pfCreatedAt      = $('#pf-created-at');
+els.pfRefreshBtn     = $('#pf-refresh-btn');
+els.pfTotalEquity    = $('#pf-total-equity');
+els.pfTotalReturn    = $('#pf-total-return');
+els.pfCash           = $('#pf-cash');
+els.pfPositionsValue = $('#pf-positions-value');
+els.pfRealized       = $('#pf-realized');
+els.pfUnrealized     = $('#pf-unrealized');
+els.pfChart          = $('#pf-chart');
+els.pfChartEmpty     = $('#pf-chart-empty');
+els.pfOpenCount      = $('#pf-open-count');
+els.pfOpenBody       = $('#pf-open-body');
+els.pfClosedToggle    = $('#pf-closed-toggle');
+els.pfClosedPanelBody = $('#pf-closed-panel-body');
+els.pfClosedCount     = $('#pf-closed-count');
+els.pfClosedTbody     = $('#pf-closed-tbody');
+els.pfSourceToggle    = $('#pf-source-toggle');
+els.pfSourcePanelBody = $('#pf-source-panel-body');
+els.pfSourceTbody     = $('#pf-source-tbody');
+
+const buyEls = {
+  modal:    $('#buy-modal'),
+  title:    $('#buy-modal-title'),
+  subtitle: $('#buy-modal-subtitle'),
+  rows:     $('#buy-modal-rows'),
+  totalCost: $('#buy-modal-total-cost'),
+  cashAfter: $('#buy-modal-cash-after'),
+  msg:      $('#buy-modal-msg'),
+  submit:   $('#buy-modal-submit'),
+};
+let _buyItems = [];
+let _portfolioCashCache = null;
+
+// --- shared formatting helpers ---------------------------------------------
+
+function _fmtMoney(n) {
+  if (n === null || n === undefined || Number.isNaN(n)) return '—';
+  const sign = n < 0 ? '-' : '';
+  return sign + '$' + Math.abs(n).toLocaleString(undefined,
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function _pnlColor(v) {
+  if (v === null || v === undefined) return '';
+  return v > 0 ? 'color:var(--green)' : v < 0 ? 'color:var(--red)' : '';
+}
+function _pnlText(v) {
+  if (v === null || v === undefined) return '—';
+  return (v > 0 ? '+' : '') + _fmtMoney(v);
+}
+function _positionTypeLabel(p) {
+  if (p.asset_type === 'option') {
+    return `${(p.option_type || 'call').toUpperCase()} $${fmtNum(p.strike, 2)} ${escapeHtml(p.expiration || '')}`;
+  }
+  return 'stock';
+}
+
+// --- buy modal ---------------------------------------------------------
+
+function _buyItemDetail(item) {
+  if (item.asset_type === 'option') {
+    const dir = (item.option_type || 'call').toUpperCase();
+    return `${dir} $${fmtNum(item.strike, 2)} ${escapeHtml(item.expiration || '')} @ mid $${fmtNum(item.price, 2)}`;
+  }
+  return `stock @ $${fmtNum(item.price, 2)}`;
+}
+function _buyItemMultiplier(item) { return item.asset_type === 'option' ? 100 : 1; }
+
+function renderBuyModalRows() {
+  if (!buyEls.rows) return;
+  buyEls.rows.innerHTML = _buyItems.map((item, idx) => `
+    <div class="buy-modal-row" data-idx="${idx}">
+      <span class="buy-row-ticker"><b>${escapeHtml(item.ticker)}</b> <span class="muted">${_buyItemDetail(item)}</span></span>
+      <label class="buy-row-qty">${item.asset_type === 'option' ? 'Contracts' : 'Shares'}
+        <input type="number" min="1" step="1" value="${item.qty}" data-role="qty" data-idx="${idx}">
+      </label>
+      <span class="buy-row-cost" data-role="cost"></span>
+    </div>
+  `).join('');
+  recomputeBuyModalTotals();
+}
+
+function recomputeBuyModalTotals() {
+  if (!buyEls.rows) return;
+  let total = 0;
+  buyEls.rows.querySelectorAll('.buy-modal-row').forEach((rowEl) => {
+    const idx = Number(rowEl.dataset.idx);
+    const item = _buyItems[idx];
+    if (!item) return;
+    const qtyInput = rowEl.querySelector('[data-role="qty"]');
+    const qty = Math.max(0, Number(qtyInput && qtyInput.value) || 0);
+    item.qty = qty;
+    const cost = qty * item.price * _buyItemMultiplier(item);
+    total += cost;
+    const costEl = rowEl.querySelector('[data-role="cost"]');
+    if (costEl) costEl.textContent = _fmtMoney(cost);
+  });
+  if (buyEls.totalCost) buyEls.totalCost.textContent = _fmtMoney(total);
+  if (buyEls.cashAfter) {
+    const cash = _portfolioCashCache;
+    if (cash == null) {
+      buyEls.cashAfter.textContent = '—';
+      buyEls.cashAfter.style.color = '';
+    } else {
+      const after = cash - total;
+      buyEls.cashAfter.textContent = _fmtMoney(after);
+      buyEls.cashAfter.style.color = after < 0 ? 'var(--red)' : '';
+    }
+  }
+}
+
+async function _refreshCashCache() {
+  try {
+    const res = await fetch('/api/portfolio', { cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    _portfolioCashCache = data && data.portfolio ? data.portfolio.cash : null;
+  } catch (_) {
+    _portfolioCashCache = null;
+  }
+}
+
+async function openBuyModal(items, title, subtitle) {
+  if (!buyEls.modal || !items || !items.length) return;
+  _buyItems = items;
+  if (buyEls.title) buyEls.title.textContent = title || 'Buy';
+  if (buyEls.subtitle) buyEls.subtitle.textContent = subtitle || '';
+  if (buyEls.msg) { buyEls.msg.textContent = ''; buyEls.msg.style.color = ''; }
+  await _refreshCashCache();
+  renderBuyModalRows();
+  try { buyEls.modal.showModal(); } catch (_) { /* already open */ }
+}
+
+function closeBuyModal() {
+  if (buyEls.modal && buyEls.modal.open) buyEls.modal.close();
+}
+
+function openStockBuyModal() {
+  const rows = selectedRows();
+  if (!rows.length) return;
+  const label = _presetActiveName || 'manual';
+  const filterState = collectFilterState();
+  const items = rows.map((r) => ({
+    asset_type: 'stock', ticker: r.ticker, price: r.close, qty: 100,
+    entry_date: r.as_of_date, source_label: label, source_filter: filterState,
+  }));
+  openBuyModal(
+    items,
+    `Buy ${items.length} stock${items.length > 1 ? 's' : ''}`,
+    `Booked at the close price shown in the screener. Source: "${escapeHtml(label)}".`
+  );
+}
+
+function openOptionBuyModal(payload) {
+  if (!payload || !payload.ticker) return;
+  let sourceFilter = null;
+  try { sourceFilter = typeof _readAdvancedFilters === 'function' ? _readAdvancedFilters() : null; }
+  catch (_) { sourceFilter = null; }
+  const item = {
+    asset_type: 'option', ticker: payload.ticker, option_type: payload.option_type,
+    strike: payload.strike, expiration: payload.expiration, price: payload.price,
+    qty: 1, source_label: payload.source_label || 'options-scan',
+    source_filter: sourceFilter,
+  };
+  openBuyModal(
+    [item],
+    `Buy ${item.ticker} ${(item.option_type || 'call').toUpperCase()} $${fmtNum(item.strike, 2)}`,
+    '1 contract = 100 shares. Booked at the recommended mid price.'
+  );
+}
+
+async function submitBuy() {
+  if (!_buyItems.length) return;
+  if (buyEls.submit) { buyEls.submit.disabled = true; buyEls.submit.textContent = 'Buying…'; }
+  if (buyEls.msg) { buyEls.msg.textContent = ''; buyEls.msg.style.color = ''; }
+  let okCount = 0;
+  const failMsgs = [];
+  for (const item of _buyItems) {
+    if (!item.qty || item.qty <= 0) { failMsgs.push(`${item.ticker}: qty must be > 0`); continue; }
+    const body = {
+      asset_type: item.asset_type, ticker: item.ticker,
+      source_label: item.source_label, source_filter: item.source_filter || null,
+    };
+    if (item.asset_type === 'stock') {
+      body.qty = item.qty; body.price = item.price;
+      if (item.entry_date) body.entry_date = item.entry_date;
+    } else {
+      body.contracts = item.qty; body.mid = item.price;
+      body.option_type = item.option_type; body.strike = item.strike;
+      body.expiration = item.expiration;
+    }
+    try {
+      const res = await fetch('/api/portfolio/buy', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) okCount++;
+      else failMsgs.push(`${item.ticker}: ${data.error || ('HTTP ' + res.status)}`);
+    } catch (_) {
+      failMsgs.push(`${item.ticker}: network error`);
+    }
+  }
+  if (buyEls.submit) { buyEls.submit.disabled = false; buyEls.submit.textContent = 'Buy'; }
+  if (failMsgs.length) {
+    if (buyEls.msg) {
+      buyEls.msg.textContent = `${okCount} bought, ${failMsgs.length} failed — ${failMsgs.join('; ')}`;
+      buyEls.msg.style.color = 'var(--red)';
+    }
+  } else {
+    setStatus(`Bought ${okCount} position${okCount > 1 ? 's' : ''} into the paper portfolio.`);
+    closeBuyModal();
+  }
+  if (typeof loadPortfolio === 'function') loadPortfolio();
+}
+
+if (buyEls.modal) {
+  buyEls.modal.addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-act="close"]')) { ev.preventDefault(); closeBuyModal(); }
+  });
+  buyEls.modal.addEventListener('close', () => {
+    if (buyEls.msg) { buyEls.msg.textContent = ''; buyEls.msg.style.color = ''; }
+  });
+}
+if (buyEls.rows) {
+  buyEls.rows.addEventListener('input', (ev) => {
+    if (ev.target.matches('[data-role="qty"]')) recomputeBuyModalTotals();
+  });
+  buyEls.rows.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && ev.target.matches('[data-role="qty"]')) {
+      ev.preventDefault();
+      submitBuy();
+    }
+  });
+}
+if (buyEls.submit) buyEls.submit.addEventListener('click', submitBuy);
+if (els.portfolioBuyBtn) els.portfolioBuyBtn.addEventListener('click', openStockBuyModal);
+
+// --- Portfolio tab -------------------------------------------------------
+
+function renderPortfolioSummary(portfolio, summary) {
+  if (els.pfCreatedAt) {
+    els.pfCreatedAt.textContent = portfolio && portfolio.created_at
+      ? `· started ${String(portfolio.created_at).slice(0, 10)}` : '';
+  }
+  if (els.pfTotalEquity) els.pfTotalEquity.textContent = _fmtMoney(summary.total_equity);
+  if (els.pfTotalReturn) {
+    const pct = summary.total_return_pct || 0;
+    els.pfTotalReturn.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+    els.pfTotalReturn.style.cssText = _pnlColor(pct);
+  }
+  if (els.pfCash) els.pfCash.textContent = _fmtMoney(summary.cash);
+  if (els.pfPositionsValue) els.pfPositionsValue.textContent = _fmtMoney(summary.positions_value);
+  if (els.pfRealized) {
+    els.pfRealized.textContent = _pnlText(summary.realized_pnl);
+    els.pfRealized.style.cssText = _pnlColor(summary.realized_pnl);
+  }
+  if (els.pfUnrealized) {
+    els.pfUnrealized.textContent = _pnlText(summary.unrealized_pnl);
+    els.pfUnrealized.style.cssText = _pnlColor(summary.unrealized_pnl);
+  }
+}
+
+function renderOpenPositions(rows) {
+  if (!els.pfOpenBody) return;
+  if (els.pfOpenCount) els.pfOpenCount.textContent = rows.length ? `(${rows.length})` : '';
+  if (!rows.length) {
+    els.pfOpenBody.innerHTML = '<tr class="empty"><td colspan="10">No open positions yet — buy from the Screener or Options tabs.</td></tr>';
+    return;
+  }
+  els.pfOpenBody.innerHTML = rows.map((p) => `
+    <tr data-id="${p.id}">
+      <td class="l"><b>${escapeHtml(p.ticker)}</b></td>
+      <td class="l">${_positionTypeLabel(p)}</td>
+      <td>${fmtNum(p.qty, 0)}</td>
+      <td class="l">${escapeHtml(p.entry_date || '')}</td>
+      <td>$${fmtNum(p.entry_price, 2)}</td>
+      <td>${p.last_price != null ? '$' + fmtNum(p.last_price, 2) : '—'}</td>
+      <td>${p.market_value != null ? _fmtMoney(p.market_value) : '—'}</td>
+      <td style="${_pnlColor(p.unrealized_pnl)}">${_pnlText(p.unrealized_pnl)}</td>
+      <td class="l pf-source-cell" title="${escapeHtml(p.source_label || '')}">${escapeHtml(p.source_label || '(unlabeled)')}</td>
+      <td><button type="button" class="pf-sell-btn" data-action="sell" data-id="${p.id}" title="Sell at the latest available price">Sell</button></td>
+    </tr>`).join('');
+}
+
+function renderClosedPositions(rows) {
+  if (!els.pfClosedTbody) return;
+  if (els.pfClosedCount) els.pfClosedCount.textContent = rows.length ? `(${rows.length})` : '';
+  if (!rows.length) {
+    els.pfClosedTbody.innerHTML = '<tr class="empty"><td colspan="9">No closed positions yet.</td></tr>';
+    return;
+  }
+  els.pfClosedTbody.innerHTML = rows.map((p) => `
+    <tr>
+      <td class="l"><b>${escapeHtml(p.ticker)}</b></td>
+      <td class="l">${_positionTypeLabel(p)}</td>
+      <td>${fmtNum(p.qty, 0)}</td>
+      <td class="l">${escapeHtml(p.entry_date || '')}</td>
+      <td>$${fmtNum(p.entry_price, 2)}</td>
+      <td class="l">${escapeHtml(p.exit_date || '')}</td>
+      <td>${p.exit_price != null ? '$' + fmtNum(p.exit_price, 2) : '—'}</td>
+      <td style="${_pnlColor(p.realized_pnl)}">${_pnlText(p.realized_pnl)}</td>
+      <td class="l pf-source-cell" title="${escapeHtml(p.source_label || '')}">${escapeHtml(p.source_label || '(unlabeled)')}</td>
+    </tr>`).join('');
+}
+
+function renderBySource(rows) {
+  if (!els.pfSourceTbody) return;
+  if (!rows.length) {
+    els.pfSourceTbody.innerHTML = '<tr class="empty"><td colspan="8">Buy a position to start tracking P&amp;L by setup.</td></tr>';
+    return;
+  }
+  els.pfSourceTbody.innerHTML = rows.map((s) => `
+    <tr>
+      <td class="l pf-source-cell" title="${escapeHtml(s.source_label)}">${escapeHtml(s.source_label)}</td>
+      <td>${s.positions}</td>
+      <td>${s.open}</td>
+      <td>${s.closed}</td>
+      <td>${_fmtMoney(s.cost_basis)}</td>
+      <td style="${_pnlColor(s.realized_pnl)}">${_pnlText(s.realized_pnl)}</td>
+      <td style="${_pnlColor(s.unrealized_pnl)}">${_pnlText(s.unrealized_pnl)}</td>
+      <td style="${_pnlColor(s.total_pnl)}"><b>${_pnlText(s.total_pnl)}</b></td>
+    </tr>`).join('');
+}
+
+let _pfChart = null;
+function renderPortfolioChart(equity) {
+  if (!els.pfChart) return;
+  const rows = (equity || []).filter((r) => r.as_of && r.total_equity != null);
+  if (!rows.length) {
+    if (els.pfChartEmpty) els.pfChartEmpty.hidden = false;
+    els.pfChart.style.display = 'none';
+    return;
+  }
+  if (els.pfChartEmpty) els.pfChartEmpty.hidden = true;
+  els.pfChart.style.display = '';
+  if (typeof LightweightCharts === 'undefined') return;
+  if (!_pfChart) {
+    _pfChart = LightweightCharts.createChart(els.pfChart, {
+      layout: { background: { color: '#161b22' }, textColor: '#c9d1d9' },
+      grid: { vertLines: { color: '#22272e' }, horzLines: { color: '#22272e' } },
+      rightPriceScale: { borderColor: '#2a313c' },
+      timeScale: { borderColor: '#2a313c' },
+      crosshair: { mode: 1 },
+      autoSize: true,
+    });
+    _pfChart._equitySeries = _pfChart.addSeries(LightweightCharts.LineSeries, {
+      color: '#58a6ff', lineWidth: 2, title: 'Portfolio',
+      priceFormat: { type: 'percent' },
+    });
+    _pfChart._spySeries = _pfChart.addSeries(LightweightCharts.LineSeries, {
+      color: '#8b949e', lineWidth: 1, title: 'SPY (buy & hold)',
+      priceFormat: { type: 'percent' },
+    });
+  }
+  const startEquity = rows[0].total_equity;
+  const spyRows = rows.filter((r) => r.spy_close != null);
+  const startSpy = spyRows.length ? spyRows[0].spy_close : null;
+  const equityPct = rows.map((r) => ({
+    time: r.as_of, value: startEquity ? ((r.total_equity / startEquity - 1) * 100) : 0,
+  }));
+  _pfChart._equitySeries.setData(equityPct);
+  if (startSpy) {
+    _pfChart._spySeries.setData(spyRows.map((r) => ({
+      time: r.as_of, value: (r.spy_close / startSpy - 1) * 100,
+    })));
+  }
+  _pfChart.timeScale().fitContent();
+}
+
+async function sellPosition(positionId, btnEl) {
+  if (!confirm('Sell this position at the latest available price?')) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Selling…'; }
+  try {
+    const res = await fetch('/api/portfolio/sell', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ position_id: positionId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      setStatus('Sell failed: ' + (data.error || ('HTTP ' + res.status)));
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Sell'; }
+      return;
+    }
+    setStatus(`Sold — realized P&L ${_pnlText(data.realized_pnl)}`);
+    loadPortfolio();
+  } catch (_) {
+    setStatus('Sell failed: network error');
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Sell'; }
+  }
+}
+
+async function loadPortfolio() {
+  try {
+    const [pfRes, eqRes, srcRes] = await Promise.all([
+      fetch('/api/portfolio', { cache: 'no-store' }),
+      fetch('/api/portfolio/equity', { cache: 'no-store' }),
+      fetch('/api/portfolio/by-source', { cache: 'no-store' }),
+    ]);
+    const pfData = await pfRes.json().catch(() => ({}));
+    const eqData = await eqRes.json().catch(() => ({}));
+    const srcData = await srcRes.json().catch(() => ({}));
+    _portfolioCashCache = pfData.portfolio ? pfData.portfolio.cash : null;
+    renderPortfolioSummary(pfData.portfolio || {}, pfData.summary || {});
+    renderOpenPositions((pfData.positions && pfData.positions.open) || []);
+    renderClosedPositions((pfData.positions && pfData.positions.closed) || []);
+    renderPortfolioChart(eqData.equity || []);
+    renderBySource(srcData.by_source || []);
+  } catch (err) {
+    setStatus('Failed to load portfolio: ' + (err && err.message ? err.message : 'error'));
+  }
+}
+
+if (els.pfOpenBody) {
+  els.pfOpenBody.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-action="sell"]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    if (id) sellPosition(id, btn);
+  });
+}
+if (els.pfRefreshBtn) els.pfRefreshBtn.addEventListener('click', loadPortfolio);
+wireCollapse(els.pfClosedToggle, els.pfClosedPanelBody, 'collapse_pf_closed');
+wireCollapse(els.pfSourceToggle, els.pfSourcePanelBody, 'collapse_pf_source');

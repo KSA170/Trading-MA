@@ -19,8 +19,9 @@
   <header class="topbar">
     <h1>Trading MA <span class="muted">— Breakout Screener</span></h1>
     <nav class="app-tabs workspaces" role="tablist" aria-label="Workspace">
-      <button id="tab-btn-stock"   type="button" class="app-tab active" role="tab" aria-selected="true"  data-ws="stocks">Stocks</button>
-      <button id="tab-btn-options" type="button" class="app-tab"        role="tab" aria-selected="false" data-ws="options">Options</button>
+      <button id="tab-btn-stock"     type="button" class="app-tab active" role="tab" aria-selected="true"  data-ws="stocks">Stocks</button>
+      <button id="tab-btn-options"   type="button" class="app-tab"        role="tab" aria-selected="false" data-ws="options">Options</button>
+      <button id="tab-btn-portfolio" type="button" class="app-tab"        role="tab" aria-selected="false" data-ws="portfolio">Portfolio</button>
     </nav>
     <div class="status">
       <span id="status-text">idle</span>
@@ -346,6 +347,7 @@
         <div class="actions-menu-wrap">
           <button id="actions-menu-btn" type="button" disabled title="Actions for the selected tickers">Actions ▾</button>
           <div id="actions-menu" class="actions-menu hidden">
+            <button id="portfolio-buy-btn" type="button" disabled title="Buy the selected tickers into the paper portfolio at the close price shown here">Buy (paper portfolio)…</button>
             <button id="alerts-add-btn" type="button" disabled title="Add selected tickers to the realtime alert watchlist (Telegram)">Add to alerts</button>
             <button id="report-add-btn" type="button" disabled title="Track the selected tickers in the Stock Strategy Report — uses each row's latest close + as-of date as the entry, then forward-fills returns nightly.">Add to Strategy Report</button>
             <button id="export-tv-btn" type="button" disabled title="Download selected tickers as a TradingView-importable watchlist (.txt)">Export for TradingView</button>
@@ -1034,6 +1036,105 @@
       <p class="muted options-disclaimer">Underlying returns only — yfinance doesn't expose historical contract prices, so contract P&amp;L isn't tracked. The ITM-at-expiration column is computed from the underlying close on the expiration date.</p>
     </section>
   </div><!-- /#tab-options-report -->
+
+  <div id="tab-portfolio" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-portfolio">
+    <section class="portfolio-view">
+      <div class="portfolio-head">
+        <h2>Paper Portfolio <span class="muted" id="pf-created-at"></span></h2>
+        <button id="pf-refresh-btn" type="button" class="refresh-btn" title="Reload from server">↻</button>
+      </div>
+      <div class="portfolio-summary-grid">
+        <div class="portfolio-card"><span class="pf-card-label muted">Total equity</span><span class="pf-card-val" id="pf-total-equity">—</span></div>
+        <div class="portfolio-card"><span class="pf-card-label muted">Total return</span><span class="pf-card-val" id="pf-total-return">—</span></div>
+        <div class="portfolio-card"><span class="pf-card-label muted">Cash</span><span class="pf-card-val" id="pf-cash">—</span></div>
+        <div class="portfolio-card"><span class="pf-card-label muted">Positions value</span><span class="pf-card-val" id="pf-positions-value">—</span></div>
+        <div class="portfolio-card"><span class="pf-card-label muted">Realized P&amp;L</span><span class="pf-card-val" id="pf-realized">—</span></div>
+        <div class="portfolio-card"><span class="pf-card-label muted">Unrealized P&amp;L</span><span class="pf-card-val" id="pf-unrealized">—</span></div>
+      </div>
+
+      <div class="portfolio-chart-wrap">
+        <h3 class="picks-tune-h">Performance <span class="muted">— total equity vs SPY buy &amp; hold, both indexed to the portfolio's first equity snapshot</span></h3>
+        <div id="pf-chart" class="portfolio-chart"></div>
+        <p class="muted pf-chart-empty" id="pf-chart-empty" hidden>No equity history yet — the nightly mark-to-market job appends a point once positions exist and it has run.</p>
+      </div>
+
+      <div class="portfolio-positions-wrap">
+        <h3 class="picks-tune-h">Open positions <span class="muted" id="pf-open-count"></span></h3>
+        <div class="table-wrap">
+          <table id="pf-open-table">
+            <thead>
+              <tr>
+                <th class="l">Ticker</th><th class="l">Type</th><th>Qty</th><th class="l">Entry date</th>
+                <th>Entry</th><th>Last</th><th>Mkt value</th><th>Unreal. P&amp;L</th><th class="l">Source</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="pf-open-body"><tr class="empty"><td colspan="10">No open positions yet — buy from the Screener or Options tabs.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <section class="match-history pf-closed-panel">
+        <button id="pf-closed-toggle" type="button" class="section-toggle" aria-controls="pf-closed-panel-body" aria-expanded="true">
+          <span class="chevron">▾</span> Closed positions <span class="muted" id="pf-closed-count"></span>
+        </button>
+        <div id="pf-closed-panel-body" class="history-body">
+          <div class="table-wrap">
+            <table id="pf-closed-table">
+              <thead>
+                <tr>
+                  <th class="l">Ticker</th><th class="l">Type</th><th>Qty</th><th class="l">Entry date</th>
+                  <th>Entry</th><th class="l">Exit date</th><th>Exit</th><th>Realized P&amp;L</th><th class="l">Source</th>
+                </tr>
+              </thead>
+              <tbody id="pf-closed-tbody"><tr class="empty"><td colspan="9">No closed positions yet.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="match-history pf-source-panel">
+        <button id="pf-source-toggle" type="button" class="section-toggle" aria-controls="pf-source-panel-body" aria-expanded="true">
+          <span class="chevron">▾</span> P&amp;L by filter setup <span class="muted">— which setups made money</span>
+        </button>
+        <div id="pf-source-panel-body" class="history-body">
+          <div class="table-wrap">
+            <table id="pf-source-table">
+              <thead>
+                <tr>
+                  <th class="l">Source</th><th>Positions</th><th>Open</th><th>Closed</th>
+                  <th>Cost basis</th><th>Realized P&amp;L</th><th>Unrealized P&amp;L</th><th>Total P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody id="pf-source-tbody"><tr class="empty"><td colspan="8">Buy a position to start tracking P&amp;L by setup.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <p class="muted pf-disclaimer">⚠ Simulated portfolio — no real orders are placed. Stocks are booked at the close price shown in the screener; options at the recommended contract's mid (×100/contract). Positions are marked nightly; options settle at intrinsic value once expired. Starting cash $500,000, cash-only (no margin), whole-lot sells, no fees modeled.</p>
+    </section>
+  </div><!-- /#tab-portfolio -->
+
+  <dialog id="buy-modal" class="buy-modal" aria-labelledby="buy-modal-title">
+    <form id="buy-form" method="dialog">
+      <header class="buy-modal-header">
+        <h2 id="buy-modal-title">Buy</h2>
+        <button type="button" class="buy-modal-close" data-act="close" aria-label="Close">×</button>
+      </header>
+      <div class="buy-modal-body">
+        <p class="muted" id="buy-modal-subtitle"></p>
+        <div id="buy-modal-rows" class="buy-modal-rows"></div>
+        <div class="buy-modal-totals">
+          <span>Total cost: <b id="buy-modal-total-cost">$0.00</b></span>
+          <span>Cash after: <b id="buy-modal-cash-after">—</b></span>
+        </div>
+        <p class="muted" id="buy-modal-msg"></p>
+      </div>
+      <footer class="buy-modal-footer">
+        <button type="button" class="buy-modal-cancel" data-act="close">Cancel</button>
+        <button type="button" id="buy-modal-submit" class="primary">Buy</button>
+      </footer>
+    </form>
+  </dialog>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
