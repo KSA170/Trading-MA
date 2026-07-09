@@ -2564,3 +2564,108 @@ button.hidden { display: none; }
 }
 .actions-menu button:disabled { opacity: 0.4; }
 .toolbar-spacer { flex: 1 1 auto; }
+
+/* ===================================================================== */
+/* Paper portfolio (phase 3 UI)                                          */
+/* ===================================================================== */
+
+.portfolio-view { padding: 16px 20px; }
+.portfolio-head {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+}
+.portfolio-head h2 { margin: 0; font-size: 16px; }
+
+.portfolio-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.portfolio-card {
+  display: flex; flex-direction: column; gap: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.pf-card-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.pf-card-val { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.portfolio-chart-wrap { margin-bottom: 20px; }
+.portfolio-chart {
+  height: 280px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #161b22;
+}
+.pf-chart-empty { margin-top: 8px; }
+
+.portfolio-positions-wrap { margin-bottom: 18px; }
+.portfolio-positions-wrap h3 { display: flex; align-items: center; gap: 8px; }
+
+.pf-sell-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  color: var(--red);
+  border-color: var(--border);
+}
+.pf-sell-btn:hover { border-color: var(--red); }
+.pf-sell-btn:disabled { opacity: 0.5; cursor: default; }
+
+.pf-source-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-disclaimer { margin-top: 14px; }
+
+/* --- buy modal ---------------------------------------------------------- */
+.buy-modal {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+  max-width: 560px;
+  width: 92vw;
+  max-height: 88vh;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+}
+.buy-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
+#buy-form { display: flex; flex-direction: column; max-height: 88vh; }
+.buy-modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.buy-modal-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.buy-modal-close {
+  background: none; border: none; color: var(--muted);
+  font-size: 22px; line-height: 1; cursor: pointer; padding: 0 6px;
+}
+.buy-modal-close:hover { color: var(--text); }
+.buy-modal-body { padding: 14px 18px; overflow-y: auto; }
+.buy-modal-rows { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
+.buy-modal-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 8px 10px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  flex-wrap: wrap;
+}
+.buy-row-ticker { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.buy-row-qty { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.buy-row-qty input { width: 80px; }
+.buy-row-cost { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 110px; text-align: right; }
+.buy-modal-totals {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 13px; padding-top: 10px; border-top: 1px solid var(--border);
+}
+.buy-modal-footer {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 18px; border-top: 1px solid var(--border);
+}
+
+.scan-buy-btn {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 3px 10px;
+  color: var(--accent);
+  border-color: var(--border);
+}
+.scan-buy-btn:hover { border-color: var(--accent); }
