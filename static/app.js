@@ -764,6 +764,21 @@ let _presetsHydrated = false;
 // a native <select> won't re-fire 'change' for the option it already
 // shows). Drives the Delete button.
 let _presetActiveName = '';
+// True once the user edits any filter after a preset loaded (or from a
+// fresh/reset state) — i.e. the live filters no longer match what
+// _presetActiveName was saved/loaded as. Paper-portfolio buys read this
+// so a tweaked-but-unsaved filter set is labeled "manual" instead of
+// misattributing P&L to a preset name that no longer describes it.
+// Programmatic value changes (applyFilterState) don't fire input/change,
+// so loading a preset doesn't spuriously mark itself dirty.
+let _presetDirty = false;
+(function () {
+  const filters = document.getElementById('filters-section');
+  if (!filters) return;
+  const markDirty = () => { _presetDirty = true; };
+  filters.addEventListener('input', markDirty);
+  filters.addEventListener('change', markDirty);
+})();
 
 function setDefaultsMsg(text, kind) {
   if (!els.defaultsMsg) return;
@@ -888,6 +903,7 @@ async function savePreset() {
   const { ok, status, data } = await mutatePresets('save', { name, state: collectFilterState() });
   if (ok) {
     _presetActiveName = data.name || name;
+    _presetDirty = false;
     _applyStoreFromResponse(data, '');
     setDefaultsMsg(`Saved "${data.name || name}".`, 'ok');
   } else if (status === 409 && data.error === 'cap_reached') {
@@ -913,6 +929,7 @@ async function onPresetSelect() {
   const preset = _presetCache.presets.find((p) => p.name === name);
   if (!preset) { updatePresetButtonState(_presetCache); return; }
   _presetActiveName = name;
+  _presetDirty = false;
   applyFilterState(preset.state);
   updatePresetButtonState(_presetCache);
   setDefaultsMsg(`Loaded "${name}".`, 'ok');
@@ -1005,6 +1022,7 @@ async function loadFilterDefaults() {
     const preset = (data.presets || []).find((p) => p.name === data.last_used);
     if (preset) {
       _presetActiveName = data.last_used;
+      _presetDirty = false;
       applyFilterState(preset.state);
       updatePresetButtonState(_presetCache);
       setDefaultsMsg(`Loaded "${data.last_used}" (last used).`, '');
@@ -4139,6 +4157,13 @@ function _renderOptionsHistoryRow(r, opts) {
   // (which spans dates), the date is the main thing telling rows apart.
   const dateStr = as_of ? `<span class="muted">${escapeHtml(as_of)}</span>` : '';
   const pinBtn = `<button type="button" class="pin-btn ${isPinned ? 'pinned' : ''}" data-action="pin" data-ticker="${escapeHtml(ticker)}" data-as-of="${escapeHtml(as_of)}" data-pin-id="${pin ? pin.id : ''}" title="${isPinned ? 'Unpin this recommendation' : 'Pin so it stays accessible across days'}">📌${isPinned ? ' Pinned' : ' Pin'}</button>`;
+  const buyBtn = (r.strike != null && r.mid_price != null)
+    ? `<button type="button" class="scan-buy-btn" data-action="buy" data-buy="${_jsonAttr({
+        asset_type: 'option', ticker, option_type: r.direction,
+        strike: r.strike, expiration: r.expiration, price: r.mid_price,
+        source_label: 'options-history',
+      })}" title="Buy this contract into the paper portfolio at mid $${fmtNum(r.mid_price, 2)}">Buy…</button>`
+    : '';
   const pinnedMeta = isPinned && pin && pin.pinned_at
     ? `<span class="pinned-meta">📌 pinned ${escapeHtml(pin.pinned_at.slice(0, 16).replace('T', ' '))}</span>`
     : '';
@@ -4154,6 +4179,7 @@ function _renderOptionsHistoryRow(r, opts) {
       <span class="muted">${escapeHtml(r.expiration || '')} ${strikeStr}</span>
       <span class="muted">${midStr}</span>
       <span class="muted">${compositeStr}</span>
+      ${buyBtn}
       ${pinBtn}
       ${pinnedMeta}
       ${noteInput}
@@ -5045,6 +5071,13 @@ function _savePinNote(pinId, note) {
 
 if (els.optionsHistoryList) {
   els.optionsHistoryList.addEventListener('click', (ev) => {
+    // Buy button — handle before the row-click → analyze path.
+    const buyBtn = ev.target.closest('[data-action="buy"]');
+    if (buyBtn) {
+      ev.stopPropagation();
+      try { openOptionBuyModal(JSON.parse(buyBtn.dataset.buy)); } catch (_) { /* ignore */ }
+      return;
+    }
     // Pin/unpin button — handle before the row-click → analyze path.
     const pinBtn = ev.target.closest('button[data-action="pin"]');
     if (pinBtn) {
@@ -6015,7 +6048,10 @@ function closeBuyModal() {
 function openStockBuyModal() {
   const rows = selectedRows();
   if (!rows.length) return;
-  const label = _presetActiveName || 'manual';
+  // Only credit the loaded preset's name when the live filters still
+  // match it — any edit since it loaded (or no preset ever loaded) means
+  // this is a custom/unsaved combination, not that preset.
+  const label = (_presetActiveName && !_presetDirty) ? _presetActiveName : 'manual';
   const filterState = collectFilterState();
   const items = rows.map((r) => ({
     asset_type: 'stock', ticker: r.ticker, price: r.close, qty: 100,
