@@ -2669,3 +2669,13 @@ button.hidden { display: none; }
   border-color: var(--border);
 }
 .scan-buy-btn:hover { border-color: var(--accent); }
+
+/* The shared .scan-buy-btn's margin-left:auto is tuned for flex
+   containers (.scan-card-head / .options-contract-line). The history row
+   is a CSS grid with a fixed column template, so override it to sit like
+   its sibling .pin-btn instead of relying on flex-only alignment. */
+.options-history-row .scan-buy-btn {
+  margin-left: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+}
