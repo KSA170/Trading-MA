@@ -39,11 +39,9 @@
     <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="momentum">Momentum</button>
     <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="setups">Setups</button>
     <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="alerts">Alerts</button>
-    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="report">Report</button>
   </nav>
   <nav class="subtabs" id="subtabs-options" role="tablist" aria-label="Options tools" hidden>
     <button type="button" class="subtab active" role="tab" aria-selected="true"  data-sub="screener">Screener</button>
-    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="report">Report</button>
   </nav>
 
   <div id="tab-stock" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-stock" data-active-tool="screener">
@@ -845,33 +843,6 @@
 
   </div><!-- /#tab-stock -->
 
-  <div id="tab-stock-report" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-stock">
-    <section class="report-tab">
-      <div class="report-controls">
-        <label class="muted">Lookback
-          <select id="stock-report-days">
-            <option value="30">30 days</option>
-            <option value="60">60 days</option>
-            <option value="90" selected>90 days</option>
-            <option value="180">180 days</option>
-          </select>
-        </label>
-        <label class="muted">Horizon
-          <select id="stock-report-horizon">
-            <option value="1">1d</option>
-            <option value="3">3d</option>
-            <option value="5" selected>5d</option>
-            <option value="10">10d</option>
-            <option value="20">20d</option>
-          </select>
-        </label>
-        <button id="stock-report-refresh" type="button" class="primary">Refresh</button>
-        <span id="stock-report-status" class="muted"></span>
-      </div>
-      <div id="stock-report-body" class="report-body"></div>
-    </section>
-  </div><!-- /#tab-stock-report -->
-
   <div id="tab-options" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-options">
     <section class="options-screener">
       <div class="options-controls">
@@ -1008,34 +979,6 @@
       <p class="muted options-disclaimer">⚠ Informational only — not financial advice. Options can expire worthless; size positions accordingly and verify all numbers against your broker before placing a trade. Composite score uses public data only (yfinance, Finnhub insider Form 4); dark pool prints, unusual options flow, and 13F filings require paid data feeds and are not measured.</p>
     </section>
   </div><!-- /#tab-options -->
-
-  <div id="tab-options-report" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-options">
-    <section class="report-tab">
-      <div class="report-controls">
-        <label class="muted">Lookback
-          <select id="options-report-days">
-            <option value="30">30 days</option>
-            <option value="60">60 days</option>
-            <option value="90" selected>90 days</option>
-            <option value="180">180 days</option>
-          </select>
-        </label>
-        <label class="muted">Underlying horizon
-          <select id="options-report-horizon">
-            <option value="1">1d</option>
-            <option value="3">3d</option>
-            <option value="5" selected>5d</option>
-            <option value="10">10d</option>
-            <option value="20">20d</option>
-          </select>
-        </label>
-        <button id="options-report-refresh" type="button" class="primary">Refresh</button>
-        <span id="options-report-status" class="muted"></span>
-      </div>
-      <div id="options-report-body" class="report-body"></div>
-      <p class="muted options-disclaimer">Underlying returns only — yfinance doesn't expose historical contract prices, so contract P&amp;L isn't tracked. The ITM-at-expiration column is computed from the underlying close on the expiration date.</p>
-    </section>
-  </div><!-- /#tab-options-report -->
 
   <div id="tab-portfolio" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-portfolio">
     <section class="portfolio-view">

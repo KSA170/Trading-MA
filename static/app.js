@@ -262,22 +262,8 @@ const els = {
   optionsScanBody: $('#options-scan-body'),
   tabBtnStock: $('#tab-btn-stock'),
   tabBtnOptions: $('#tab-btn-options'),
-  tabBtnStockReport: $('#tab-btn-stock-report'),
-  tabBtnOptionsReport: $('#tab-btn-options-report'),
   tabStock: $('#tab-stock'),
   tabOptions: $('#tab-options'),
-  tabStockReport: $('#tab-stock-report'),
-  tabOptionsReport: $('#tab-options-report'),
-  stockReportDays: $('#stock-report-days'),
-  stockReportHorizon: $('#stock-report-horizon'),
-  stockReportRefresh: $('#stock-report-refresh'),
-  stockReportStatus: $('#stock-report-status'),
-  stockReportBody: $('#stock-report-body'),
-  optionsReportDays: $('#options-report-days'),
-  optionsReportHorizon: $('#options-report-horizon'),
-  optionsReportRefresh: $('#options-report-refresh'),
-  optionsReportStatus: $('#options-report-status'),
-  optionsReportBody: $('#options-report-body'),
   setupsStatus: $('#setups-status'),
   setupsMinScore: $('#setups-min-score'),
   setupsMinPrice: $('#setups-min-price'),
@@ -2132,10 +2118,9 @@ async function addSelectedToReport(rows) {
       return;
     }
     const n = data.recorded || 0;
-    setStatus(`added ${n} to Strategy Report — open the tab to view`);
-    // If the Stock Strategy Report tab has been opened this session,
-    // invalidate the cache so its next activation re-fetches.
-    _stockReportLoaded = false;
+    // The Report tab that used to show this has been removed from the UI;
+    // the entries are still recorded (stock_outcomes) for now.
+    setStatus(`Recorded ${n} ticker${n === 1 ? '' : 's'} for forward-return tracking.`);
   } catch (_) {
     setStatus('Add to report failed');
   }
@@ -4340,23 +4325,23 @@ async function loadOptionsHistory(opts) {
 // and the endpoints they call — are untouched.
 const WS = {
   stocks:    { btn: 'tab-btn-stock',     strip: 'subtabs-stocks',
-               subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts', 'report'] },
+               subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts'] },
   options:   { btn: 'tab-btn-options',   strip: 'subtabs-options',
-               subs: ['screener', 'report'] },
+               subs: ['screener'] },
   // No sub-tab strip — a single view, so `strip` resolves to
   // document.getElementById(undefined) === null everywhere it's read,
   // which every call site already guards with `if (strip)`.
   portfolio: { btn: 'tab-btn-portfolio', strip: null, subs: ['overview'] },
 };
-const _ALL_PANELS = ['tab-stock', 'tab-stock-report', 'tab-options', 'tab-options-report', 'tab-portfolio'];
+const _ALL_PANELS = ['tab-stock', 'tab-options', 'tab-portfolio'];
 const _lastSub = { stocks: 'screener', options: 'screener', portfolio: 'overview' };
 let _route = { ws: 'stocks', sub: 'screener' };
 
 // Which top-level panel a (workspace, sub-tab) route shows. When it resolves
 // to #tab-stock, `sub` also picks which [data-tool] section is visible.
 function _panelFor(ws, sub) {
-  if (ws === 'stocks')  return sub === 'report' ? 'tab-stock-report' : 'tab-stock';
-  if (ws === 'options') return sub === 'report' ? 'tab-options-report' : 'tab-options';
+  if (ws === 'stocks')  return 'tab-stock';
+  if (ws === 'options') return 'tab-options';
   return 'tab-portfolio';
 }
 
@@ -4407,12 +4392,8 @@ function goTo(ws, sub, persist = true) {
       if (location.hash !== hash) history.replaceState(null, '', hash);
     }
   }
-  // Lazy-load report data on first activation.
-  if (ws === 'stocks'  && sub === 'report' && !_stockReportLoaded)   loadStockReport();
-  if (ws === 'options' && sub === 'report' && !_optionsReportLoaded) loadOptionsReport();
   // Portfolio state changes from buys/sells made anywhere in the app, so
-  // (unlike the reports above) refresh every time the tab is opened
-  // rather than lazy-loading once.
+  // refresh every time the tab is opened rather than lazy-loading once.
   if (ws === 'portfolio' && typeof loadPortfolio === 'function') loadPortfolio();
 }
 
@@ -4420,10 +4401,12 @@ function _initialRoute() {
   const parse = (s) => {
     const [w, sub] = String(s || '').replace(/^#/, '').split('/');
     if (WS[w] && WS[w].subs.includes(sub)) return { ws: w, sub };
-    // Back-compat: an old single-name route/hash ("stock", "options",
-    // "stock-report", "options-report") maps onto the new two-level model.
+    // Back-compat: an old single-name route/hash ("stock", "options") or a
+    // pre-removal Report hash ("stock-report", "options-report") maps onto
+    // the current model — the Report sub-tab is gone, so those two land on
+    // that workspace's screener instead of a dead sub.
     const legacy = { stock: ['stocks', 'screener'], options: ['options', 'screener'],
-                     'stock-report': ['stocks', 'report'], 'options-report': ['options', 'report'] };
+                     'stock-report': ['stocks', 'screener'], 'options-report': ['options', 'screener'] };
     const m = legacy[String(s || '').replace(/^#/, '')];
     return m ? { ws: m[0], sub: m[1] } : null;
   };
@@ -4445,574 +4428,8 @@ document.querySelectorAll('.subtabs').forEach((strip) => {
   });
 });
 
-// --- Strategy report tabs ---------------------------------------------------
-
-let _stockReportLoaded = false;
-let _optionsReportLoaded = false;
-
-// Apply the initial route now that the report-load flags exist (a saved
-// route may point straight at a Report sub-tab).
+// Apply the initial route now that the app is fully wired.
 { const r = _initialRoute(); goTo(r.ws, r.sub, false); }
-
-function _fmtPct(v) {
-  if (v === null || v === undefined || Number.isNaN(v)) return '—';
-  const sign = v > 0 ? '+' : '';
-  return sign + Number(v).toFixed(2) + '%';
-}
-function _fmtRate(v) {
-  if (v === null || v === undefined || Number.isNaN(v)) return '—';
-  return (Number(v) * 100).toFixed(1) + '%';
-}
-function _csvEscape(s) {
-  if (s === null || s === undefined) return '';
-  const str = String(s);
-  return /[",\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
-}
-
-function _renderSummaryCard(overall, horizon) {
-  if (!overall || !overall.count) {
-    return '<div class="report-card empty">No outcome rows in this window yet.</div>';
-  }
-  const cells = [
-    ['Entries',          overall.count],
-    ['With ' + horizon + 'd return', overall.filled || 0],
-    ['Hit rate',         _fmtRate(overall.hit_rate)],
-    ['Median ' + horizon + 'd', _fmtPct(overall.median)],
-    ['Mean ' + horizon + 'd',   _fmtPct(overall.mean)],
-    ['p25 / p75',        _fmtPct(overall.p25) + ' / ' + _fmtPct(overall.p75)],
-  ];
-  return '<div class="report-card summary-card"><div class="summary-grid">'
-    + cells.map(([k, v]) => '<div class="summary-cell"><div class="muted">' + k + '</div><div class="summary-val">' + v + '</div></div>').join('')
-    + '</div></div>';
-}
-
-function _renderBucketTable(title, buckets, keyField, horizon) {
-  if (!buckets || !buckets.length) {
-    return '<div class="report-card empty"><h3>' + title + '</h3><div class="muted">No data.</div></div>';
-  }
-  const sorted = [...buckets].sort((a, b) => (b.count || 0) - (a.count || 0));
-  const rows = sorted.map(b => {
-    // For the By Source panel use the shared SOURCE_LABELS mapping so
-    // the bucket name matches the per-row label in the Entries table.
-    // Regime buckets keep the backend-provided string.
-    const name = keyField === 'kind'
-      ? _sourceLabel(b.kind)
-      : (b.label || b[keyField] || '—');
-    return '<tr>'
-      + '<td>' + escapeHtml(name) + '</td>'
-      + '<td class="num">' + (b.count || 0) + '</td>'
-      + '<td class="num">' + _fmtRate(b.hit_rate) + '</td>'
-      + '<td class="num ' + (b.median > 0 ? 'pos' : b.median < 0 ? 'neg' : '') + '">' + _fmtPct(b.median) + '</td>'
-      + '<td class="num">' + _fmtPct(b.mean) + '</td>'
-      + '</tr>';
-  }).join('');
-  return '<div class="report-card"><h3>' + title + '</h3>'
-    + '<table class="report-table"><thead><tr>'
-    + '<th>' + (keyField === 'kind' ? 'Source' : 'Regime') + '</th>'
-    + '<th class="num">Entries</th>'
-    + '<th class="num">Hit rate</th>'
-    + '<th class="num">Median ' + horizon + 'd</th>'
-    + '<th class="num">Mean ' + horizon + 'd</th>'
-    + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
-}
-
-function _renderHistogram(hist, horizon) {
-  if (!hist || !hist.counts || !hist.counts.length) {
-    return '<div class="report-card empty"><h3>Return distribution</h3><div class="muted">No data.</div></div>';
-  }
-  const maxCount = Math.max(...hist.counts) || 1;
-  // Each bar = column. Zero line marked where edges cross 0.
-  const bars = hist.counts.map((c, i) => {
-    const lo = hist.edges[i], hi = hist.edges[i + 1];
-    const mid = (lo + hi) / 2;
-    const heightPct = (c / maxCount) * 100;
-    const cls = mid > 0 ? 'pos' : mid < 0 ? 'neg' : '';
-    const title = `${_fmtPct(lo)} → ${_fmtPct(hi)}: ${c}`;
-    return `<div class="hist-bar ${cls}" style="height:${heightPct}%" title="${title}"></div>`;
-  }).join('');
-  return '<div class="report-card"><h3>Return distribution (' + horizon + 'd)</h3>'
-    + '<div class="hist-axis-top muted"><span>' + _fmtPct(hist.edges[0]) + '</span><span>' + _fmtPct(hist.edges[hist.edges.length - 1]) + '</span></div>'
-    + '<div class="histogram">' + bars + '</div></div>';
-}
-
-// Human-friendly labels for outcome source kinds. Used in both the
-// Entries table's "Sources" column and the By Source panel so the two
-// always show identical names. Per-row variation (e.g., the picker's
-// rank, or an alert rule's name) is intentionally dropped here — the
-// goal is a stable bucket name that matches across the two views.
-const SOURCE_LABELS = {
-  alert_screener:   'Screener alert',
-  alert_setup:      'Setup alert',
-  picker:           'Picker',
-  momentum_scan:    'Momentum scanner',
-  user_pin:         'Pinned option',
-  manual_screener:  'Screener selection',
-  manual:           'Manual entry',
-  nightly_scan:     'Options scanner',   // legacy / pre-removal rows
-  user_lookup:      'User lookup',        // legacy / pre-removal rows
-  unknown:          'Unknown',
-};
-function _sourceLabel(kind) {
-  if (kind == null || kind === '') return '—';
-  return SOURCE_LABELS[kind] || kind;
-}
-
-// Build the cell array for one outcome row. Returns [{text, cls?}, ...]
-// in column order so both the unique-values computation (for dropdowns)
-// and the body HTML use the same source of truth.
-function _buildOutcomeCells(r, isOptions, horizon) {
-  const srcs = (r.sources || [])
-    .map(s => _sourceLabel((s && s.kind) || 'unknown'))
-    .join(', ') || '—';
-  if (isOptions) {
-    const itm = r.expiration_itm === true ? '✓' : r.expiration_itm === false ? '✗' : '—';
-    const ret = r['underlying_ret_' + horizon + 'd'];
-    return [
-      {text: r.entry_date || '—'},
-      {text: r.ticker || '—'},
-      {text: r.direction || '—'},
-      {text: r.strike != null ? String(r.strike) : '—'},
-      {text: r.expiration || '—'},
-      {text: r.verdict || '—'},
-      {text: r.composite_score != null ? Number(r.composite_score).toFixed(1) : '—', cls: 'num'},
-      {text: _fmtPct(ret), cls: 'num ' + (ret > 0 ? 'pos' : ret < 0 ? 'neg' : '')},
-      {text: itm},
-      {text: srcs, cls: 'muted'},
-    ];
-  }
-  return [
-    {text: r.entry_date || '—'},
-    {text: r.ticker || '—'},
-    {text: r.entry_close != null ? Number(r.entry_close).toFixed(2) : '—', cls: 'num'},
-    {text: _fmtPct(r.ret_1d),  cls: 'num ' + (r.ret_1d  > 0 ? 'pos' : r.ret_1d  < 0 ? 'neg' : '')},
-    {text: _fmtPct(r.ret_5d),  cls: 'num ' + (r.ret_5d  > 0 ? 'pos' : r.ret_5d  < 0 ? 'neg' : '')},
-    {text: _fmtPct(r.ret_20d), cls: 'num ' + (r.ret_20d > 0 ? 'pos' : r.ret_20d < 0 ? 'neg' : '')},
-    {text: _fmtPct(r.max_favorable_excursion_20d), cls: 'num pos'},
-    {text: _fmtPct(r.max_drawdown_20d), cls: 'num neg'},
-    {text: srcs, cls: 'muted'},
-  ];
-}
-
-function _renderRowsTable(rows, kind, horizon) {
-  if (!rows || !rows.length) {
-    return '<div class="report-card empty"><h3>Entries</h3><div class="muted">No rows in this window.</div></div>';
-  }
-  const isOptions = kind === 'options';
-  const cols = isOptions
-    ? ['Date','Ticker','Dir','Strike','Exp','Verdict','Score','Ret ' + horizon + 'd','ITM?','Sources']
-    : ['Date','Ticker','Entry','Ret 1d','Ret 5d','Ret 20d','MFE 20d','MDD 20d','Sources'];
-  const numericCols = isOptions
-    ? new Set([6, 7])
-    : new Set([2, 3, 4, 5, 6, 7]);
-
-  const visible = rows.slice(0, 500);
-  const cellsByRow = visible.map(r => _buildOutcomeCells(r, isOptions, horizon));
-
-  // Unique values per column for the dropdown options. Sort: numeric
-  // ascending where possible, else alphabetical.
-  const uniques = cols.map((_, ci) => {
-    const set = new Set();
-    for (const cells of cellsByRow) {
-      const t = cells[ci].text;
-      if (t && t !== '—') set.add(t);
-    }
-    const arr = Array.from(set);
-    const allNum = arr.every(v => !isNaN(parseFloat(v.replace('%', '').replace('+', ''))));
-    arr.sort(allNum
-      ? (a, b) => parseFloat(a.replace('%', '').replace('+', ''))
-                - parseFloat(b.replace('%', '').replace('+', ''))
-      : undefined);
-    return arr;
-  });
-
-  // Header row: leading select column, then the data columns. Filter
-  // dropdowns' data-col is shifted by +1 so it matches the DOM cell
-  // index (tr.cells[N]) when applying filters.
-  const head = '<tr><th class="select-col"><input type="checkbox" class="row-select-all" aria-label="Select all rows" /></th>'
-    + cols.map((c, i) => `<th${numericCols.has(i) ? ' class="num"' : ''}>${escapeHtml(c)}</th>`).join('')
-    + '</tr>';
-
-  const filterRow = '<tr class="filter-row"><th class="select-col"></th>'
-    + cols.map((label, ci) => {
-        const opts = uniques[ci].map(v =>
-          `<label class="filter-dd-opt"><input type="checkbox" class="filter-dd-val" data-val="${escapeHtml(v)}" checked /> <span>${escapeHtml(v)}</span></label>`
-        ).join('') || '<div class="muted filter-dd-empty">no values</div>';
-        // data-col is the DOM cell index — +1 to skip the leading select column.
-        return `<th><div class="filter-dd" data-col="${ci + 1}">`
-          + `<button type="button" class="filter-dd-btn" aria-label="Filter ${escapeHtml(label)}" aria-haspopup="listbox" aria-expanded="false">All ▾</button>`
-          + `<div class="filter-dd-menu hidden" role="listbox">`
-          +   `<div class="filter-dd-header">`
-          +     `<label class="filter-dd-opt filter-dd-selectall"><input type="checkbox" class="filter-dd-all" checked /> <span><strong>(Select All)</strong></span></label>`
-          +     `<div class="filter-dd-actions">`
-          +       `<button type="button" class="filter-dd-cancel">Cancel</button>`
-          +       `<button type="button" class="filter-dd-ok primary">OK</button>`
-          +     `</div>`
-          +   `</div>`
-          +   `<div class="filter-dd-divider"></div>`
-          +   `<div class="filter-dd-opts">${opts}</div>`
-          + `</div></div></th>`;
-      }).join('')
-    + '</tr>';
-
-  const body = cellsByRow.map((cells, i) => {
-    const r = visible[i];
-    const sel = `<td class="select-col"><input type="checkbox" class="row-select" data-ticker="${escapeHtml(r.ticker || '')}" data-date="${escapeHtml(r.entry_date || '')}" aria-label="Select ${escapeHtml(r.ticker || '')} ${escapeHtml(r.entry_date || '')}" /></td>`;
-    return '<tr>' + sel
-      + cells.map(c => `<td${c.cls ? ' class="' + c.cls + '"' : ''}>${escapeHtml(c.text)}</td>`).join('')
-      + '</tr>';
-  }).join('');
-
-  const cap = rows.length > 500 ? '<div class="muted report-card-cap">(showing 500 of ' + rows.length + ')</div>' : '';
-  const actions = '<div class="report-card-actions">'
-    + '<button type="button" class="row-remove-btn" disabled>Remove 0 selected</button>'
-    + '</div>';
-  return '<div class="report-card" data-kind="' + escapeHtml(kind) + '">'
-    + '<div class="report-card-head"><h3>Entries</h3>' + actions + '</div>'
-    + cap
-    + '<div class="report-table-wrap"><table class="report-table filterable"><thead>'
-    + head + filterRow + '</thead><tbody>' + body + '</tbody></table></div></div>';
-}
-
-// Sync the dropdown's button label + (Select All) checkbox state to
-// the current set of per-value checkbox states.
-function _syncDdState(dd) {
-  const btn      = dd.querySelector('.filter-dd-btn');
-  const valChecks = dd.querySelectorAll('.filter-dd-val');
-  const allCheck = dd.querySelector('.filter-dd-all');
-  const total = valChecks.length;
-  let sel = 0;
-  valChecks.forEach((c) => { if (c.checked) sel++; });
-  if (allCheck) {
-    if (sel === 0)          { allCheck.checked = false; allCheck.indeterminate = false; }
-    else if (sel === total) { allCheck.checked = true;  allCheck.indeterminate = false; }
-    else                    { allCheck.checked = false; allCheck.indeterminate = true; }
-  }
-  if (btn) {
-    btn.textContent = (sel === total ? 'All' : `${sel}/${total}`) + ' ▾';
-    btn.classList.toggle('active', sel < total);
-  }
-}
-
-// Apply every dropdown's selection to a `.filterable` table. Hides rows
-// where any column's selected-set doesn't include that cell's value.
-// AND across columns. If a column has all per-value checkboxes checked,
-// it's a no-op for that column.
-function _applyRowFilters(table) {
-  const dds = table.querySelectorAll('.filter-dd');
-  const filters = [];
-  dds.forEach((dd) => {
-    const valChecks = dd.querySelectorAll('.filter-dd-val');
-    let allChecked = true;
-    const allowed = new Set();
-    valChecks.forEach((c) => {
-      if (c.checked) allowed.add(c.dataset.val);
-      else allChecked = false;
-    });
-    if (!allChecked) filters.push({col: Number(dd.dataset.col), allowed});
-  });
-  const rows = table.tBodies[0] ? table.tBodies[0].rows : [];
-  for (const tr of rows) {
-    let show = true;
-    for (const f of filters) {
-      const cell = tr.cells[f.col];
-      if (!cell || !f.allowed.has(cell.textContent)) { show = false; break; }
-    }
-    tr.style.display = show ? '' : 'none';
-  }
-}
-
-// Cancel any pending (unapplied) edits on every open dropdown and close
-// the menus. "Cancel" semantics: restore the checkbox state that was
-// applied last (snapshot taken on menu open), so a click outside or an
-// Escape press behaves like clicking the Cancel button — matches Excel.
-function _closeAllFilterMenus() {
-  document.querySelectorAll('table.filterable .filter-dd').forEach((dd) => {
-    const menu = dd.querySelector('.filter-dd-menu');
-    if (menu && !menu.classList.contains('hidden')) {
-      _restorePendingState(dd);
-    }
-    if (menu) menu.classList.add('hidden');
-    const btn = dd.querySelector('.filter-dd-btn');
-    if (btn) btn.setAttribute('aria-expanded', 'false');
-  });
-}
-
-// Snapshot the current checkbox state into dataset.pendingState so we
-// can restore on Cancel.
-function _snapshotPendingState(dd) {
-  const state = [];
-  dd.querySelectorAll('.filter-dd-val').forEach((c) => {
-    state.push(c.checked ? 1 : 0);
-  });
-  dd.dataset.pendingState = state.join('');
-}
-
-function _restorePendingState(dd) {
-  const state = dd.dataset.pendingState;
-  if (!state) return;
-  const valChecks = dd.querySelectorAll('.filter-dd-val');
-  for (let i = 0; i < valChecks.length; i++) {
-    valChecks[i].checked = state[i] === '1';
-  }
-  _syncDdState(dd);
-}
-
-// Single global outside-click handler — installed lazily. Without this
-// guard, repeated re-renders would accumulate one listener per render.
-let _filtersGlobalHandlerInstalled = false;
-function _installGlobalFilterHandler() {
-  if (_filtersGlobalHandlerInstalled) return;
-  _filtersGlobalHandlerInstalled = true;
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('.filter-dd')) _closeAllFilterMenus();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') _closeAllFilterMenus();
-  });
-}
-
-// Wire dropdown handlers on every .filterable table inside the given
-// container. Idempotent — each table is flagged via data-filters-wired
-// so re-renders don't double-bind.
-//
-// UX model: Excel AutoFilter. Changing checkboxes inside the menu does
-// NOT apply the filter immediately — the table stays as it was. Apply
-// happens on OK click; Cancel (or outside-click, or Escape) restores
-// the checkboxes to their pre-open state and closes. This avoids the
-// scary "empty table" the user hit when (Select All) was un-checked
-// in a previous iteration that applied live.
-function _wireRowFilters(container) {
-  _installGlobalFilterHandler();
-  const tables = container.querySelectorAll('table.filterable');
-  tables.forEach((table) => {
-    if (table.dataset.filtersWired === '1') return;
-    table.dataset.filtersWired = '1';
-
-    const dds = table.querySelectorAll('.filter-dd');
-    dds.forEach((dd) => {
-      const btn       = dd.querySelector('.filter-dd-btn');
-      const menu      = dd.querySelector('.filter-dd-menu');
-      const valChecks = dd.querySelectorAll('.filter-dd-val');
-      const allCheck  = dd.querySelector('.filter-dd-all');
-      const okBtn     = dd.querySelector('.filter-dd-ok');
-      const cancelBtn = dd.querySelector('.filter-dd-cancel');
-
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const wasOpen = !menu.classList.contains('hidden');
-        _closeAllFilterMenus();
-        if (!wasOpen) {
-          _snapshotPendingState(dd);
-          menu.classList.remove('hidden');
-          btn.setAttribute('aria-expanded', 'true');
-        }
-      });
-
-      // Any event inside the menu MUST NOT bubble out — both click and
-      // mousedown, since some surrounding controls react to mousedown.
-      menu.addEventListener('click', (e) => e.stopPropagation());
-      menu.addEventListener('mousedown', (e) => e.stopPropagation());
-
-      // (Select All) toggle — cascade to per-value checkboxes and
-      // re-sync visual state. Filter NOT applied until OK.
-      if (allCheck) {
-        allCheck.addEventListener('change', () => {
-          const checked = allCheck.checked;
-          valChecks.forEach((c) => { c.checked = checked; });
-          _syncDdState(dd);
-        });
-      }
-
-      // Per-value checkbox change — re-sync (Select All) state. Filter
-      // NOT applied until OK.
-      valChecks.forEach((c) => {
-        c.addEventListener('change', () => { _syncDdState(dd); });
-      });
-
-      if (okBtn) {
-        okBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          _applyRowFilters(table);
-          menu.classList.add('hidden');
-          btn.setAttribute('aria-expanded', 'false');
-          // The newly-applied state becomes the snapshot — next open
-          // will restore to this state on Cancel.
-          _snapshotPendingState(dd);
-        });
-      }
-      if (cancelBtn) {
-        cancelBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          _restorePendingState(dd);
-          menu.classList.add('hidden');
-          btn.setAttribute('aria-expanded', 'false');
-        });
-      }
-    });
-  });
-}
-
-// Wire the per-row checkbox + "Remove N selected" button on every
-// .report-card that contains a filterable table. Uses the card's
-// data-kind to route the delete to the right backend endpoint.
-function _wireRowSelection(container) {
-  container.querySelectorAll('.report-card[data-kind]').forEach((card) => {
-    if (card.dataset.selectionWired === '1') return;
-    card.dataset.selectionWired = '1';
-
-    const kind     = card.dataset.kind;
-    const removeBtn = card.querySelector('.row-remove-btn');
-    const table     = card.querySelector('table.filterable');
-    if (!removeBtn || !table) return;
-    const headerCb = table.querySelector('.row-select-all');
-    const rowCbs   = () => Array.from(table.querySelectorAll('.row-select'));
-
-    const updateBtn = () => {
-      const cbs = rowCbs();
-      const checked = cbs.filter(c => c.checked).length;
-      removeBtn.textContent = `Remove ${checked} selected`;
-      removeBtn.disabled = checked === 0;
-      if (headerCb) {
-        if (checked === 0)              { headerCb.checked = false; headerCb.indeterminate = false; }
-        else if (checked === cbs.length) { headerCb.checked = true;  headerCb.indeterminate = false; }
-        else                             { headerCb.checked = false; headerCb.indeterminate = true; }
-      }
-    };
-
-    if (headerCb) {
-      headerCb.addEventListener('change', () => {
-        const want = headerCb.checked;
-        rowCbs().forEach((c) => {
-          // Only toggle visible rows so the header check respects active filters.
-          const tr = c.closest('tr');
-          if (tr && tr.style.display !== 'none') c.checked = want;
-        });
-        updateBtn();
-      });
-    }
-
-    table.tBodies[0] && table.tBodies[0].addEventListener('change', (e) => {
-      if (e.target && e.target.classList && e.target.classList.contains('row-select')) {
-        updateBtn();
-      }
-    });
-
-    removeBtn.addEventListener('click', async () => {
-      const checked = rowCbs().filter(c => c.checked);
-      if (!checked.length) return;
-      const n = checked.length;
-      if (!window.confirm(`Delete ${n} entr${n === 1 ? 'y' : 'ies'} from the ${kind} outcomes table? This cannot be undone.`)) return;
-      const entries = checked.map(cb => ({
-        ticker:     cb.dataset.ticker,
-        entry_date: cb.dataset.date,
-      }));
-      const endpoint = kind === 'options' ? '/api/outcomes/options/delete' : '/api/outcomes/stock/delete';
-      removeBtn.disabled = true;
-      removeBtn.textContent = 'Deleting…';
-      try {
-        const r = await fetch(endpoint, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({entries}),
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) {
-          alert('Delete failed: ' + (j.error || ('HTTP ' + r.status)));
-          updateBtn();
-          return;
-        }
-        // Re-fetch the report so summary/by-source/histogram all reflect
-        // the deletion. Invalidate the cache so the tab-switch lazy-load
-        // also picks up fresh data.
-        if (kind === 'options') {
-          _optionsReportLoaded = false;
-          loadOptionsReport();
-        } else {
-          _stockReportLoaded = false;
-          loadStockReport();
-        }
-      } catch (exc) {
-        alert('Delete failed: ' + (exc && exc.message || exc));
-        updateBtn();
-      }
-    });
-  });
-}
-
-async function loadStockReport() {
-  const days = (els.stockReportDays && els.stockReportDays.value) || 90;
-  const horizon = (els.stockReportHorizon && els.stockReportHorizon.value) || 5;
-  if (els.stockReportStatus) els.stockReportStatus.textContent = 'loading…';
-  try {
-    const r = await fetch('/api/outcomes/stock/report?days=' + days + '&horizon=' + horizon);
-    const j = await r.json();
-    if (!j.enabled) {
-      els.stockReportBody.innerHTML = '<div class="report-card empty">Outcomes table not available — DATABASE_URL is not configured on this worker.</div>';
-      if (els.stockReportStatus) els.stockReportStatus.textContent = '';
-      return;
-    }
-    const h = j.horizon;
-    els.stockReportBody.innerHTML =
-      _renderSummaryCard(j.overall, h)
-      + _renderBucketTable('By source', j.by_source, 'kind', h)
-      + _renderBucketTable('By regime', j.by_regime, 'regime', h)
-      + _renderHistogram(j.histogram, h)
-      + _renderRowsTable(j.rows, 'stock', h);
-    _wireRowFilters(els.stockReportBody);
-    _wireRowSelection(els.stockReportBody);
-    if (els.stockReportStatus) els.stockReportStatus.textContent = (j.rows.length || 0) + ' entries';
-    _stockReportLoaded = true;
-  } catch (exc) {
-    els.stockReportBody.innerHTML = '<div class="report-card empty">Failed to load: ' + (exc && exc.message || exc) + '</div>';
-    if (els.stockReportStatus) els.stockReportStatus.textContent = '';
-  }
-}
-
-async function loadOptionsReport() {
-  const days = (els.optionsReportDays && els.optionsReportDays.value) || 90;
-  const horizon = (els.optionsReportHorizon && els.optionsReportHorizon.value) || 5;
-  if (els.optionsReportStatus) els.optionsReportStatus.textContent = 'loading…';
-  try {
-    const r = await fetch('/api/outcomes/options/report?days=' + days + '&horizon=' + horizon);
-    const j = await r.json();
-    if (!j.enabled) {
-      els.optionsReportBody.innerHTML = '<div class="report-card empty">Outcomes table not available — DATABASE_URL is not configured on this worker.</div>';
-      if (els.optionsReportStatus) els.optionsReportStatus.textContent = '';
-      return;
-    }
-    const h = j.horizon;
-    const exp = j.expiration || {total: 0, itm: 0, otm: 0};
-    const expCard = '<div class="report-card"><h3>Expiration outcomes</h3>'
-      + '<div class="summary-grid">'
-      + '<div class="summary-cell"><div class="muted">Expired</div><div class="summary-val">' + (exp.total || 0) + '</div></div>'
-      + '<div class="summary-cell"><div class="muted">ITM at exp</div><div class="summary-val pos">' + (exp.itm || 0) + '</div></div>'
-      + '<div class="summary-cell"><div class="muted">OTM at exp</div><div class="summary-val neg">' + (exp.otm || 0) + '</div></div>'
-      + '<div class="summary-cell"><div class="muted">ITM rate</div><div class="summary-val">' + (exp.total ? _fmtRate(exp.itm / exp.total) : '—') + '</div></div>'
-      + '</div></div>';
-    els.optionsReportBody.innerHTML =
-      _renderSummaryCard(j.overall, h)
-      + expCard
-      + _renderBucketTable('By source', j.by_source, 'kind', h)
-      + _renderBucketTable('By regime', j.by_regime, 'regime', h)
-      + _renderHistogram(j.histogram, h)
-      + _renderRowsTable(j.rows, 'options', h);
-    _wireRowFilters(els.optionsReportBody);
-    _wireRowSelection(els.optionsReportBody);
-    if (els.optionsReportStatus) els.optionsReportStatus.textContent = (j.rows.length || 0) + ' entries';
-    _optionsReportLoaded = true;
-  } catch (exc) {
-    els.optionsReportBody.innerHTML = '<div class="report-card empty">Failed to load: ' + (exc && exc.message || exc) + '</div>';
-    if (els.optionsReportStatus) els.optionsReportStatus.textContent = '';
-  }
-}
-
-if (els.stockReportRefresh)   els.stockReportRefresh  .addEventListener('click', loadStockReport);
-if (els.optionsReportRefresh) els.optionsReportRefresh.addEventListener('click', loadOptionsReport);
-if (els.stockReportDays)      els.stockReportDays     .addEventListener('change', loadStockReport);
-if (els.stockReportHorizon)   els.stockReportHorizon  .addEventListener('change', loadStockReport);
-if (els.optionsReportDays)    els.optionsReportDays   .addEventListener('change', loadOptionsReport);
-if (els.optionsReportHorizon) els.optionsReportHorizon.addEventListener('change', loadOptionsReport);
 
 if (els.optionsLookupBtn)   els.optionsLookupBtn  .addEventListener('click', runOptionsLookup);
 if (els.optionsClearBtn)    els.optionsClearBtn   .addEventListener('click', clearOptionsResult);
