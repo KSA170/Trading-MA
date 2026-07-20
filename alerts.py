@@ -837,12 +837,18 @@ def send_telegram(text: str) -> bool:
 # headline metrics → insider/fund/news enrichment → verdict + entry
 # recommendation.
 
-def _verdict_screener(hit) -> dict:
+def _verdict_screener(hit, intel: dict | None = None) -> dict:
     """BUY / WATCH / PASS rollup for a screener-rule alert. Inputs all
-    drawn from screener.evaluate_ticker's ScreenHit. Score out of 9 —
+    drawn from screener.evaluate_ticker's ScreenHit. Base score out of 9 —
     high momentum + high RVOL + decent pct-change + above-lookback-high
     pushes BUY; weak everything stays PASS even though it cleared the
-    rule's filter bar."""
+    rule's filter bar.
+
+    When market intel is available it adds a ±3 band on top (analyst /
+    price-target / fundamentals / news sentiment), so a technically-fine
+    but fundamentally-weak name — negative trend, poor ROE, insider
+    selling — gets marked down rather than waved through. No-op (and /max
+    stays 9) when intel is absent."""
     score = 0
     mom = float(getattr(hit, "momentum_score", 0) or 0)
     if   mom >= 80: score += 3
@@ -857,9 +863,16 @@ def _verdict_screener(hit) -> dict:
     elif pct >= 5:  score += 1
     if float(getattr(hit, "breakout_pct", 0) or 0) > 0:
         score += 1  # broke out above the lookback window high
-    if score >= 7: return {"label": "BUY",   "glyph": "🟢", "score": score, "max": 9}
-    if score >= 4: return {"label": "WATCH", "glyph": "🟡", "score": score, "max": 9}
-    return {"label": "PASS", "glyph": "🔴", "score": score, "max": 9}
+
+    max_score = 9
+    if intel and intel.get("score") is not None:
+        import market_intel
+        max_score += 3
+        score += market_intel.band(intel, 3, 1, -2)
+
+    if score >= 7: return {"label": "BUY",   "glyph": "🟢", "score": score, "max": max_score}
+    if score >= 4: return {"label": "WATCH", "glyph": "🟡", "score": score, "max": max_score}
+    return {"label": "PASS", "glyph": "🔴", "score": score, "max": max_score}
 
 
 def _verdict_setup(result: dict) -> dict:
@@ -941,7 +954,8 @@ def _analysis_setup(result: dict, verdict: dict) -> str:
 def _format_alert(rule_name: str, hit, as_of: datetime,
                   insider: dict | None = None,
                   fund: dict | None = None,
-                  news: list | None = None) -> str:
+                  news: list | None = None,
+                  intel: dict | None = None) -> str:
     """Telegram body for a screener-rule trigger, in the shared
     tg_format style: header → metric rows (with severity callouts) →
     enrichment rows → analysis + verdict + entry reco."""
@@ -967,12 +981,16 @@ def _format_alert(rule_name: str, hit, as_of: datetime,
     ]
     lines += T.fundamentals_rows(fund)
     lines.append(T.insider_row(insider))
+    import market_intel
+    intel_row = market_intel.summary_row(intel)
+    if intel_row:
+        lines.append(T.row("🧠", "Intel", intel_row))
     news_block = enrich.format_news_block(news)
     if news_block:
         lines.append("")
         lines.append(news_block)
 
-    v = _verdict_screener(hit)
+    v = _verdict_screener(hit, intel=intel)
     lines.append("")
     lines.append(_analysis_screener(hit, v, insider, news))
     lines.append(
@@ -1251,11 +1269,15 @@ def run() -> int:
         _enrich_cache[ticker] = out
         return out
 
+    import market_intel
     for rule, ticker, hit in triggered_screener:
         e = _enrich_for(ticker)
+        # Optional intel (Alpha Vantage) — None unless INTEL_ENABLED + key.
+        intel = market_intel.conviction_for(
+            ticker, price=getattr(hit, "close", None), insider=e["insider"])
         if send_telegram(_format_alert(rule["name"], hit, now,
                                         insider=e["insider"], fund=e["fund"],
-                                        news=e["news"])):
+                                        news=e["news"], intel=intel)):
             record_sent(rule["id"], ticker, today,
                         f"momentum={hit.momentum_score}")
             outcomes.record_stock_outcome(

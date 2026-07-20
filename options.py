@@ -364,7 +364,9 @@ def _score_price_trajectory(snap_row: dict | None,
 def _score_catalyst(news: list[dict] | None,
                     earnings_date: str | None,
                     analyst_recs: dict | None,
-                    dte_max: int) -> dict:
+                    dte_max: int,
+                    news_sentiment_score: float | None = None,
+                    price_target_score: float | None = None) -> dict:
     """Layer 2 — Catalyst Events (25%).
     Sub-signals: earnings timing, analyst upgrades/downgrades, news volume.
 
@@ -405,6 +407,16 @@ def _score_catalyst(news: list[dict] | None,
         n = len(news)
         if   n >= 3: subs["news_volume"] = 60.0; reasons.append(f"{n} recent catalyst stories")
         elif n >= 1: subs["news_volume"] = 55.0
+
+    # Optional market-intel sub-signals (Alpha Vantage), precomputed 0-100
+    # by the caller. Real news *sentiment* (vs. the volume proxy above) and
+    # analyst price-target upside. Skipped when unavailable.
+    if news_sentiment_score is not None:
+        subs["news_sentiment"] = float(news_sentiment_score)
+        reasons.append(f"news sentiment {news_sentiment_score:.0f}/100")
+    if price_target_score is not None:
+        subs["price_target"] = float(price_target_score)
+        reasons.append(f"analyst price-target {price_target_score:.0f}/100")
 
     score = (sum(subs.values()) / len(subs)) if subs else None
     return {
@@ -1155,10 +1167,30 @@ def recommend_for_ticker(ticker: str,
     avg_vol_20 = _avg_volume_20(snap_row)
     realized_vol = _realized_vol_20d(closes)
 
+    # Optional market intel (Alpha Vantage) — news sentiment + analyst
+    # price-target. Only on the interactive single-ticker analyze path
+    # (use_chain_cache is False); NEVER during the universe scan, whose
+    # per-ticker fan-out would blow the free-tier daily budget. No-op
+    # unless INTEL_ENABLED + key.
+    intel_news_score = intel_target_score = None
+    if not use_chain_cache:
+        try:
+            import market_intel
+            if market_intel.enabled():
+                cur_price = closes[-1] if len(closes) else None
+                intel_news_score = market_intel.score_news(
+                    market_intel.news_sentiment(ticker))
+                intel_target_score = market_intel.score_price_target(
+                    market_intel.company_overview(ticker), cur_price)
+        except Exception as exc:
+            log.warning("market_intel enrichment failed for %s: %s", ticker, exc)
+
     # Layer scoring
     layers = {
         "price":         _score_price_trajectory(snap_row, avg_vol_20),
-        "catalyst":      _score_catalyst(news, earnings, analyst_net, dte_max),
+        "catalyst":      _score_catalyst(news, earnings, analyst_net, dte_max,
+                                         news_sentiment_score=intel_news_score,
+                                         price_target_score=intel_target_score),
         "institutional": _score_institutional(insider, analyst_summary),
         "fundamentals":  _score_fundamentals(fund),
         "sector":        _score_sector(sector, sector_5d, spy_5d),
