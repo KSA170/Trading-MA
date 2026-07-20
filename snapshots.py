@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS daily_snapshot (
     ema21          REAL,
     ema50          REAL,
     rsi14          REAL,
+    rsi14_prev     REAL,
     rsi_sma9       REAL,
     macd           REAL,
     macd_prev      REAL,
@@ -141,6 +142,7 @@ CREATE TABLE IF NOT EXISTS daily_snapshot (
 );
 CREATE INDEX IF NOT EXISTS daily_snapshot_as_of_idx ON daily_snapshot (as_of);
 ALTER TABLE daily_snapshot ADD COLUMN IF NOT EXISTS macd_prev REAL;
+ALTER TABLE daily_snapshot ADD COLUMN IF NOT EXISTS rsi14_prev REAL;
 """
 
 
@@ -220,7 +222,7 @@ def date_counts(limit: int = 10) -> list[dict]:
 
 _LOAD_COLS = (
     "ticker", "close", "prior_close", "volume", "avg_volume",
-    "ema21", "ema50", "rsi14", "rsi_sma9",
+    "ema21", "ema50", "rsi14", "rsi14_prev", "rsi_sma9",
     "macd", "macd_prev", "macd_signal", "macd_hist", "macd_hist_prev",
     "shares", "recent_bars",
 )
@@ -261,7 +263,7 @@ def iter_for_date(as_of: str, tickers: Iterable[str] | None = None, chunk: int =
 
 _WRITE_COLS = (
     "ticker", "as_of", "close", "prior_close", "volume", "avg_volume",
-    "ema21", "ema50", "rsi14", "rsi_sma9",
+    "ema21", "ema50", "rsi14", "rsi14_prev", "rsi_sma9",
     "macd", "macd_prev", "macd_signal", "macd_hist", "macd_hist_prev",
     "shares", "recent_bars",
 )

@@ -242,6 +242,14 @@
           </div>
         </div>
 
+        <div class="filter-group" data-group="rsi_rising" title="RSI(14) is strictly higher than the prior bar's RSI — momentum turning up. No thresholds; it's a simple rising/not-rising gate.">
+          <label class="group-toggle"><input type="checkbox" id="apply_rsi_rising" /> RSI(14) rising</label>
+        </div>
+
+        <div class="filter-group" data-group="macd_hist_rising" title="MACD histogram strictly higher than the prior bar. Captures both 'positive &amp; rising' and 'negative but increasing (less negative)' in one gate. Independent of the MACD-vs-signal filter.">
+          <label class="group-toggle"><input type="checkbox" id="apply_macd_hist_rising" /> MACD histogram rising</label>
+        </div>
+
         <div class="filter-group" data-group="macd_vs_signal" title="MACD line relative to its 9-day SMA (the signal line). Sub-conditions are independent checkboxes — every box you tick must hold for a stock to pass.&#10;&#10;Examples:&#10;  • 'within X%' alone   → near-crossover (either direction)&#10;  • 'MACD ≥ signal' alone → bullish crossover already in place&#10;  • both together       → just crossed above and still close to signal&#10;  • + 'line rising'     → slope confirmation on top of position">
           <label class="group-toggle"><input type="checkbox" id="apply_macd_vs_signal" /> MACD vs signal line</label>
           <div class="filter inline-toggle">
@@ -760,6 +768,10 @@
             <div class="filter"><label>max (%)</label><input id="cm_rsi_dev_max_pct" type="number" step="0.5" value="10" /></div>
           </div>
 
+          <div class="filter-group" data-group="cm_rsi_rising" title="RSI(14) strictly higher than the prior bar — momentum turning up.">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_rsi_rising" /> RSI(14) rising</label>
+          </div>
+
           <div class="filter-group" data-group="cm_price_dev">
             <label class="group-toggle"><input type="checkbox" id="cm_apply_price_dev" checked /> Price dev vs EMA(21)</label>
             <div class="filter"><label>min (%)</label><input id="cm_price_dev_min_pct" type="number" step="0.5" value="-1" /></div>
@@ -793,6 +805,10 @@
             </div>
             <div class="filter inline-toggle"><label class="inline-checkbox"><input type="checkbox" id="cm_macd_above_signal" /> MACD ≥ signal (at or above)</label></div>
             <div class="filter inline-toggle"><label class="inline-checkbox"><input type="checkbox" id="cm_macd_line_rising" /> MACD line rising</label></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_macd_hist_rising" title="MACD histogram strictly higher than the prior bar — 'positive &amp; rising' OR 'negative but increasing'. Independent of MACD vs signal.">
+            <label class="group-toggle"><input type="checkbox" id="cm_apply_macd_hist_rising" /> MACD histogram rising</label>
           </div>
 
           <div class="filter-group" data-group="cm_rvol">
