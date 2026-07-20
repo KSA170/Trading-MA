@@ -983,7 +983,8 @@ def _insider_is_recent(insider: dict | None,
 
 def compute_verdict(m: dict,
                     insider: dict | None,
-                    news: list[dict] | None) -> dict:
+                    news: list[dict] | None,
+                    intel: dict | None = None) -> dict:
     """Score the alert across pct_change, RVOL, vol-of-float, insider
     activity, and catalyst news. Output: {label, glyph, score, max}
     where label is BUY / WATCH / PASS.
@@ -1023,6 +1024,16 @@ def compute_verdict(m: dict,
     if   n_news >= 2: score += 2
     elif n_news >= 1: score += 1
 
+    # Optional market-intel band (analyst/target/fundamentals/news
+    # sentiment). No-op unless intel is present, so the default path and
+    # the displayed /max are unchanged; a broadly bullish backdrop nudges
+    # a borderline setup up, a weak one nudges it down.
+    max_score = _VERDICT_MAX_SCORE
+    if intel and intel.get("score") is not None:
+        import market_intel
+        max_score += 2
+        score += market_intel.band(intel, 2, 1, -1)
+
     if score >= _VERDICT_BUY_MIN:
         label, glyph = "BUY", "🟢"
     elif score >= _VERDICT_WATCH_MIN:
@@ -1030,14 +1041,15 @@ def compute_verdict(m: dict,
     else:
         label, glyph = "PASS", "🔴"
     return {"label": label, "glyph": glyph,
-            "score": score, "max": _VERDICT_MAX_SCORE}
+            "score": score, "max": max_score}
 
 
 def _format_telegram(ticker: str, m: dict, cfg: dict,
                      insider: dict | None = None,
                      fund: dict | None = None,
                      news: list[dict] | None = None,
-                     when: "datetime | None" = None) -> str:
+                     when: "datetime | None" = None,
+                     intel: dict | None = None) -> str:
     """Build the HTML Telegram body in the shared tg_format style:
     header (category — ticker / company / time) → a vertical block of
     label:value metric rows with severity callouts → enrichment rows
@@ -1076,12 +1088,16 @@ def _format_telegram(ticker: str, m: dict, cfg: dict,
     ]
     lines += T.fundamentals_rows(fund)
     lines.append(T.insider_row(insider))
+    import market_intel
+    intel_row = market_intel.summary_row(intel)
+    if intel_row:
+        lines.append(T.row("🧠", "Intel", intel_row))
     news_block = enrich.format_news_block(news)
     if news_block:
         lines.append("")
         lines.append(news_block)
     # Verdict footer.
-    v = compute_verdict(m, insider, news)
+    v = compute_verdict(m, insider, news, intel=intel)
     lines.append("")
     lines.append(
         f"🧭 <b>Verdict:</b> {v['glyph']} <b>{v['label']}</b> "
@@ -1182,11 +1198,15 @@ def run() -> int:
         # and returns None / {} / [] on failure so a flaky upstream
         # can't block the Telegram send.
         import enrich
+        import market_intel
         insider = enrich.last_insider_transaction(ticker)
         fund = enrich.fundamentals(ticker)
         news = enrich.recent_news(ticker)
+        # Optional intel (Alpha Vantage) — None unless INTEL_ENABLED + key.
+        intel = market_intel.conviction_for(
+            ticker, price=m.get("price"), insider=insider)
         msg = _format_telegram(ticker, m, cfg, insider=insider, fund=fund,
-                               news=news, when=now_et)
+                               news=news, when=now_et, intel=intel)
         try:
             ok = alerts_mod.send_telegram(msg)
             if not ok:
