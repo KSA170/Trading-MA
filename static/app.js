@@ -334,6 +334,7 @@ const toggles = {
   apply_high: $('#apply_high'),
   apply_rsi: $('#apply_rsi'),
   apply_rsi_dev: $('#apply_rsi_dev'),
+  apply_rsi_rising: $('#apply_rsi_rising'),
   apply_rvol: $('#apply_rvol'),
   apply_avg_volume: $('#apply_avg_volume'),
   apply_price: $('#apply_price'),
@@ -345,6 +346,7 @@ const toggles = {
   macd_within_pct: $('#macd_within_pct'),
   macd_above_signal: $('#macd_above_signal'),
   macd_line_rising: $('#macd_line_rising'),
+  apply_macd_hist_rising: $('#apply_macd_hist_rising'),
   apply_turnover: $('#apply_turnover'),
   apply_market_cap: $('#apply_market_cap'),
   apply_pct_change: $('#apply_pct_change'),
@@ -392,6 +394,7 @@ const modalToggles = {
   apply_high: $('#cm_apply_high'),
   apply_rsi: $('#cm_apply_rsi'),
   apply_rsi_dev: $('#cm_apply_rsi_dev'),
+  apply_rsi_rising: $('#cm_apply_rsi_rising'),
   apply_rvol: $('#cm_apply_rvol'),
   apply_avg_volume: $('#cm_apply_avg_volume'),
   apply_price: $('#cm_apply_price'),
@@ -403,6 +406,7 @@ const modalToggles = {
   macd_within_pct: $('#cm_macd_within_pct'),
   macd_above_signal: $('#cm_macd_above_signal'),
   macd_line_rising: $('#cm_macd_line_rising'),
+  apply_macd_hist_rising: $('#cm_apply_macd_hist_rising'),
   apply_turnover: $('#cm_apply_turnover'),
   apply_market_cap: $('#cm_apply_market_cap'),
   apply_pct_change: $('#cm_apply_pct_change'),
@@ -701,6 +705,7 @@ function syncDisabledStates() {
     apply_high: 'high',
     apply_rsi: 'rsi',
     apply_rsi_dev: 'rsi_dev',
+    apply_rsi_rising: 'rsi_rising',
     apply_rvol: 'rvol',
     apply_avg_volume: 'avg_volume',
     apply_price: 'price',
@@ -709,6 +714,7 @@ function syncDisabledStates() {
     apply_price_sma10_dev: 'price_sma10_dev',
     apply_sma10_sma20_dev: 'sma10_sma20_dev',
     apply_macd_vs_signal: 'macd_vs_signal',
+    apply_macd_hist_rising: 'macd_hist_rising',
     apply_turnover: 'turnover',
     apply_market_cap: 'market_cap',
     apply_pct_change: 'pct_change',
@@ -2316,6 +2322,7 @@ function summarizeRuleParams(p, ruleType) {
   if (p.apply_high) out.push(`Streak ${p.high_lookback}d ${streakModeLabel(p.streak_mode)}`);
   if (p.apply_rsi) out.push(`RSI(14) ${n(p.rsi_min)}–${n(p.rsi_max)}`);
   if (p.apply_rsi_dev) out.push(`RSI dev ${n(p.rsi_dev_min_pct)}–${n(p.rsi_dev_max_pct)}%`);
+  if (p.apply_rsi_rising) out.push('RSI rising');
   if (p.apply_price_dev) out.push(`vs EMA21 ${n(p.price_dev_min_pct)}–${n(p.price_dev_max_pct)}%`);
   if (p.apply_ema_dev) out.push(`EMA21 vs EMA50 ${n(p.ema_dev_min_pct)}–${n(p.ema_dev_max_pct)}%`);
   if (p.apply_price_sma10_dev) out.push(`vs SMA10 ${n(p.price_sma10_dev_min_pct)}–${n(p.price_sma10_dev_max_pct)}%`);
@@ -2327,6 +2334,7 @@ function summarizeRuleParams(p, ruleType) {
     if (p.macd_line_rising) parts.push('rising');
     out.push('MACD ' + (parts.join(' + ') || '(no condition)'));
   }
+  if (p.apply_macd_hist_rising) out.push('MACD histogram rising');
   if (p.apply_rvol) out.push(`RVol ≥ ${n(p.rvol_min)}× (${p.rvol_lookback}d)`);
   if (p.apply_avg_volume) out.push(`Avg vol ≥ ${n(p.avg_volume_min)}`);
   if (p.apply_turnover) out.push(`Turnover ${n(p.turnover_min_pct)}–${n(p.turnover_max_pct)}%`);
@@ -2702,6 +2710,7 @@ function syncModalDisabled() {
     apply_high: 'cm_high',
     apply_rsi: 'cm_rsi',
     apply_rsi_dev: 'cm_rsi_dev',
+    apply_rsi_rising: 'cm_rsi_rising',
     apply_rvol: 'cm_rvol',
     apply_avg_volume: 'cm_avg_volume',
     apply_price: 'cm_price',
@@ -2710,6 +2719,7 @@ function syncModalDisabled() {
     apply_price_sma10_dev: 'cm_price_sma10_dev',
     apply_sma10_sma20_dev: 'cm_sma10_sma20_dev',
     apply_macd_vs_signal: 'cm_macd_vs_signal',
+    apply_macd_hist_rising: 'cm_macd_hist_rising',
     apply_turnover: 'cm_turnover',
     apply_market_cap: 'cm_market_cap',
     apply_pct_change: 'cm_pct_change',

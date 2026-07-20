@@ -91,6 +91,10 @@ class ScreenHit:
     # visible for diagnose / debugging.
     price_sma10_dev_pct: float | None = None
     sma10_sma20_dev_pct: float | None = None
+    # Prior-bar RSI(14) — lets the results table / diagnose show whether
+    # RSI is rising and powers the "RSI(14) rising" filter. Optional so
+    # older cache/snapshot rows without it flow through as None.
+    rsi_prev: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -932,6 +936,7 @@ def _row_from_df(ticker: str, df: pd.DataFrame) -> dict | None:
         "ema21": _scalar("ema21"),
         "ema50": _scalar("ema50"),
         "rsi14": _scalar("rsi14"),
+        "rsi14_prev": _scalar("rsi14", -2),
         "rsi_sma9": _scalar("rsi_sma9"),
         "macd": _scalar("macd"),
         "macd_prev": _scalar("macd", -2),
@@ -1358,6 +1363,8 @@ def evaluate_ticker(
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
+    # RSI(14) strictly higher than the prior bar (momentum turning up).
+    apply_rsi_rising: bool = False,
     apply_rvol: bool = True,
     apply_avg_volume: bool = True,
     apply_price: bool = True,
@@ -1375,6 +1382,10 @@ def evaluate_ticker(
     sma10_sma20_dev_min_pct: float = -2.0,
     sma10_sma20_dev_max_pct: float = 4.0,
     apply_macd_vs_signal: bool = False,
+    # MACD histogram strictly higher than the prior bar — captures both
+    # "positive & rising" and "negative but increasing (less negative)"
+    # in one gate. Independent of apply_macd_vs_signal.
+    apply_macd_hist_rising: bool = False,
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
     apply_pct_change: bool = False,
@@ -1507,6 +1518,12 @@ def evaluate_ticker(
     if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
         return None
 
+    # RSI(14) rising — strictly above the prior bar's RSI.
+    rsi_prev_val = _scalar("rsi14", eval_idx - 1)
+    if apply_rsi_rising and (rsi_val is None or rsi_prev_val is None
+                             or not (rsi_val > rsi_prev_val)):
+        return None
+
     # 9-day SMA of RSI(14) and RSI's deviation from it.
     rsi_sma_val = _scalar("rsi_sma9")
     if apply_rsi_dev and (rsi_val is None or rsi_sma_val is None or rsi_sma_val == 0):
@@ -1598,6 +1615,13 @@ def evaluate_ticker(
         if macd_line_rising:
             if macd_prev_val is None or not (macd_val > macd_prev_val):
                 return None
+
+    # MACD histogram rising — one gate for "positive & rising" OR
+    # "negative but increasing (less negative)". Independent of the
+    # MACD-vs-signal gate above.
+    if apply_macd_hist_rising and (macd_hist_val is None or macd_hist_prev is None
+                                   or not (macd_hist_val > macd_hist_prev)):
+        return None
 
     # Relative volume: eval-bar volume / mean of the prior rvol_lookback bars
     vol_window_start = eval_idx - rvol_lookback
@@ -1722,6 +1746,7 @@ def evaluate_ticker(
         pct_change=round(pct_change, 2),
         high_lookback=round(eval_streak_val, 4),
         rsi=round(float(rsi_val), 2) if rsi_val is not None else None,
+        rsi_prev=round(float(rsi_prev_val), 2) if rsi_prev_val is not None else None,
         rsi_sma9=round(float(rsi_sma_val), 2) if rsi_sma_val is not None else None,
         rsi_dev_pct=round(rsi_dev_pct, 2) if rsi_dev_pct is not None else None,
         ema21=round(ema_val, 4) if ema_val is not None else None,
@@ -1835,11 +1860,12 @@ def _evaluate_from_snapshot(
     apply_high: bool,
     apply_rsi: bool,
     apply_rsi_dev: bool,
-    apply_rvol: bool,
-    apply_avg_volume: bool,
-    apply_price: bool,
-    apply_price_dev: bool,
-    apply_ema_dev: bool,
+    apply_rsi_rising: bool = False,
+    apply_rvol: bool = True,
+    apply_avg_volume: bool = True,
+    apply_price: bool = True,
+    apply_price_dev: bool = True,
+    apply_ema_dev: bool = True,
     # Standalone SMA-trend dev gates — mirror of evaluate_ticker.
     apply_price_sma10_dev: bool = False,
     price_sma10_dev_min_pct: float = -3.0,
@@ -1848,9 +1874,10 @@ def _evaluate_from_snapshot(
     sma10_sma20_dev_min_pct: float = -2.0,
     sma10_sma20_dev_max_pct: float = 4.0,
     apply_macd_vs_signal: bool,
-    apply_turnover: bool,
-    apply_market_cap: bool,
-    apply_pct_change: bool,
+    apply_macd_hist_rising: bool = False,
+    apply_turnover: bool = False,
+    apply_market_cap: bool = False,
+    apply_pct_change: bool = False,
     # SMA-revival filter — mirror of the evaluate_ticker signature.
     apply_sma_revival: bool = False,
     sma_cross_lookback: int = 3,
@@ -1952,6 +1979,13 @@ def _evaluate_from_snapshot(
     if apply_rsi and not (rsi_min <= rsi_val <= rsi_max):
         return None
 
+    # RSI(14) rising — strictly above the prior bar (from the snapshot's
+    # rsi14_prev column; None on rows written before this column existed).
+    rsi_prev_val = row.get("rsi14_prev")
+    if apply_rsi_rising and (rsi_val is None or rsi_prev_val is None
+                             or not (rsi_val > rsi_prev_val)):
+        return None
+
     rsi_sma_val = row.get("rsi_sma9")
     if apply_rsi_dev and (rsi_val is None or rsi_sma_val is None or rsi_sma_val == 0):
         return None
@@ -2026,6 +2060,11 @@ def _evaluate_from_snapshot(
         if macd_line_rising:
             if macd_prev_val is None or not (macd_val > macd_prev_val):
                 return None
+
+    # MACD histogram rising — mirror of the evaluate_ticker gate.
+    if apply_macd_hist_rising and (macd_hist_val is None or macd_hist_prev is None
+                                   or not (macd_hist_val > macd_hist_prev)):
+        return None
 
     # Relative volume — recompute against the user-specified lookback (the
     # `avg_volume` column in the snapshot is fixed to 10d; we need the
@@ -2165,6 +2204,7 @@ def _evaluate_from_snapshot(
         pct_change=round(pct_change, 2),
         high_lookback=round(eval_streak_val, 4),
         rsi=round(float(rsi_val), 2) if rsi_val is not None else None,
+        rsi_prev=round(float(rsi_prev_val), 2) if rsi_prev_val is not None else None,
         rsi_sma9=round(float(rsi_sma_val), 2) if rsi_sma_val is not None else None,
         rsi_dev_pct=round(rsi_dev_pct, 2) if rsi_dev_pct is not None else None,
         ema21=round(ema_val, 4) if ema_val is not None else None,
@@ -2220,6 +2260,7 @@ def run_screen(
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
+    apply_rsi_rising: bool = False,
     apply_rvol: bool = True,
     apply_avg_volume: bool = True,
     apply_price: bool = True,
@@ -2233,6 +2274,7 @@ def run_screen(
     sma10_sma20_dev_min_pct: float = -2.0,
     sma10_sma20_dev_max_pct: float = 4.0,
     apply_macd_vs_signal: bool = False,
+    apply_macd_hist_rising: bool = False,
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
     apply_pct_change: bool = False,
@@ -2318,6 +2360,7 @@ def run_screen(
                         pct_change_min=pct_change_min,
                         apply_high=apply_high, apply_rsi=apply_rsi,
                         apply_rsi_dev=apply_rsi_dev,
+                        apply_rsi_rising=apply_rsi_rising,
                         apply_rvol=apply_rvol,
                         apply_avg_volume=apply_avg_volume,
                         apply_price=apply_price,
@@ -2330,6 +2373,7 @@ def run_screen(
                         sma10_sma20_dev_min_pct=sma10_sma20_dev_min_pct,
                         sma10_sma20_dev_max_pct=sma10_sma20_dev_max_pct,
                         apply_macd_vs_signal=apply_macd_vs_signal,
+                        apply_macd_hist_rising=apply_macd_hist_rising,
                         apply_turnover=apply_turnover,
                         apply_market_cap=apply_market_cap,
                         apply_pct_change=apply_pct_change,
@@ -2386,6 +2430,7 @@ def run_screen(
                 apply_high=apply_high,
                 apply_rsi=apply_rsi,
                 apply_rsi_dev=apply_rsi_dev,
+                apply_rsi_rising=apply_rsi_rising,
                 apply_rvol=apply_rvol,
                 apply_avg_volume=apply_avg_volume,
                 apply_price=apply_price,
@@ -2398,6 +2443,7 @@ def run_screen(
                 sma10_sma20_dev_min_pct=sma10_sma20_dev_min_pct,
                 sma10_sma20_dev_max_pct=sma10_sma20_dev_max_pct,
                 apply_macd_vs_signal=apply_macd_vs_signal,
+                apply_macd_hist_rising=apply_macd_hist_rising,
                 apply_turnover=apply_turnover,
                 apply_market_cap=apply_market_cap,
                 apply_pct_change=apply_pct_change,
@@ -2564,12 +2610,14 @@ def diagnose_ticker(
     apply_high: bool = True,
     apply_rsi: bool = True,
     apply_rsi_dev: bool = True,
+    apply_rsi_rising: bool = False,
     apply_rvol: bool = True,
     apply_avg_volume: bool = True,
     apply_price: bool = True,
     apply_price_dev: bool = True,
     apply_ema_dev: bool = True,
     apply_macd_vs_signal: bool = False,
+    apply_macd_hist_rising: bool = False,
     apply_turnover: bool = False,
     apply_market_cap: bool = False,
     apply_pct_change: bool = False,
@@ -2780,6 +2828,15 @@ def diagnose_ticker(
         apply_rsi_dev, rsi_dev_ok, [rsi_dev_min_pct, rsi_dev_max_pct],
         {"rsi_sma9": round(rsi_sma_val, 2) if rsi_sma_val is not None else None})
 
+    # 4b. RSI(14) rising vs prior bar
+    rsi_prev_val = _scalar("rsi14", eval_idx - 1)
+    rsi_rising_ok = (rsi_val is not None and rsi_prev_val is not None
+                     and rsi_val > rsi_prev_val)
+    add("rsi_rising", "RSI(14) rising (> prior bar)",
+        round(rsi_val, 2) if rsi_val is not None else None,
+        apply_rsi_rising, rsi_rising_ok, None,
+        {"rsi_prev": round(rsi_prev_val, 2) if rsi_prev_val is not None else None})
+
     # 5. Price dev vs EMA(21)
     ema_val = _scalar("ema21")
     price_dev_pct = None
@@ -2838,6 +2895,15 @@ def diagnose_ticker(
          "signal": round(macd_sig_val_audit, 4) if macd_sig_val_audit is not None else None,
          "macd_prev": round(macd_line_prev_val, 4) if macd_line_prev_val is not None else None,
          "rising": macd_line_val is not None and macd_line_prev_val is not None and macd_line_val > macd_line_prev_val})
+
+    # 7c. MACD histogram rising (> prior bar) — one gate for "positive &
+    # rising" OR "negative but increasing (less negative)".
+    macd_hist_rising_ok = (macd_hist_val is not None and macd_hist_prev is not None
+                           and macd_hist_val > macd_hist_prev)
+    add("macd_hist_rising", "MACD histogram rising (> prior bar)",
+        round(macd_hist_val, 4) if macd_hist_val is not None else None,
+        apply_macd_hist_rising, macd_hist_rising_ok, None,
+        {"macd_hist_prev": round(macd_hist_prev, 4) if macd_hist_prev is not None else None})
 
     # 8. Relative volume
     vol_window_start = eval_idx - rvol_lookback

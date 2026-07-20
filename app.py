@@ -73,6 +73,7 @@ DEFAULT_PARAMS: dict = {
     "apply_high": True,
     "apply_rsi": True,
     "apply_rsi_dev": True,
+    "apply_rsi_rising": False,
     "apply_rvol": True,
     "apply_avg_volume": True,
     "apply_price": True,
@@ -86,6 +87,7 @@ DEFAULT_PARAMS: dict = {
     "sma10_sma20_dev_min_pct": -2.0,
     "sma10_sma20_dev_max_pct": 4.0,
     "apply_macd_vs_signal": False,
+    "apply_macd_hist_rising": False,
     "apply_turnover": False,
     "apply_market_cap": False,
     "apply_pct_change": False,
@@ -127,6 +129,9 @@ def _cache_key(params: dict) -> tuple:
         bool(params["macd_above_signal"]),
         bool(params["macd_line_rising"]),
     ) if params["apply_macd_vs_signal"] else ("off",)
+    # Two standalone boolean momentum gates (no thresholds).
+    rsi_rising = bool(params["apply_rsi_rising"])
+    macd_hist_rising = bool(params["apply_macd_hist_rising"])
     turnover = (round(float(params["turnover_min_pct"]), 4), round(float(params["turnover_max_pct"]), 4)) if params["apply_turnover"] else ("off",)
     market_cap = (round(float(params["market_cap_min_m"]), 2), round(float(params["market_cap_max_m"]), 2)) if params["apply_market_cap"] else ("off",)
     pct_change = (round(float(params["pct_change_min"]), 4),) if params["apply_pct_change"] else ("off",)
@@ -147,11 +152,12 @@ def _cache_key(params: dict) -> tuple:
     # but mean different calendar dates → stale rows served under the
     # wrong date. Resolved-date keying is drift-proof.
     as_of_key = params.get("as_of_date_resolved") or int(params["as_of_offset"])
-    # Bumped to v20 — adding price_sma10_dev / sma10_sma20_dev. Old v19
-    # entries would be served against the new filter-set otherwise.
-    return ("v20", as_of_key, price, price_dev, ema_dev, price_sma10_dev,
-            sma10_sma20_dev, macd_vs_sig, turnover, market_cap, pct_change,
-            sma_rev, high, rsi, rsi_dev, rvol, avg_vol, lists)
+    # Bumped to v21 — adding apply_rsi_rising / apply_macd_hist_rising.
+    # Old v20 entries would be served against the new filter-set otherwise.
+    return ("v21", as_of_key, price, price_dev, ema_dev, price_sma10_dev,
+            sma10_sma20_dev, macd_vs_sig, macd_hist_rising, turnover,
+            market_cap, pct_change, sma_rev, high, rsi, rsi_dev, rsi_rising,
+            rvol, avg_vol, lists)
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -257,6 +263,7 @@ def _parse_params() -> dict:
         "apply_high": _parse_bool("apply_high", True),
         "apply_rsi": _parse_bool("apply_rsi", True),
         "apply_rsi_dev": _parse_bool("apply_rsi_dev", True),
+        "apply_rsi_rising": _parse_bool("apply_rsi_rising", False),
         "apply_rvol": _parse_bool("apply_rvol", True),
         "apply_avg_volume": _parse_bool("apply_avg_volume", True),
         "apply_price": _parse_bool("apply_price", True),
@@ -265,6 +272,7 @@ def _parse_params() -> dict:
         "apply_price_sma10_dev": _parse_bool("apply_price_sma10_dev", False),
         "apply_sma10_sma20_dev": _parse_bool("apply_sma10_sma20_dev", False),
         "apply_macd_vs_signal": _parse_bool("apply_macd_vs_signal", False),
+        "apply_macd_hist_rising": _parse_bool("apply_macd_hist_rising", False),
         "apply_turnover": _parse_bool("apply_turnover", False),
         "apply_market_cap": _parse_bool("apply_market_cap", False),
         "apply_pct_change": _parse_bool("apply_pct_change", False),
@@ -348,12 +356,14 @@ def _api_screen_impl():
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
         apply_rsi_dev=params["apply_rsi_dev"],
+        apply_rsi_rising=params["apply_rsi_rising"],
         apply_rvol=params["apply_rvol"],
         apply_avg_volume=params["apply_avg_volume"],
         apply_price=params["apply_price"],
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
         apply_macd_vs_signal=params["apply_macd_vs_signal"],
+        apply_macd_hist_rising=params["apply_macd_hist_rising"],
         apply_turnover=params["apply_turnover"],
         apply_market_cap=params["apply_market_cap"],
         apply_pct_change=params["apply_pct_change"],
@@ -713,12 +723,14 @@ def api_debug(ticker: str):
         apply_high=params["apply_high"],
         apply_rsi=params["apply_rsi"],
         apply_rsi_dev=params["apply_rsi_dev"],
+        apply_rsi_rising=params["apply_rsi_rising"],
         apply_rvol=params["apply_rvol"],
         apply_avg_volume=params["apply_avg_volume"],
         apply_price=params["apply_price"],
         apply_price_dev=params["apply_price_dev"],
         apply_ema_dev=params["apply_ema_dev"],
         apply_macd_vs_signal=params["apply_macd_vs_signal"],
+        apply_macd_hist_rising=params["apply_macd_hist_rising"],
         apply_turnover=params["apply_turnover"],
         apply_market_cap=params["apply_market_cap"],
         apply_pct_change=params["apply_pct_change"],
