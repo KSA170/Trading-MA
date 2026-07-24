@@ -755,6 +755,7 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 }
 .rule-row .rule-type-screener { color: var(--muted); }
 .rule-row .rule-type-setup { color: var(--accent); border-color: var(--accent); }
+.rule-row .rule-type-stoch { color: var(--accent-2); border-color: var(--accent-2); }
 .rule-row .rule-spacer { flex: 1 1 auto; }
 .rule-row button { font-size: 12px; padding: 3px 8px; }
 .rule-row .rule-delete {

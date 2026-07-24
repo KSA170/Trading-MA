@@ -129,9 +129,33 @@ SETUP_DEFAULT_PARAMS: dict = {
 }
 _SETUP_PARAM_KEYS = frozenset(SETUP_DEFAULT_PARAMS.keys())
 
-RULE_TYPES = ("screener", "setup")
+# Stoch-type rules watch the stochastic oscillator on intraday bars
+# (Yahoo via calculators.fetch_bars) and fire on the oversold-bounce
+# signature. Built for small, hand-curated scopes (the watchlist) —
+# every ticker costs one Yahoo intraday fetch per run.
+STOCH_DEFAULT_PARAMS: dict = {
+    "interval": "5m",
+    "k_len": 14,
+    "smooth": 3,
+    "oversold": 20.0,
+    "overbought": 80.0,
+    # trigger:
+    #   curl_up          — Slow %K visited oversold within `lookback_bars`
+    #                      and has now turned up with Fast %K leading
+    #                      (the validated dip-buy signature).
+    #   entered_oversold — Slow %K crossed down into oversold on the
+    #                      latest bar (earliest heads-up, before the turn).
+    "trigger": "curl_up",
+    "lookback_bars": 4,
+}
+_STOCH_PARAM_KEYS = frozenset(STOCH_DEFAULT_PARAMS.keys())
+_STOCH_INTERVALS = ("1m", "5m", "15m", "30m", "1h", "1d")
+_STOCH_TRIGGERS = ("curl_up", "entered_oversold")
+
+RULE_TYPES = ("screener", "setup", "stoch")
 # 'all' is a setup-only scope ("score every ticker the snapshot pre-filter
-# returns") — using it with a screener rule would blow up Alpaca quota.
+# returns") — using it with a screener rule would blow up Alpaca quota,
+# and with a stoch rule the per-ticker Yahoo fetches.
 SCOPE_TYPES = ("watchlist", "sector", "industry", "all")
 
 
@@ -229,12 +253,35 @@ def init_tables() -> None:
 def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
     """Keep only the params that apply to this rule type, filling gaps
     with that type's defaults. Setup rules carry score_min + price /
-    dollar-volume band; screener rules carry the evaluate_ticker kwargs."""
+    dollar-volume band; stoch rules carry the oscillator knobs; screener
+    rules carry the evaluate_ticker kwargs."""
     if rule_type == "setup":
         params = dict(SETUP_DEFAULT_PARAMS)
         for k, v in (raw or {}).items():
             if k in _SETUP_PARAM_KEYS:
                 params[k] = v
+        return params
+    if rule_type == "stoch":
+        params = dict(STOCH_DEFAULT_PARAMS)
+        for k, v in (raw or {}).items():
+            if k in _STOCH_PARAM_KEYS:
+                params[k] = v
+        # Sanitize — bad values fall back to defaults instead of failing
+        # at evaluation time in the cron.
+        if params.get("interval") not in _STOCH_INTERVALS:
+            params["interval"] = "5m"
+        if params.get("trigger") not in _STOCH_TRIGGERS:
+            params["trigger"] = "curl_up"
+        def _num(key, dflt, lo, hi, cast=float):
+            try:
+                params[key] = max(lo, min(hi, cast(params[key])))
+            except (TypeError, ValueError):
+                params[key] = dflt
+        _num("k_len", 14, 2, 50, int)
+        _num("smooth", 3, 1, 10, int)
+        _num("oversold", 20.0, 0.0, 50.0)
+        _num("overbought", 80.0, 50.0, 100.0)
+        _num("lookback_bars", 4, 1, 20, int)
         return params
     params = dict(DEFAULT_ALERT_PARAMS)
     for k, v in (raw or {}).items():
@@ -1058,6 +1105,112 @@ def _now_et() -> datetime:
     return datetime.utcnow() - timedelta(hours=4)
 
 
+# --- stoch-type rules ------------------------------------------------------
+
+# Minutes per intraday interval — used for the stale-tape guard.
+_STOCH_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
+
+
+def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime) -> tuple[str, dict | None]:
+    """Evaluate one ticker against a stoch rule's params. Returns
+    (status, signal): status is 'no_data' | 'stale' | 'quiet' | 'fired';
+    signal is populated only when fired.
+
+    Data comes from calculators.fetch_bars (Yahoo intraday, TTL-cached;
+    snapshot-first for 1d) — no Alpaca dependency."""
+    import calculators
+
+    interval = p.get("interval", "5m")
+    k_len = int(p.get("k_len", 14))
+    smooth = int(p.get("smooth", 3))
+    oversold = float(p.get("oversold", 20.0))
+    lookback = max(1, int(p.get("lookback_bars", 4)))
+
+    bars, source = calculators.fetch_bars(ticker, interval)
+    if not bars or len(bars) < k_len + smooth + lookback:
+        return "no_data", None
+
+    # Stale-tape guard (intraday only): if Yahoo's latest bar is older
+    # than ~6 intervals, the tape is gappy (halt, delisting, symbol typo)
+    # — a "signal" computed on it would be hours old. Bar labels are ET
+    # ("YYYY-MM-DD HH:MM"), and `now` is ET, so plain string comparison
+    # works.
+    mins = _STOCH_INTERVAL_MINUTES.get(interval)
+    if mins:
+        from datetime import timedelta
+        cutoff = (now - timedelta(minutes=6 * mins)).strftime("%Y-%m-%d %H:%M")
+        if str(bars[-1].get("d") or "") < cutoff:
+            return "stale", None
+
+    fast, slow = calculators.stoch_series(bars, k_len, smooth)
+    if fast[-1] is None or slow[-1] is None or slow[-2] is None:
+        return "no_data", None
+
+    trigger = p.get("trigger", "curl_up")
+    if trigger == "entered_oversold":
+        fired = slow[-1] <= oversold < slow[-2]
+    else:  # curl_up
+        # The turn must be a real half-point move, not float jitter on a
+        # flat tape — a steady decline keeps Slow %K mathematically
+        # constant, and any-epsilon comparison would fire on noise.
+        recent = [v for v in slow[-(lookback + 1):-1] if v is not None]
+        fired = (bool(recent) and min(recent) <= oversold
+                 and slow[-1] > slow[-2] + 0.5 and fast[-1] > slow[-1])
+    if not fired:
+        return "quiet", None
+
+    price = float(bars[-1]["c"])
+    sig = {
+        "ticker": ticker, "interval": interval, "price": price,
+        "bar_time": bars[-1].get("d"), "source": source, "trigger": trigger,
+        "fast_k": round(fast[-1], 1), "slow_k": round(slow[-1], 1),
+        "slow_k_prev": round(slow[-2], 1),
+    }
+    # Bounce map from the reverse solver (steady drift over `smooth`
+    # bars): the price where Slow %K reaches overbought — the level the
+    # validated trades used as their profit-target zone — and the
+    # oversold boundary as the risk marker.
+    try:
+        ob = calculators.solve_price_for_slow_k(
+            bars, float(p.get("overbought", 80.0)), "up", smooth,
+            k_len, smooth, "drift")
+        osb = calculators.solve_price_for_slow_k(
+            bars, oversold, "down", smooth, k_len, smooth, "drift")
+        sig["target_price"] = ob.get("price")
+        sig["risk_price"] = osb.get("price")
+    except Exception as exc:
+        log.warning("stoch bounce-map failed for %s: %s", ticker, exc)
+    return "fired", sig
+
+
+def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
+    """Telegram body for a stoch-rule trigger — compact: the oscillator
+    move, plus the reverse-solver's target/boundary levels."""
+    import tg_format as T
+    trig_txt = ("curled up from oversold" if sig.get("trigger") == "curl_up"
+                else "entered oversold")
+    lines = T.header("STOCH ALERT", sig["ticker"], when=T.time_et(as_of),
+                     emoji="🌀")
+    lines.append(T.row("🏷", "Rule", T.b(rule_name)))
+    lines.append("")
+    lines.append(T.row("💰", "Price", T.b(T.money(sig.get("price")))
+                       + f" · {T.esc(sig.get('interval') or '')} bars"))
+    lines.append(T.row("🌀", "Slow %K",
+                       T.b(f"{sig['slow_k_prev']} → {sig['slow_k']}")
+                       + f" · fast {sig['fast_k']} · {trig_txt}"))
+    if sig.get("target_price") is not None:
+        lines.append(T.row("🎯", "OB target", T.b(T.money(sig["target_price"]))
+                           + " — drift-to-overbought level"))
+    if sig.get("risk_price") is not None:
+        lines.append(T.row("🛑", "OS boundary", T.b(T.money(sig["risk_price"]))
+                           + " — stays oversold below this"))
+    if sig.get("bar_time"):
+        lines.append(T.row("🕒", "Bar", T.esc(str(sig["bar_time"])) + " ET"))
+    lines.append("")
+    lines.append(T.i("Informational only — not financial advice."))
+    return "\n".join(lines)
+
+
 def market_is_open(now: datetime | None = None) -> bool:
     """US regular session, weekdays 9:30am-4:00pm ET. Does not account
     for market holidays — a holiday just yields zero fresh bars, so the
@@ -1109,11 +1262,14 @@ def run() -> int:
         log.info("no enabled alert rules — nothing to evaluate")
         return 0
 
-    screener_rules = [r for r in rules if r.get("rule_type") != "setup"]
+    screener_rules = [r for r in rules
+                      if r.get("rule_type") not in ("setup", "stoch")]
     setup_rules = [r for r in rules if r.get("rule_type") == "setup"]
+    stoch_rules = [r for r in rules if r.get("rule_type") == "stoch"]
 
     triggered_screener: list[tuple[dict, str, object]] = []   # (rule, ticker, hit)
     triggered_setup: list[tuple[dict, dict]] = []             # (rule, result)
+    triggered_stoch: list[tuple[dict, dict]] = []             # (rule, signal)
     stats_list: list[dict] = []
     today = now.strftime("%Y-%m-%d")
 
@@ -1237,9 +1393,45 @@ def run() -> int:
                     "no_data": 0, "errors": 0,
                 })
 
+    # --- stoch-type rules (Yahoo intraday via calculators) ----------------
+    if stoch_rules:
+        for rule in stoch_rules:
+            p = rule["params"]
+            scope = tickers_for_scope(rule["scope_type"], rule["scope_value"]) or []
+            ev = de = nd = er = mt = 0
+            for ticker in scope:
+                if already_sent(rule["id"], ticker, today):
+                    de += 1
+                    continue
+                try:
+                    status, sig = _evaluate_stoch_rule(ticker, p, now)
+                except Exception as exc:
+                    log.warning("stoch evaluate failed for %s (rule %s): %s",
+                                ticker, rule["id"], exc)
+                    er += 1
+                    continue
+                if status in ("no_data", "stale"):
+                    nd += 1
+                    continue
+                ev += 1
+                if status == "fired":
+                    mt += 1
+                    triggered_stoch.append((rule, sig))
+            log.info(
+                'rule %d "%s" (stoch %s%s): scope=%d evaluated=%d '
+                'matched=%d deduped=%d no_data=%d errors=%d',
+                rule["id"], rule["name"], rule["scope_type"],
+                (":" + rule["scope_value"]) if rule["scope_value"] else "",
+                len(scope), ev, mt, de, nd, er,
+            )
+            stats_list.append({
+                "rule_id": rule["id"], "scope": len(scope), "evaluated": ev,
+                "matched": mt, "deduped": de, "no_data": nd, "errors": er,
+            })
+
     _record_rule_run_stats(stats_list)
 
-    if not triggered_screener and not triggered_setup:
+    if not triggered_screener and not triggered_setup and not triggered_stoch:
         log.info("no new alerts this run")
         return 0
 
@@ -1301,7 +1493,18 @@ def run() -> int:
                  "label": rule.get("name") or "Setup alert"},
             )
             sent += 1
-    total = len(triggered_screener) + len(triggered_setup)
+    for rule, sig in triggered_stoch:
+        if send_telegram(_format_stoch_alert(rule["name"], sig, now)):
+            record_sent(rule["id"], sig["ticker"], today,
+                        f"slow_k={sig['slow_k']}")
+            outcomes.record_stock_outcome(
+                sig["ticker"], today, sig.get("price"),
+                {"kind": "alert_stoch", "id": rule["id"],
+                 "label": rule.get("name") or "Stoch alert"},
+            )
+            sent += 1
+    total = (len(triggered_screener) + len(triggered_setup)
+             + len(triggered_stoch))
     log.info("alerts: %d triggered, %d sent to Telegram", total, sent)
     return 0
 
