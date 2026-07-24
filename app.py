@@ -776,10 +776,17 @@ def api_calc_stoch_reverse():
     if oversold >= overbought:
         return jsonify({"error": "oversold threshold must be below "
                                  "the overbought threshold"}), 400
+    # Optional backtest anchor — "YYYY-MM-DD" or "YYYY-MM-DD HH:MM"
+    # (datetime-local's "T" separator accepted).
+    as_of = (request.args.get("as_of") or "").strip()
+    if as_of and calculators.normalize_anchor(as_of) is None:
+        return jsonify({"error": "as_of must look like YYYY-MM-DD or "
+                                 "YYYY-MM-DD HH:MM"}), 400
     try:
         result = calculators.stoch_reverse(
             ticker, interval, k_len=k_len, smooth=smooth,
-            overbought=overbought, oversold=oversold)
+            overbought=overbought, oversold=oversold,
+            as_of=as_of or None)
     except Exception as exc:
         import traceback
         log.error("stoch-reverse failed for %s/%s: %s\n%s",

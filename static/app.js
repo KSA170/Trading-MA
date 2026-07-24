@@ -4332,6 +4332,7 @@ async function loadOptionsHistory(opts) {
 (function () {
   const tickerEl = document.getElementById('calc-stoch-ticker');
   const intervalEl = document.getElementById('calc-stoch-interval');
+  const asOfEl = document.getElementById('calc-stoch-asof');
   const runBtn = document.getElementById('calc-stoch-run');
   const clearBtn = document.getElementById('calc-stoch-clear');
   const statusEl = document.getElementById('calc-stoch-status');
@@ -4373,6 +4374,39 @@ async function loadOptionsHistory(opts) {
       </div>`;
   }
 
+  // Backtest outcome — the next bars' real closes + Slow %K, and when
+  // each threshold was actually reached. Rendered only when anchored.
+  function actualHtml(d) {
+    if (!d.anchored) return '';
+    const a = d.actual;
+    if (!a || !a.rows || !a.rows.length) {
+      return '<p class="muted calc-note">No bars after the anchor yet — nothing to compare against.</p>';
+    }
+    const rows = a.rows.map((r, i) => {
+      const mv = r.pct_move == null ? '—'
+        : (r.pct_move >= 0 ? '+' : '') + r.pct_move.toFixed(2) + '%';
+      const mvCls = r.pct_move == null ? '' : (r.pct_move >= 0 ? 'calc-up' : 'calc-down');
+      return `<tr><td>bar ${i + 1} · ${escapeHtml(r.d || '')}</td>` +
+             `<td class="num">${fmtPx(r.close)}</td>` +
+             `<td class="num ${mvCls}">${mv}</td>` +
+             `<td class="num">${fmtK(r.slow_k)}</td></tr>`;
+    }).join('');
+    const hits = [];
+    if (a.hit_oversold_after != null) hits.push(`hit oversold after ${a.hit_oversold_after} bar${a.hit_oversold_after > 1 ? 's' : ''}`);
+    if (a.hit_overbought_after != null) hits.push(`hit overbought after ${a.hit_overbought_after} bar${a.hit_overbought_after > 1 ? 's' : ''}`);
+    const verdict = hits.length
+      ? `<span class="calc-hit">${escapeHtml(hits.join(' · '))}</span>`
+      : '<span class="muted">neither threshold reached in these bars</span>';
+    return `
+      <div class="calc-dir calc-actual">
+        <div class="calc-dir-title">What actually happened ${verdict}</div>
+        <table class="calc-table">
+          <thead><tr><th>Bar</th><th>Close</th><th>Move</th><th>Slow %K</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
   function render(d) {
     const stateCls = d.state === 'overbought' ? 'ob'
       : d.state === 'oversold' ? 'os' : 'neutral';
@@ -4382,9 +4416,13 @@ async function loadOptionsHistory(opts) {
       + ` (Slow %K ≤ ${d.params.oversold})`;
     const obTitle = (d.state === 'overbought' ? 'To stay overbought' : 'To reach overbought')
       + ` (Slow %K ≥ ${d.params.overbought})`;
+    const backtestChip = d.anchored
+      ? `<span class="calc-backtest-chip" title="Computed using only bars at or before this moment">backtest @ ${escapeHtml(d.anchor || '')}</span>`
+      : '';
     resultEl.innerHTML = `
       <div class="calc-result-head">
         <strong>${escapeHtml(d.ticker)}</strong>
+        ${backtestChip}
         <span class="muted">· ${escapeHtml(d.interval_label)} bars · ${escapeHtml(d.source || '')}
           · ${d.bar_count} bars · as of ${escapeHtml(d.as_of || '')}</span>
       </div>
@@ -4398,6 +4436,7 @@ async function loadOptionsHistory(opts) {
       <div class="calc-dirs">
         ${dirTable(d.to_oversold, osTitle, '≤')}
         ${dirTable(d.to_overbought, obTitle, '≥')}
+        ${actualHtml(d)}
       </div>
       <p class="muted calc-note">
         Assumes price gaps to the level and holds it for the stated number
@@ -4421,6 +4460,7 @@ async function loadOptionsHistory(opts) {
         overbought: document.getElementById('calc-stoch-ob').value || '80',
         oversold: document.getElementById('calc-stoch-os').value || '20',
       });
+      if (asOfEl && asOfEl.value) qs.set('as_of', asOfEl.value);
       const res = await fetch('/api/calc/stoch-reverse?' + qs.toString());
       const data = await res.json();
       if (!res.ok || data.error) {
@@ -4443,6 +4483,7 @@ async function loadOptionsHistory(opts) {
   tickerEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') runCalc(); });
   clearBtn.addEventListener('click', () => {
     tickerEl.value = '';
+    if (asOfEl) asOfEl.value = '';
     resultEl.hidden = true;
     resultEl.innerHTML = '';
     setStatus('');
