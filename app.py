@@ -942,6 +942,9 @@ def api_alerts_rule_create():
         # there flow through here automatically. A previous hand-rolled
         # 4-tuple silently dropped base_min/ignition_min/earliness_min.
         params = {k: sp[k] for k in alerts._SETUP_PARAM_KEYS if k in sp}
+    elif rule_type == "stoch":
+        sp = payload.get("stoch_params") or {}
+        params = {k: sp[k] for k in alerts._STOCH_PARAM_KEYS if k in sp}
     else:
         params = _parse_params()
         params.pop("lists", None)  # not an evaluate_ticker kwarg
@@ -979,9 +982,12 @@ def api_alerts_rule_update_criteria():
     payload = request.get_json(silent=True) or {}
     rule_id = int(payload.get("id", 0))
     sp = payload.get("setup_params")
+    stp = payload.get("stoch_params")
     if sp:
         # Same single-source-of-truth pattern as api_alerts_rule_create.
         params = {k: sp[k] for k in alerts._SETUP_PARAM_KEYS if k in sp}
+    elif stp:
+        params = {k: stp[k] for k in alerts._STOCH_PARAM_KEYS if k in stp}
     else:
         params = _parse_params()
         params.pop("lists", None)

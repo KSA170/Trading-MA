@@ -297,6 +297,52 @@ def fetch_bars(ticker: str, interval: str,
 
 # --- calculator orchestrator ----------------------------------------------
 
+def project_bar_label(last_label: str | None, k: int, interval: str) -> str | None:
+    """Approximate label of the k-th future bar after `last_label`, in
+    the same format that interval's bars use. Intraday projection stays
+    inside the regular session (09:30–16:00 ET) and rolls across days;
+    daily skips weekends. Market holidays are NOT skipped — the label is
+    informational, not a trading clock — so a projection spanning a
+    holiday reads one day early."""
+    if not last_label or k <= 0:
+        return None
+    from datetime import datetime as _dt, timedelta as _td
+    s = str(last_label)
+    try:
+        if interval == "1mo":
+            d = _dt.strptime(s[:7], "%Y-%m")
+            mo = d.month - 1 + k
+            return f"{d.year + mo // 12:04d}-{mo % 12 + 1:02d}"
+        if interval == "1wk":
+            d = _dt.strptime(s[:10], "%Y-%m-%d")
+            return (d + _td(weeks=k)).strftime("%Y-%m-%d")
+        if interval == "1d":
+            d = _dt.strptime(s[:10], "%Y-%m-%d")
+            step = 0
+            while step < k:
+                d += _td(days=1)
+                if d.weekday() < 5:
+                    step += 1
+            return d.strftime("%Y-%m-%d")
+        mins = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}.get(interval)
+        if not mins:
+            return None
+        d = _dt.strptime(s[:16], "%Y-%m-%d %H:%M")
+        open_min, close_min = 9 * 60 + 30, 16 * 60
+        for _ in range(k):
+            d += _td(minutes=mins)
+            hm = d.hour * 60 + d.minute
+            if hm >= close_min:
+                d = (d + _td(days=1)).replace(hour=9, minute=30)
+            elif hm < open_min:
+                d = d.replace(hour=9, minute=30)
+            while d.weekday() >= 5:
+                d += _td(days=1)
+        return d.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return None
+
+
 def _anchor_index(bars: list[dict], anchor: str) -> int | None:
     """Index of the last bar at or before `anchor`, or None. Bar 'd'
     labels and the normalized anchor share lexicographic date ordering
@@ -389,10 +435,15 @@ def stoch_reverse(ticker: str, interval: str, *, k_len: int = 14,
 
     def _solve(threshold: float, direction: str) -> list[dict]:
         out = []
+        last_d = bars[-1].get("d")
         for k in range(1, horizon + 1):
             r = solve_price_for_slow_k(bars, threshold, direction, k,
                                        k_len, smooth, path)
             r["bars"] = k
+            # Projected timestamp of the k-th future bar — lets the UI
+            # render target rows in the same shape as the actual-outcome
+            # rows (and line up 1:1 with them in a backtest).
+            r["d"] = project_bar_label(last_d, k, interval)
             r["pct_move"] = (round((r["price"] - price) / price * 100.0, 2)
                              if (r["price"] is not None and price > 0) else None)
             out.append(r)

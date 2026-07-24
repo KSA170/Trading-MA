@@ -150,6 +150,7 @@ const els = {
   cmMsg: $('#criteria-modal-msg'),
   cmSectionScreener: $('#cm-criteria-screener'),
   cmSectionSetup: $('#cm-criteria-setup'),
+  cmSectionStoch: $('#cm-criteria-stoch'),
   diagnoseTicker: $('#diagnose-ticker'),
   diagnoseBtn: $('#diagnose-btn'),
   diagnoseClearBtn: $('#diagnose-clear-btn'),
@@ -2198,13 +2199,17 @@ function renderRules(data) {
     const scanLine = r.last_run_at
       ? `Last scan: ${formatTriggerTime(r.last_run_at)} · ${scanParts.join(' · ')}`
       : 'Not scanned yet (the alert engine hasn’t run since this rule was created).';
+    const isStoch = r.rule_type === 'stoch';
     const row = document.createElement('div');
     row.className = 'rule-row'
       + (r.enabled ? '' : ' rule-off')
-      + (isSetup ? ' rule-setup' : '');
+      + (isSetup ? ' rule-setup' : '')
+      + (isStoch ? ' rule-stoch' : '');
     row.dataset.id = r.id;
     const typeChip = isSetup
       ? '<span class="rule-type-chip rule-type-setup">Setup</span>'
+      : isStoch
+      ? '<span class="rule-type-chip rule-type-stoch">Stoch</span>'
       : '<span class="rule-type-chip rule-type-screener">Screener</span>';
     row.innerHTML = `
       <div class="rule-head">
@@ -2303,6 +2308,21 @@ function streakModeLabel(m) {
 }
 function summarizeRuleParams(p, ruleType) {
   const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
+  if (ruleType === 'stoch') {
+    const trigTxt = {
+      curl_up: 'Slow %K curls up from oversold (calls)',
+      entered_oversold: 'Slow %K enters oversold',
+      curl_down: 'Slow %K curls down from overbought (puts)',
+      entered_overbought: 'Slow %K enters overbought',
+    }[p.trigger] || 'Slow %K curls up from oversold (calls)';
+    const isCurl = p.trigger !== 'entered_oversold' && p.trigger !== 'entered_overbought';
+    return [
+      `${p.interval || '5m'} bars · ${trigTxt}`,
+      `OS ≤ ${n(p.oversold)} · OB ≥ ${n(p.overbought)}`,
+      `%K ${n(p.k_len)} · smooth ${n(p.smooth)}`
+        + (isCurl ? ` · lookback ${n(p.lookback_bars)}` : ''),
+    ];
+  }
   if (ruleType === 'setup') {
     const out = [`Setup score ≥ ${n(p.score_min)}`];
     if (p.min_price != null && p.max_price != null) {
@@ -2437,10 +2457,8 @@ async function ruleAction(id, act) {
     const enabling = row && row.classList.contains('rule-off');
     url = '/api/alerts/rules/toggle'; body = { id, enabled: !!enabling };
   } else if (act === 'update') {
-    // Both screener and setup rules use the criteria modal for updates.
-    // The modal pre-fills from rule.params and POSTs on submit.
-    const row = els.rulesList && els.rulesList.querySelector(`.rule-row[data-id="${id}"]`);
-    const isSetup = row && row.classList.contains('rule-setup');
+    // Screener, setup, and stoch rules all use the criteria modal for
+    // updates. The modal pre-fills from rule.params and POSTs on submit.
     const rule = _alertRules.find((r) => r.id === id) || {};
     const scopeText = rule.scope_type === 'watchlist'
       ? 'Watchlist'
@@ -2452,7 +2470,7 @@ async function ruleAction(id, act) {
           : '');
     openCriteriaModal({
       mode: 'update',
-      ruleType: isSetup ? 'setup' : 'screener',
+      ruleType: rule.rule_type || 'screener',
       ruleId: id,
       ruleName: rule.name || `#${id}`,
       scopeText,
@@ -2504,17 +2522,20 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
   ruleType = ruleType || 'screener';
   _criteriaModalState = { mode, ruleId: ruleId || null, ruleType };
 
-  // Show only the criteria section that matches the rule type. Both
+  // Show only the criteria section that matches the rule type. All
   // sections live in the DOM so we can toggle without rebuilding.
   if (els.cmSectionScreener) els.cmSectionScreener.hidden = ruleType !== 'screener';
   if (els.cmSectionSetup) els.cmSectionSetup.hidden = ruleType !== 'setup';
+  if (els.cmSectionStoch) els.cmSectionStoch.hidden = ruleType !== 'stoch';
 
   // Pre-fill criteria. CREATE seeds from the relevant live form (main
-  // filter form for screener, Setups toolbar for setup) so the popup
-  // opens close to what the user was just looking at. UPDATE uses the
-  // rule's stored params.
+  // filter form for screener, Setups toolbar for setup, defaults for
+  // stoch) so the popup opens close to what the user was just looking
+  // at. UPDATE uses the rule's stored params.
   if (ruleType === 'setup') {
     applySetupParamsToModal(prefill || readSetupToolbarAsParams());
+  } else if (ruleType === 'stoch') {
+    applyStochParamsToModal(prefill || {});
   } else {
     applyParamsToModal(prefill || readMainFormAsParams());
   }
@@ -2528,11 +2549,14 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
   }
 
   if (mode === 'create') {
-    const ruleLabel = ruleType === 'setup' ? 'setup' : 'screener';
+    const ruleLabel = ruleType === 'setup' ? 'setup'
+      : ruleType === 'stoch' ? 'stochastic' : 'screener';
     if (els.cmTitle) els.cmTitle.textContent = `Create ${ruleLabel} alert rule`;
     if (els.cmSubtitle) {
       els.cmSubtitle.textContent = ruleType === 'setup'
         ? 'Setup rules rank the latest EOD snapshot. Pick a scope and set min-score + price / dollar-volume thresholds.'
+        : ruleType === 'stoch'
+        ? 'Stochastic rules watch intraday Slow %K for the oversold bounce (calls) or overbought rollover (puts). Best on the watchlist scope — each ticker costs one Yahoo fetch per check.'
         : 'Pick a scope and adjust filter criteria. The realtime engine checks these every ~15 min in market hours.';
     }
     if (els.cmMeta) els.cmMeta.hidden = false;
@@ -2679,6 +2703,42 @@ function buildSetupParamsFromModal() {
   return out;
 }
 
+// Stoch-rule criteria fields (shown when rule type = stoch). Keys match
+// alerts.STOCH_DEFAULT_PARAMS.
+const stochModalInputs = {
+  interval: $('#cm_stoch_interval'),
+  trigger: $('#cm_stoch_trigger'),
+  k_len: $('#cm_stoch_k_len'),
+  smooth: $('#cm_stoch_smooth'),
+  oversold: $('#cm_stoch_oversold'),
+  overbought: $('#cm_stoch_overbought'),
+  lookback_bars: $('#cm_stoch_lookback'),
+};
+
+function applyStochParamsToModal(p) {
+  p = p || {};
+  for (const [k, el] of Object.entries(stochModalInputs)) {
+    if (!el) continue;
+    if (p[k] !== undefined && p[k] !== null) el.value = String(p[k]);
+  }
+}
+
+function buildStochParamsFromModal() {
+  const num = (el, dflt) => {
+    const v = parseFloat(el && el.value);
+    return Number.isFinite(v) ? v : dflt;
+  };
+  return {
+    interval: (stochModalInputs.interval && stochModalInputs.interval.value) || '5m',
+    trigger: (stochModalInputs.trigger && stochModalInputs.trigger.value) || 'curl_up',
+    k_len: num(stochModalInputs.k_len, 14),
+    smooth: num(stochModalInputs.smooth, 3),
+    oversold: num(stochModalInputs.oversold, 20),
+    overbought: num(stochModalInputs.overbought, 80),
+    lookback_bars: num(stochModalInputs.lookback_bars, 4),
+  };
+}
+
 function populateModalScopeValues() {
   if (!els.cmScopeType || !els.cmScopeValue) return;
   const type = els.cmScopeType.value;
@@ -2764,6 +2824,13 @@ async function submitCriteriaModal() {
           rule_type: 'setup',
           setup_params: buildSetupParamsFromModal(),
         };
+      } else if (ruleType === 'stoch') {
+        url = '/api/alerts/rules';
+        body = {
+          name, scope_type: scopeType, scope_value: scopeValue,
+          rule_type: 'stoch',
+          stoch_params: buildStochParamsFromModal(),
+        };
       } else {
         url = '/api/alerts/rules?' + buildModalQuery();
         body = { name, scope_type: scopeType, scope_value: scopeValue, rule_type: 'screener' };
@@ -2838,11 +2905,13 @@ async function submitCriteriaModal() {
       return;
     }
 
-    const url = ruleType === 'setup'
+    const url = (ruleType === 'setup' || ruleType === 'stoch')
       ? '/api/alerts/rules/update-criteria'
       : '/api/alerts/rules/update-criteria?' + buildModalQuery();
     const reqBody = ruleType === 'setup'
       ? { id: ruleId, setup_params: buildSetupParamsFromModal() }
+      : ruleType === 'stoch'
+      ? { id: ruleId, stoch_params: buildStochParamsFromModal() }
       : { id: ruleId };
     const res = await fetch(url, {
       method: 'POST',
@@ -3906,13 +3975,17 @@ if (els.setupsCreateAlertBtn) {
 // modal, so the inline name + scope inputs are unused. The rule-type
 // selector remains as a quick toggle for which modal mode to open.
 function syncRuleTypeUI() {
-  const isSetup = els.ruleType && els.ruleType.value === 'setup';
+  const rt = (els.ruleType && els.ruleType.value) || 'screener';
   if (els.ruleCreateBtn) {
-    els.ruleCreateBtn.textContent = isSetup
+    els.ruleCreateBtn.textContent = rt === 'setup'
       ? 'Create setup rule…'
+      : rt === 'stoch'
+      ? 'Create stochastic rule…'
       : 'Create screener rule…';
-    els.ruleCreateBtn.title = isSetup
+    els.ruleCreateBtn.title = rt === 'setup'
       ? 'Open the dialog to pick scope and setup score / price / volume thresholds'
+      : rt === 'stoch'
+      ? 'Open the dialog to pick scope, bar interval, and stochastic thresholds'
       : 'Open the dialog to pick scope and screener filter criteria';
   }
   // Inline name + scope inputs are now redundant — the modal collects
@@ -4349,20 +4422,25 @@ async function loadOptionsHistory(opts) {
     : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtK = (v) => v == null ? '—' : Number(v).toFixed(1);
 
-  // One row of a direction table. `cmp` is ≤ for the oversold table
-  // (price must stay at or below) and ≥ for the overbought table.
+  // One row of a direction table — same shape as the actual-outcome
+  // rows ("bar N · timestamp" + price + move + Slow %K) so targets and
+  // outcomes line up 1:1. `cmp` is ≤ for the oversold table (price must
+  // be at or below by that bar) and ≥ for the overbought table. Row
+  // timestamps are projected future bar times (regular session,
+  // holidays not skipped).
   function rowHtml(r, cmp) {
-    const bars = `within ${r.bars} bar${r.bars > 1 ? 's' : ''}`;
+    const barLbl = `bar ${r.bars}` + (r.d ? ` · ${escapeHtml(r.d)}` : '');
     if (r.price == null) {
       const txt = r.note || (r.achievable ? 'any price' : 'not achievable');
-      return `<tr class="${r.achievable ? '' : 'calc-na'}"><td>${bars}</td>` +
-             `<td colspan="2" class="calc-note-cell">${escapeHtml(txt)}</td></tr>`;
+      return `<tr class="${r.achievable ? '' : 'calc-na'}"><td>${barLbl}</td>` +
+             `<td colspan="3" class="calc-note-cell">${escapeHtml(txt)}</td></tr>`;
     }
     const mv = r.pct_move == null ? '—'
       : (r.pct_move >= 0 ? '+' : '') + r.pct_move.toFixed(2) + '%';
     const mvCls = r.pct_move == null ? '' : (r.pct_move >= 0 ? 'calc-up' : 'calc-down');
-    return `<tr><td>${bars}</td><td class="num">${cmp} ${fmtPx(r.price)}</td>` +
-           `<td class="num ${mvCls}">${mv}</td></tr>`;
+    return `<tr><td>${barLbl}</td><td class="num">${cmp} ${fmtPx(r.price)}</td>` +
+           `<td class="num ${mvCls}">${mv}</td>` +
+           `<td class="num">${fmtK(r.slow_k)}</td></tr>`;
   }
 
   function dirTable(rows, title, cmp) {
@@ -4370,7 +4448,9 @@ async function loadOptionsHistory(opts) {
       <div class="calc-dir">
         <div class="calc-dir-title">${title}</div>
         <table class="calc-table">
-          <thead><tr><th>Horizon</th><th>Price</th><th>Move</th></tr></thead>
+          <thead><tr><th title="Projected future bar (market time)">Bar</th>
+            <th title="Level price must reach by that bar">Price</th>
+            <th>Move</th><th>Slow %K</th></tr></thead>
           <tbody>${rows.map((r) => rowHtml(r, cmp)).join('')}</tbody>
         </table>
       </div>`;

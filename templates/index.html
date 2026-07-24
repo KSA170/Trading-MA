@@ -616,9 +616,10 @@
       </button>
       <div id="rules-body" class="history-body">
         <div class="rules-create">
-          <select id="rule-type" title="Screener rules use the filter dialog; Setup rules use the Setups panel toolbar above.">
+          <select id="rule-type" title="Screener rules use the filter dialog; Setup rules use the Setups panel toolbar above; Stochastic rules watch intraday Slow %K for the oversold-bounce signature.">
             <option value="screener">Screener filters</option>
             <option value="setup">Setup score</option>
+            <option value="stoch">Stochastic swing</option>
           </select>
           <input id="rule-name" type="text" placeholder="Rule name — e.g. Biotech momentum" autocomplete="off" />
           <select id="rule-scope-type" title="What set of stocks this rule scans">
@@ -777,6 +778,53 @@
             </div>
           </div>
           <p class="muted criteria-modal-help" style="margin-top:6px;">Sub-score floors are optional (0 = ignored) and AND-stack with the overall score. Setting Base=70 + Ignition=50 means "score ≥ overall AND base-quality ≥ 70 AND ignition ≥ 50".</p>
+        </div>
+
+        <div id="cm-criteria-stoch" data-criteria-section="stoch" hidden>
+          <h3 class="criteria-modal-section-h">Stochastic criteria</h3>
+          <p class="muted criteria-modal-help">Fires when a ticker's Slow %K puts in the chosen swing signature on the selected bar interval — oversold bounce for the call side, overbought rollover for the put side (data fetched live from Yahoo at evaluation time). The alert includes the reverse-solver's drift target and boundary levels for that side. One alert per ticker per day per rule; triggers can lag the bar by the alert cron's cadence.</p>
+          <div class="criteria-setup-grid">
+            <div class="filter">
+              <label>Interval</label>
+              <select id="cm_stoch_interval">
+                <option value="1m">1 minute</option>
+                <option value="5m" selected>5 minutes</option>
+                <option value="15m">15 minutes</option>
+                <option value="30m">30 minutes</option>
+                <option value="1h">1 hour</option>
+                <option value="1d">1 day</option>
+              </select>
+            </div>
+            <div class="filter" title="Call side: 'Curl up from oversold' — Slow %K visited oversold within the lookback and has turned up with Fast %K leading (the dip-buy signature); 'Entered oversold' fires on the crossing bar itself. Put side mirrors: 'Curl down from overbought' — Slow %K visited overbought and has rolled over with Fast %K leading lower; 'Entered overbought' fires on the crossing. Put-side alerts flip the target/risk map (target = drift-to-oversold, risk = the stays-overbought ceiling).">
+              <label>Trigger</label>
+              <select id="cm_stoch_trigger">
+                <option value="curl_up" selected>Curl up from oversold (calls)</option>
+                <option value="entered_oversold">Entered oversold</option>
+                <option value="curl_down">Curl down from overbought (puts)</option>
+                <option value="entered_overbought">Entered overbought</option>
+              </select>
+            </div>
+            <div class="filter">
+              <label>%K length</label>
+              <input id="cm_stoch_k_len" type="number" min="2" max="50" value="14" />
+            </div>
+            <div class="filter">
+              <label>Smoothing</label>
+              <input id="cm_stoch_smooth" type="number" min="1" max="10" value="3" />
+            </div>
+            <div class="filter">
+              <label>Oversold ≤</label>
+              <input id="cm_stoch_oversold" type="number" min="0" max="50" step="1" value="20" />
+            </div>
+            <div class="filter">
+              <label>Overbought ≥</label>
+              <input id="cm_stoch_overbought" type="number" min="50" max="100" step="1" value="80" />
+            </div>
+            <div class="filter" title="Curl-up trigger only: the oversold visit must have happened within this many bars back.">
+              <label>Lookback (bars)</label>
+              <input id="cm_stoch_lookback" type="number" min="1" max="20" value="4" />
+            </div>
+          </div>
         </div>
 
         <div id="cm-criteria-screener" data-criteria-section="screener">
