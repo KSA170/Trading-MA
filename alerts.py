@@ -139,18 +139,26 @@ STOCH_DEFAULT_PARAMS: dict = {
     "smooth": 3,
     "oversold": 20.0,
     "overbought": 80.0,
-    # trigger:
-    #   curl_up          — Slow %K visited oversold within `lookback_bars`
-    #                      and has now turned up with Fast %K leading
-    #                      (the validated dip-buy signature).
-    #   entered_oversold — Slow %K crossed down into oversold on the
-    #                      latest bar (earliest heads-up, before the turn).
+    # trigger — bullish (call-side) and bearish (put-side) mirrors:
+    #   curl_up            — Slow %K visited oversold within
+    #                        `lookback_bars` and has now turned up with
+    #                        Fast %K leading (the validated dip-buy
+    #                        signature).
+    #   entered_oversold   — Slow %K crossed down into oversold on the
+    #                        latest bar (earliest heads-up, pre-turn).
+    #   curl_down          — Slow %K visited overbought within the
+    #                        lookback and has turned down with Fast %K
+    #                        leading lower (the put-side rollover).
+    #   entered_overbought — Slow %K crossed up into overbought on the
+    #                        latest bar.
     "trigger": "curl_up",
     "lookback_bars": 4,
 }
 _STOCH_PARAM_KEYS = frozenset(STOCH_DEFAULT_PARAMS.keys())
 _STOCH_INTERVALS = ("1m", "5m", "15m", "30m", "1h", "1d")
-_STOCH_TRIGGERS = ("curl_up", "entered_oversold")
+_STOCH_TRIGGERS = ("curl_up", "entered_oversold",
+                   "curl_down", "entered_overbought")
+_STOCH_BEARISH_TRIGGERS = ("curl_down", "entered_overbought")
 
 RULE_TYPES = ("screener", "setup", "stoch")
 # 'all' is a setup-only scope ("score every ticker the snapshot pre-filter
@@ -1147,13 +1155,20 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime) -> tuple[str, dict
         return "no_data", None
 
     trigger = p.get("trigger", "curl_up")
+    overbought = float(p.get("overbought", 80.0))
+    bearish = trigger in _STOCH_BEARISH_TRIGGERS
+    # Curl turns must be a real half-point move, not float jitter on a
+    # flat tape — a steady one-way tape keeps Slow %K mathematically
+    # constant, and an any-epsilon comparison would fire on noise.
+    recent = [v for v in slow[-(lookback + 1):-1] if v is not None]
     if trigger == "entered_oversold":
         fired = slow[-1] <= oversold < slow[-2]
+    elif trigger == "entered_overbought":
+        fired = slow[-1] >= overbought > slow[-2]
+    elif trigger == "curl_down":
+        fired = (bool(recent) and max(recent) >= overbought
+                 and slow[-1] < slow[-2] - 0.5 and fast[-1] < slow[-1])
     else:  # curl_up
-        # The turn must be a real half-point move, not float jitter on a
-        # flat tape — a steady decline keeps Slow %K mathematically
-        # constant, and any-epsilon comparison would fire on noise.
-        recent = [v for v in slow[-(lookback + 1):-1] if v is not None]
         fired = (bool(recent) and min(recent) <= oversold
                  and slow[-1] > slow[-2] + 0.5 and fast[-1] > slow[-1])
     if not fired:
@@ -1163,35 +1178,50 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime) -> tuple[str, dict
     sig = {
         "ticker": ticker, "interval": interval, "price": price,
         "bar_time": bars[-1].get("d"), "source": source, "trigger": trigger,
+        "direction": "bearish" if bearish else "bullish",
         "fast_k": round(fast[-1], 1), "slow_k": round(slow[-1], 1),
         "slow_k_prev": round(slow[-2], 1),
     }
     # Bounce map from the reverse solver (steady drift over `smooth`
-    # bars): the price where Slow %K reaches overbought — the level the
-    # validated trades used as their profit-target zone — and the
-    # oversold boundary as the risk marker.
+    # bars). Call side: target = drift-to-overbought level, risk = the
+    # stays-oversold boundary below. Put side mirrors: target =
+    # drift-to-oversold level, risk = the stays-overbought floor above.
     try:
         ob = calculators.solve_price_for_slow_k(
-            bars, float(p.get("overbought", 80.0)), "up", smooth,
-            k_len, smooth, "drift")
+            bars, overbought, "up", smooth, k_len, smooth, "drift")
         osb = calculators.solve_price_for_slow_k(
             bars, oversold, "down", smooth, k_len, smooth, "drift")
-        sig["target_price"] = ob.get("price")
-        sig["risk_price"] = osb.get("price")
+        if bearish:
+            sig["target_price"] = osb.get("price")
+            sig["risk_price"] = ob.get("price")
+        else:
+            sig["target_price"] = ob.get("price")
+            sig["risk_price"] = osb.get("price")
     except Exception as exc:
         log.warning("stoch bounce-map failed for %s: %s", ticker, exc)
     return "fired", sig
 
 
+_STOCH_TRIG_TEXT = {
+    "curl_up": "curled up from oversold",
+    "entered_oversold": "entered oversold",
+    "curl_down": "curled down from overbought",
+    "entered_overbought": "entered overbought",
+}
+
+
 def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     """Telegram body for a stoch-rule trigger — compact: the oscillator
-    move, plus the reverse-solver's target/boundary levels."""
+    move, plus the reverse-solver's target/boundary levels. Call-side
+    triggers frame the map for a bounce long; put-side triggers frame
+    the mirrored breakdown short."""
     import tg_format as T
-    trig_txt = ("curled up from oversold" if sig.get("trigger") == "curl_up"
-                else "entered oversold")
+    trig_txt = _STOCH_TRIG_TEXT.get(sig.get("trigger"), sig.get("trigger") or "")
+    bearish = sig.get("direction") == "bearish"
+    side_txt = "put side" if bearish else "call side"
     lines = T.header("STOCH ALERT", sig["ticker"], when=T.time_et(as_of),
                      emoji="🌀")
-    lines.append(T.row("🏷", "Rule", T.b(rule_name)))
+    lines.append(T.row("🏷", "Rule", T.b(rule_name) + f" · {side_txt}"))
     lines.append("")
     lines.append(T.row("💰", "Price", T.b(T.money(sig.get("price")))
                        + f" · {T.esc(sig.get('interval') or '')} bars"))
@@ -1199,11 +1229,17 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
                        T.b(f"{sig['slow_k_prev']} → {sig['slow_k']}")
                        + f" · fast {sig['fast_k']} · {trig_txt}"))
     if sig.get("target_price") is not None:
-        lines.append(T.row("🎯", "OB target", T.b(T.money(sig["target_price"]))
-                           + " — drift-to-overbought level"))
+        lines.append(T.row("🎯",
+                           "OS target" if bearish else "OB target",
+                           T.b(T.money(sig["target_price"]))
+                           + (" — drift-to-oversold level" if bearish
+                              else " — drift-to-overbought level")))
     if sig.get("risk_price") is not None:
-        lines.append(T.row("🛑", "OS boundary", T.b(T.money(sig["risk_price"]))
-                           + " — stays oversold below this"))
+        lines.append(T.row("🛑",
+                           "OB ceiling" if bearish else "OS boundary",
+                           T.b(T.money(sig["risk_price"]))
+                           + (" — stays overbought above this" if bearish
+                              else " — stays oversold below this")))
     if sig.get("bar_time"):
         lines.append(T.row("🕒", "Bar", T.esc(str(sig["bar_time"])) + " ET"))
     lines.append("")

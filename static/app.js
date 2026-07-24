@@ -2309,12 +2309,18 @@ function streakModeLabel(m) {
 function summarizeRuleParams(p, ruleType) {
   const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
   if (ruleType === 'stoch') {
+    const trigTxt = {
+      curl_up: 'Slow %K curls up from oversold (calls)',
+      entered_oversold: 'Slow %K enters oversold',
+      curl_down: 'Slow %K curls down from overbought (puts)',
+      entered_overbought: 'Slow %K enters overbought',
+    }[p.trigger] || 'Slow %K curls up from oversold (calls)';
+    const isCurl = p.trigger !== 'entered_oversold' && p.trigger !== 'entered_overbought';
     return [
-      `${p.interval || '5m'} bars · ${p.trigger === 'entered_oversold'
-        ? 'Slow %K enters oversold' : 'Slow %K curls up from oversold'}`,
+      `${p.interval || '5m'} bars · ${trigTxt}`,
       `OS ≤ ${n(p.oversold)} · OB ≥ ${n(p.overbought)}`,
       `%K ${n(p.k_len)} · smooth ${n(p.smooth)}`
-        + (p.trigger === 'entered_oversold' ? '' : ` · lookback ${n(p.lookback_bars)}`),
+        + (isCurl ? ` · lookback ${n(p.lookback_bars)}` : ''),
     ];
   }
   if (ruleType === 'setup') {
@@ -2550,7 +2556,7 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
       els.cmSubtitle.textContent = ruleType === 'setup'
         ? 'Setup rules rank the latest EOD snapshot. Pick a scope and set min-score + price / dollar-volume thresholds.'
         : ruleType === 'stoch'
-        ? 'Stochastic rules watch intraday Slow %K for the oversold-bounce signature. Best on the watchlist scope — each ticker costs one Yahoo fetch per check.'
+        ? 'Stochastic rules watch intraday Slow %K for the oversold bounce (calls) or overbought rollover (puts). Best on the watchlist scope — each ticker costs one Yahoo fetch per check.'
         : 'Pick a scope and adjust filter criteria. The realtime engine checks these every ~15 min in market hours.';
     }
     if (els.cmMeta) els.cmMeta.hidden = false;
@@ -4416,20 +4422,25 @@ async function loadOptionsHistory(opts) {
     : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtK = (v) => v == null ? '—' : Number(v).toFixed(1);
 
-  // One row of a direction table. `cmp` is ≤ for the oversold table
-  // (price must stay at or below) and ≥ for the overbought table.
+  // One row of a direction table — same shape as the actual-outcome
+  // rows ("bar N · timestamp" + price + move + Slow %K) so targets and
+  // outcomes line up 1:1. `cmp` is ≤ for the oversold table (price must
+  // be at or below by that bar) and ≥ for the overbought table. Row
+  // timestamps are projected future bar times (regular session,
+  // holidays not skipped).
   function rowHtml(r, cmp) {
-    const bars = `within ${r.bars} bar${r.bars > 1 ? 's' : ''}`;
+    const barLbl = `bar ${r.bars}` + (r.d ? ` · ${escapeHtml(r.d)}` : '');
     if (r.price == null) {
       const txt = r.note || (r.achievable ? 'any price' : 'not achievable');
-      return `<tr class="${r.achievable ? '' : 'calc-na'}"><td>${bars}</td>` +
-             `<td colspan="2" class="calc-note-cell">${escapeHtml(txt)}</td></tr>`;
+      return `<tr class="${r.achievable ? '' : 'calc-na'}"><td>${barLbl}</td>` +
+             `<td colspan="3" class="calc-note-cell">${escapeHtml(txt)}</td></tr>`;
     }
     const mv = r.pct_move == null ? '—'
       : (r.pct_move >= 0 ? '+' : '') + r.pct_move.toFixed(2) + '%';
     const mvCls = r.pct_move == null ? '' : (r.pct_move >= 0 ? 'calc-up' : 'calc-down');
-    return `<tr><td>${bars}</td><td class="num">${cmp} ${fmtPx(r.price)}</td>` +
-           `<td class="num ${mvCls}">${mv}</td></tr>`;
+    return `<tr><td>${barLbl}</td><td class="num">${cmp} ${fmtPx(r.price)}</td>` +
+           `<td class="num ${mvCls}">${mv}</td>` +
+           `<td class="num">${fmtK(r.slow_k)}</td></tr>`;
   }
 
   function dirTable(rows, title, cmp) {
@@ -4437,7 +4448,9 @@ async function loadOptionsHistory(opts) {
       <div class="calc-dir">
         <div class="calc-dir-title">${title}</div>
         <table class="calc-table">
-          <thead><tr><th>Horizon</th><th>Price</th><th>Move</th></tr></thead>
+          <thead><tr><th title="Projected future bar (market time)">Bar</th>
+            <th title="Level price must reach by that bar">Price</th>
+            <th>Move</th><th>Slow %K</th></tr></thead>
           <tbody>${rows.map((r) => rowHtml(r, cmp)).join('')}</tbody>
         </table>
       </div>`;
