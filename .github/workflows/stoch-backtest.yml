@@ -1,0 +1,42 @@
+name: Stoch backtest report
+
+# One-shot replay of known trade timestamps through the Reverse
+# Stochastic calculator. Runs on the Actions runner because it has open
+# egress to Yahoo (the Claude sandbox does not); results are read from
+# the job log.
+#
+# Triggers: manual dispatch (once merged to main), plus pushes that
+# touch this workflow or the report script — so pushing the file runs
+# the report immediately without waiting for a merge.
+on:
+  workflow_dispatch:
+    inputs:
+      trades_json:
+        description: 'Optional JSON list of trades to replay (see stoch_backtest_report.py)'
+        required: false
+        default: ''
+  push:
+    branches:
+      - claude/stock-filter-builder-PrUrK
+    paths:
+      - '.github/workflows/stoch-backtest.yml'
+      - 'stoch_backtest_report.py'
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run backtest report
+        env:
+          STOCH_TRADES_JSON: ${{ inputs.trades_json }}
+        run: python stoch_backtest_report.py
