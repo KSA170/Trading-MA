@@ -29,33 +29,57 @@ Data sourcing: the 1-day interval prefers the latest daily_snapshot row's
 recent_bars (zero fetch cost); every other interval — and the 1-day
 fallback — fetches from Yahoo via yfinance, with a short in-process TTL
 cache per (ticker, interval).
+
+Backtesting: an optional `as_of` anchor restricts the calculation to
+bars at or before that moment — the anchor bar becomes "current", so
+the state and target prices are exactly what the calculator would have
+said back then (no lookahead). When later bars exist, the result also
+carries an `actual` section — the next `smooth` bars' closes and Slow
+%K plus when each threshold was really hit — so the prediction can be
+compared against what happened.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 
 log = logging.getLogger("calculators")
 
 # interval -> (yfinance period, human label, cache TTL seconds).
-# Periods sit inside Yahoo's per-interval history caps (1m ≤ 7d,
-# 5m-30m ≤ 60d, 1h ≤ 730d) while giving far more bars than the
-# stochastic needs.
+# Periods sit AT Yahoo's per-interval history caps (1m ≤ ~7d,
+# 5m-30m ≤ 60d, 1h ≤ 730d) so backtest anchors reach as far back as
+# the data source allows.
 INTERVALS: dict[str, tuple[str, str, int]] = {
-    "1m":  ("5d",  "1 minute",   180),
-    "5m":  ("1mo", "5 minutes",  180),
-    "15m": ("1mo", "15 minutes", 180),
-    "30m": ("1mo", "30 minutes", 180),
-    "1h":  ("3mo", "1 hour",     600),
-    "1d":  ("6mo", "1 day",      1800),
-    "1wk": ("2y",  "1 week",     3600),
-    "1mo": ("10y", "1 month",    3600),
+    "1m":  ("7d",   "1 minute",   180),
+    "5m":  ("60d",  "5 minutes",  180),
+    "15m": ("60d",  "15 minutes", 180),
+    "30m": ("60d",  "30 minutes", 180),
+    "1h":  ("730d", "1 hour",     600),
+    "1d":  ("2y",   "1 day",      1800),
+    "1wk": ("10y",  "1 week",     3600),
+    "1mo": ("max",  "1 month",    3600),
 }
 
-_cache: dict[tuple[str, str], tuple[float, list, str]] = {}
+_cache: dict[tuple, tuple[float, list, str]] = {}
 _cache_lock = threading.Lock()
+
+# "YYYY-MM-DD", optionally with "T" or " " and "HH:MM[:SS]".
+_ANCHOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$")
+
+
+def normalize_anchor(as_of) -> str | None:
+    """Validate + normalize a backtest anchor to 'YYYY-MM-DD[ HH:MM]'.
+    Returns None when the input is empty or malformed. The normalized
+    form compares lexicographically against every bar-label format this
+    module emits ('YYYY-MM', 'YYYY-MM-DD', 'YYYY-MM-DD HH:MM')."""
+    s = str(as_of or "").strip()
+    if not s or not _ANCHOR_RE.match(s):
+        return None
+    s = s.replace("T", " ")
+    return s[:16]   # drop seconds if present
 
 
 # --- pure math (no I/O — unit-testable in isolation) -----------------------
@@ -88,17 +112,40 @@ def stoch_series(bars: list[dict], k_len: int = 14, smooth: int = 3):
 
 
 def slow_k_after(bars: list[dict], price: float, k_bars: int,
-                 k_len: int = 14, smooth: int = 3) -> float | None:
-    """Slow %K after appending k_bars synthetic flat bars at `price`
-    (each O=H=L=C=price)."""
-    synth = [{"h": price, "l": price, "c": price}] * k_bars
+                 k_len: int = 14, smooth: int = 3,
+                 path: str = "hold") -> float | None:
+    """Slow %K after appending k_bars synthetic bars.
+
+    path 'hold':  every synthetic bar sits at `price` (gap and hold) —
+                  models an immediate move that then consolidates.
+    path 'drift': closes interpolate linearly from the last real close
+                  to `price` across the k bars — models a steady
+                  multi-bar swing, which is how OB→OS transitions
+                  usually unfold on intraday charts. The trailing HH/LL
+                  window rolls down (or up) along the path, so drift
+                  targets differ meaningfully from hold targets.
+    Either way each synthetic bar is flat (O=H=L=C)."""
+    if path == "drift" and k_bars > 1:
+        try:
+            p0 = float(bars[-1]["c"])
+        except (TypeError, ValueError, KeyError, IndexError):
+            p0 = price
+        synth = []
+        for i in range(1, k_bars + 1):
+            c = p0 + (price - p0) * i / k_bars
+            synth.append({"h": c, "l": c, "c": c})
+    else:
+        synth = [{"h": price, "l": price, "c": price}] * k_bars
     _, slow = stoch_series(list(bars) + synth, k_len, smooth)
     return slow[-1]
 
 
 def solve_price_for_slow_k(bars: list[dict], threshold: float, direction: str,
-                           k_bars: int, k_len: int = 14, smooth: int = 3) -> dict:
-    """Bisection solve on the flat-bar simulation.
+                           k_bars: int, k_len: int = 14, smooth: int = 3,
+                           path: str = "hold") -> dict:
+    """Bisection solve on the synthetic-bar simulation (see slow_k_after
+    for the 'hold' vs 'drift' path models — both are monotonic in P, so
+    the same bisection applies).
 
     direction 'down': highest price P with SlowK_after(P) <= threshold
                       (how far price must fall to reach oversold).
@@ -111,7 +158,7 @@ def solve_price_for_slow_k(bars: list[dict], threshold: float, direction: str,
     """
     # Only the tail matters once k_bars synthetic bars are appended.
     tail = bars[-(k_len + smooth + 2):]
-    f = lambda p: slow_k_after(tail, p, k_bars, k_len, smooth)
+    f = lambda p: slow_k_after(tail, p, k_bars, k_len, smooth, path)
 
     highs = [float(b["h"]) for b in tail if b.get("h") is not None]
     lo, hi = 0.0, max(highs) * 2.0 if highs else 1.0
@@ -219,12 +266,17 @@ def _bars_from_yahoo(ticker: str, interval: str) -> tuple[list | None, str | Non
     return (bars, "live (Yahoo)") if bars else (None, None)
 
 
-def fetch_bars(ticker: str, interval: str) -> tuple[list | None, str | None]:
+def fetch_bars(ticker: str, interval: str,
+               skip_snapshot: bool = False) -> tuple[list | None, str | None]:
     """Bars for (ticker, interval), oldest first, with a source label.
     1-day prefers the DB snapshot (already holds 60 daily bars); every
     other interval — and the 1-day fallback — goes to Yahoo. Cached
-    in-process per INTERVALS TTL."""
-    key = (ticker, interval)
+    in-process per INTERVALS TTL.
+
+    skip_snapshot forces the Yahoo path for 1-day bars — used when a
+    backtest anchor sits too far back for the snapshot's 60-bar window
+    (Yahoo's 2y daily history reaches much further)."""
+    key = (ticker, interval, skip_snapshot)
     ttl = INTERVALS[interval][2]
     now = time.time()
     with _cache_lock:
@@ -233,7 +285,7 @@ def fetch_bars(ticker: str, interval: str) -> tuple[list | None, str | None]:
             return hit[1], hit[2]
 
     bars, source = (None, None)
-    if interval == "1d":
+    if interval == "1d" and not skip_snapshot:
         bars, source = _bars_from_snapshot(ticker)
     if bars is None:
         bars, source = _bars_from_yahoo(ticker, interval)
@@ -245,26 +297,82 @@ def fetch_bars(ticker: str, interval: str) -> tuple[list | None, str | None]:
 
 # --- calculator orchestrator ----------------------------------------------
 
+def _anchor_index(bars: list[dict], anchor: str) -> int | None:
+    """Index of the last bar at or before `anchor`, or None. Bar 'd'
+    labels and the normalized anchor share lexicographic date ordering
+    across all this module's formats."""
+    idx = None
+    for i, b in enumerate(bars):
+        d = b.get("d")
+        if d is not None and str(d) <= anchor:
+            idx = i
+    return idx
+
+
 def stoch_reverse(ticker: str, interval: str, *, k_len: int = 14,
                   smooth: int = 3, overbought: float = 80.0,
-                  oversold: float = 20.0) -> dict:
+                  oversold: float = 20.0, as_of: str | None = None,
+                  path: str = "hold", horizon: int | None = None) -> dict:
     """Full reverse-Slow-%K calculation. Returns a JSON-ready dict;
-    on failure a dict with just {"error": ...}."""
+    on failure a dict with just {"error": ...}.
+
+    as_of (normalized 'YYYY-MM-DD[ HH:MM]') anchors a backtest: only
+    bars at or before it feed the calculation, and later bars — when
+    they exist — populate the `actual` outcome section.
+
+    path is the synthetic-bar model ('hold' or 'drift' — see
+    slow_k_after). horizon is the furthest bar count solved for
+    (default = smooth; capped at k_len - 1, beyond which the trailing
+    window would be entirely synthetic and the answer degenerates).
+    Past k = smooth, 'hold' targets move only through HH/LL window
+    rolloff (old extremes dropping out); 'drift' targets change with
+    every horizon since the path itself stretches."""
     ticker = ticker.strip().upper()
     if interval not in INTERVALS:
         return {"error": f"unsupported interval '{interval}'"}
-    label = INTERVALS[interval][1]
+    if path not in ("hold", "drift"):
+        return {"error": f"unsupported path model '{path}'"}
+    period, label, _ = INTERVALS[interval]
+    needed = k_len + smooth - 1
+    horizon = smooth if horizon is None else int(horizon)
+    horizon = max(1, min(max(1, k_len - 1), horizon))
 
     bars, source = fetch_bars(ticker, interval)
     if not bars:
         return {"error": f"no {label} bars available for {ticker} — "
                          "check the ticker symbol (or Yahoo may be "
                          "rate-limiting; retry in a minute)"}
-    needed = k_len + smooth - 1
+
+    anchor = normalize_anchor(as_of) if as_of else None
+    if as_of and anchor is None:
+        return {"error": "start-from must look like YYYY-MM-DD or "
+                         "YYYY-MM-DD HH:MM"}
+    future: list[dict] = []
+    if anchor:
+        idx = _anchor_index(bars, anchor)
+        # The snapshot only holds ~60 daily bars; when the anchor sits
+        # too deep for it, retry against Yahoo's 2y daily history.
+        if (interval == "1d" and source and source.startswith("snapshot")
+                and (idx is None or idx + 1 < needed)):
+            deep_bars, deep_source = fetch_bars(ticker, interval,
+                                                skip_snapshot=True)
+            if deep_bars:
+                deep_idx = _anchor_index(deep_bars, anchor)
+                if deep_idx is not None and (idx is None or deep_idx + 1 > idx + 1):
+                    bars, source, idx = deep_bars, deep_source, deep_idx
+        if idx is None:
+            return {"error": f"no {label} bars at or before {anchor} for "
+                             f"{ticker} — this interval's history reaches "
+                             f"back about {period}"}
+        future = bars[idx + 1: idx + 1 + horizon]
+        bars = bars[:idx + 1]
+
     if len(bars) < needed:
         return {"error": f"only {len(bars)} {label} bars available for "
-                         f"{ticker}; %K {k_len} with smoothing {smooth} "
-                         f"needs at least {needed}"}
+                         f"{ticker}"
+                         + (f" at or before {anchor}" if anchor else "")
+                         + f"; %K {k_len} with smoothing {smooth} needs "
+                           f"at least {needed}"}
 
     fast, slow = stoch_series(bars, k_len, smooth)
     fast_k, slow_k = fast[-1], slow[-1]
@@ -281,14 +389,42 @@ def stoch_reverse(ticker: str, interval: str, *, k_len: int = 14,
 
     def _solve(threshold: float, direction: str) -> list[dict]:
         out = []
-        for k in range(1, smooth + 1):
+        for k in range(1, horizon + 1):
             r = solve_price_for_slow_k(bars, threshold, direction, k,
-                                       k_len, smooth)
+                                       k_len, smooth, path)
             r["bars"] = k
             r["pct_move"] = (round((r["price"] - price) / price * 100.0, 2)
                              if (r["price"] is not None and price > 0) else None)
             out.append(r)
         return out
+
+    # Backtest outcome: what really happened over the next `horizon`
+    # bars. Stochastic values at each future bar depend only on bars up
+    # to that bar, so computing over past+future introduces no lookahead
+    # into any individual reading.
+    actual = None
+    if future:
+        _, slow_ext = stoch_series(bars + future, k_len, smooth)
+        rows = []
+        hit_os = hit_ob = None
+        for j, fb in enumerate(future):
+            sk = slow_ext[len(bars) + j]
+            fc = fb.get("c")
+            rows.append({
+                "d": fb.get("d"),
+                "close": round(float(fc), 4) if fc is not None else None,
+                "slow_k": round(sk, 2) if sk is not None else None,
+                "pct_move": (round((float(fc) - price) / price * 100.0, 2)
+                             if (fc is not None and price > 0) else None),
+            })
+            if sk is not None:
+                if hit_os is None and sk <= oversold:
+                    hit_os = j + 1
+                if hit_ob is None and sk >= overbought:
+                    hit_ob = j + 1
+        actual = {"rows": rows,
+                  "hit_oversold_after": hit_os,
+                  "hit_overbought_after": hit_ob}
 
     return {
         "ticker": ticker,
@@ -297,13 +433,18 @@ def stoch_reverse(ticker: str, interval: str, *, k_len: int = 14,
         "source": source,
         "bar_count": len(bars),
         "as_of": bars[-1].get("d"),
+        "anchored": bool(anchor),
+        "anchor": anchor,
         "price": round(price, 4),
         "fast_k": round(fast_k, 2),
         "slow_k": round(slow_k, 2),
         "percent_d": round(percent_d, 2) if percent_d is not None else None,
         "state": state,
+        "path": path,
+        "horizon": horizon,
         "params": {"k_len": k_len, "smooth": smooth,
                    "overbought": overbought, "oversold": oversold},
         "to_oversold": _solve(oversold, "down"),
         "to_overbought": _solve(overbought, "up"),
+        "actual": actual,
     }

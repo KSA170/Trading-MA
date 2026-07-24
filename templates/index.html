@@ -647,7 +647,9 @@
           Solves the Slow %K formula backwards: the price the next bar(s)
           would need to trade at for Slow %K to reach oversold or
           overbought. Both directions are always shown — falling to
-          oversold and rising to overbought.
+          oversold and rising to overbought. Set a "Start from" date/time
+          to backtest: the calculation anchors at that bar and the result
+          compares the targets against what actually happened next.
         </p>
         <div class="calc-form">
           <input id="calc-stoch-ticker" type="text" placeholder="Ticker — e.g. AAPL" autocomplete="off" spellcheck="false" />
@@ -661,6 +663,19 @@
             <option value="1wk">1 week</option>
             <option value="1mo">1 month</option>
           </select>
+          <select id="calc-stoch-path" title="How the hypothetical future price path is modeled.&#10;&#10;Gap &amp; hold — price jumps straight to the level and consolidates there. Past the smoothing period, targets shift only as old highs/lows roll out of the %K window.&#10;&#10;Steady drift — price moves in a straight line from here to the level across the horizon. Closer to how OB→OS swings actually unfold over many intraday bars: the trailing high/low window rolls along the path, so longer horizons typically need a smaller move.">
+            <option value="hold" selected>Gap &amp; hold</option>
+            <option value="drift">Steady drift</option>
+          </select>
+          <label class="calc-horizon" title="Furthest bar count to solve for — each table gets one row per bar from 1 up to this. Capped at %K length − 1 (beyond that the whole lookback window would be hypothetical).">
+            horizon
+            <input id="calc-stoch-horizon" type="number" min="1" max="49" value="3" />
+            bars
+          </label>
+          <label class="calc-asof" title="Backtest anchor — compute as of this moment, using only bars at or before it, then compare against what actually happened next. Blank = latest bar. Times are US market time (ET); for daily and longer intervals only the date matters (that day's bar is included). History reach per interval: 1m ≈ 7 days · 5–30m ≈ 60 days · 1h ≈ 2 years · daily ≈ 2 years · weekly 10 years · monthly max.">
+            Start from
+            <input id="calc-stoch-asof" type="datetime-local" />
+          </label>
           <button id="calc-stoch-run" type="button">Calculate</button>
           <button id="calc-stoch-clear" type="button" disabled>Clear</button>
         </div>
