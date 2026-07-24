@@ -22,6 +22,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 import screener
 import snapshots
 import alerts
+import calculators
 import pattern_scan
 import picker
 import filter_presets
@@ -746,6 +747,44 @@ def api_debug(ticker: str):
         as_of_offset=params["as_of_offset"],
         as_of_date=params.get("as_of_date_resolved"),
     )
+    return jsonify(result)
+
+
+@app.route("/api/calc/stoch-reverse")
+def api_calc_stoch_reverse():
+    """Reverse Slow %K calculator — see calculators.stoch_reverse. Solves
+    for the price the next bar(s) must trade at for the stochastic
+    Slow %K to reach the oversold / overbought thresholds."""
+    ticker = (request.args.get("ticker") or "").strip().upper()
+    if not ticker:
+        return jsonify({"error": "ticker is required"}), 400
+    interval = (request.args.get("interval") or "1d").strip().lower()
+    if interval not in calculators.INTERVALS:
+        return jsonify({"error": f"unsupported interval '{interval}'"}), 400
+
+    def _bounded_int(name: str, dflt: int, lo: int, hi: int) -> int:
+        try:
+            v = int(float(request.args.get(name) or dflt))
+        except (TypeError, ValueError):
+            v = dflt
+        return max(lo, min(hi, v))
+
+    k_len = _bounded_int("k_len", 14, 2, 50)
+    smooth = _bounded_int("smooth", 3, 1, 10)
+    overbought = max(0.0, min(100.0, _flt("overbought", 80.0)))
+    oversold = max(0.0, min(100.0, _flt("oversold", 20.0)))
+    if oversold >= overbought:
+        return jsonify({"error": "oversold threshold must be below "
+                                 "the overbought threshold"}), 400
+    try:
+        result = calculators.stoch_reverse(
+            ticker, interval, k_len=k_len, smooth=smooth,
+            overbought=overbought, oversold=oversold)
+    except Exception as exc:
+        import traceback
+        log.error("stoch-reverse failed for %s/%s: %s\n%s",
+                  ticker, interval, exc, traceback.format_exc())
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
     return jsonify(result)
 
 
