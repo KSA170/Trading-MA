@@ -39,6 +39,7 @@
     <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="momentum">Momentum</button>
     <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="setups">Setups</button>
     <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="alerts">Alerts</button>
+    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="calculators">Calculators</button>
   </nav>
   <nav class="subtabs" id="subtabs-options" role="tablist" aria-label="Options tools" hidden>
     <button type="button" class="subtab active" role="tab" aria-selected="true"  data-sub="screener">Screener</button>
@@ -636,6 +637,44 @@
         <div id="rules-list">
           <p class="muted history-empty">No alert rules yet — create one above.</p>
         </div>
+      </div>
+    </section>
+
+    <section class="match-history calculators-panel" data-tool="calculators">
+      <div class="calc-card">
+        <h2 class="calc-title">Reverse Stochastic — Slow %K target price</h2>
+        <p class="muted calc-desc">
+          Solves the Slow %K formula backwards: the price the next bar(s)
+          would need to trade at for Slow %K to reach oversold or
+          overbought. Both directions are always shown — falling to
+          oversold and rising to overbought.
+        </p>
+        <div class="calc-form">
+          <input id="calc-stoch-ticker" type="text" placeholder="Ticker — e.g. AAPL" autocomplete="off" spellcheck="false" />
+          <select id="calc-stoch-interval" title="Bar interval the stochastic is computed on. Daily bars come from the snapshot DB; other intervals fetch live from Yahoo.">
+            <option value="1m">1 minute</option>
+            <option value="5m">5 minutes</option>
+            <option value="15m">15 minutes</option>
+            <option value="30m">30 minutes</option>
+            <option value="1h">1 hour</option>
+            <option value="1d" selected>1 day</option>
+            <option value="1wk">1 week</option>
+            <option value="1mo">1 month</option>
+          </select>
+          <button id="calc-stoch-run" type="button">Calculate</button>
+          <button id="calc-stoch-clear" type="button" disabled>Clear</button>
+        </div>
+        <details class="calc-advanced">
+          <summary>Stochastic parameters (%K 14 · smoothing 3 · 80/20)</summary>
+          <div class="calc-advanced-grid">
+            <label>%K length <input id="calc-stoch-klen" type="number" min="2" max="50" value="14" /></label>
+            <label>Smoothing <input id="calc-stoch-smooth" type="number" min="1" max="10" value="3" /></label>
+            <label>Overbought ≥ <input id="calc-stoch-ob" type="number" min="50" max="100" step="1" value="80" /></label>
+            <label>Oversold ≤ <input id="calc-stoch-os" type="number" min="0" max="50" step="1" value="20" /></label>
+          </div>
+        </details>
+        <p id="calc-stoch-status" class="muted" hidden></p>
+        <div id="calc-stoch-result" class="calc-result" hidden></div>
       </div>
     </section>
   </main>

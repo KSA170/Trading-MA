@@ -4325,6 +4325,131 @@ async function loadOptionsHistory(opts) {
   } catch (_) { /* silent */ }
 }
 
+// --- Calculators panel -----------------------------------------------------
+// First calculator: Reverse Stochastic Slow %K. Self-contained — reads its
+// own inputs, calls /api/calc/stoch-reverse, renders both directions
+// (price to reach oversold AND price to reach overbought) every run.
+(function () {
+  const tickerEl = document.getElementById('calc-stoch-ticker');
+  const intervalEl = document.getElementById('calc-stoch-interval');
+  const runBtn = document.getElementById('calc-stoch-run');
+  const clearBtn = document.getElementById('calc-stoch-clear');
+  const statusEl = document.getElementById('calc-stoch-status');
+  const resultEl = document.getElementById('calc-stoch-result');
+  if (!runBtn || !tickerEl) return;
+
+  const setStatus = (msg) => {
+    statusEl.textContent = msg || '';
+    statusEl.hidden = !msg;
+  };
+  const fmtPx = (v) => v == null ? '—'
+    : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtK = (v) => v == null ? '—' : Number(v).toFixed(1);
+
+  // One row of a direction table. `cmp` is ≤ for the oversold table
+  // (price must stay at or below) and ≥ for the overbought table.
+  function rowHtml(r, cmp) {
+    const bars = `within ${r.bars} bar${r.bars > 1 ? 's' : ''}`;
+    if (r.price == null) {
+      const txt = r.note || (r.achievable ? 'any price' : 'not achievable');
+      return `<tr class="${r.achievable ? '' : 'calc-na'}"><td>${bars}</td>` +
+             `<td colspan="2" class="calc-note-cell">${escapeHtml(txt)}</td></tr>`;
+    }
+    const mv = r.pct_move == null ? '—'
+      : (r.pct_move >= 0 ? '+' : '') + r.pct_move.toFixed(2) + '%';
+    const mvCls = r.pct_move == null ? '' : (r.pct_move >= 0 ? 'calc-up' : 'calc-down');
+    return `<tr><td>${bars}</td><td class="num">${cmp} ${fmtPx(r.price)}</td>` +
+           `<td class="num ${mvCls}">${mv}</td></tr>`;
+  }
+
+  function dirTable(rows, title, cmp) {
+    return `
+      <div class="calc-dir">
+        <div class="calc-dir-title">${title}</div>
+        <table class="calc-table">
+          <thead><tr><th>Horizon</th><th>Price</th><th>Move</th></tr></thead>
+          <tbody>${rows.map((r) => rowHtml(r, cmp)).join('')}</tbody>
+        </table>
+      </div>`;
+  }
+
+  function render(d) {
+    const stateCls = d.state === 'overbought' ? 'ob'
+      : d.state === 'oversold' ? 'os' : 'neutral';
+    // When already inside a zone, the same solve gives the boundary to
+    // STAY there — label the table honestly for that case.
+    const osTitle = (d.state === 'oversold' ? 'To stay oversold' : 'To reach oversold')
+      + ` (Slow %K ≤ ${d.params.oversold})`;
+    const obTitle = (d.state === 'overbought' ? 'To stay overbought' : 'To reach overbought')
+      + ` (Slow %K ≥ ${d.params.overbought})`;
+    resultEl.innerHTML = `
+      <div class="calc-result-head">
+        <strong>${escapeHtml(d.ticker)}</strong>
+        <span class="muted">· ${escapeHtml(d.interval_label)} bars · ${escapeHtml(d.source || '')}
+          · ${d.bar_count} bars · as of ${escapeHtml(d.as_of || '')}</span>
+      </div>
+      <div class="calc-stats">
+        <span>Price <b>${fmtPx(d.price)}</b></span>
+        <span title="Fast %K — 100 × (close − lowest low) / (highest high − lowest low) over the %K window">Fast %K <b>${fmtK(d.fast_k)}</b></span>
+        <span title="Slow %K — SMA(smoothing) of Fast %K; the line the thresholds apply to">Slow %K <b>${fmtK(d.slow_k)}</b></span>
+        <span title="%D — SMA(smoothing) of Slow %K">%D <b>${fmtK(d.percent_d)}</b></span>
+        <span class="calc-state ${stateCls}">${escapeHtml(d.state.toUpperCase())}</span>
+      </div>
+      <div class="calc-dirs">
+        ${dirTable(d.to_oversold, osTitle, '≤')}
+        ${dirTable(d.to_overbought, obTitle, '≥')}
+      </div>
+      <p class="muted calc-note">
+        Assumes price gaps to the level and holds it for the stated number
+        of bars (each bar open = high = low = close). %K ${d.params.k_len},
+        smoothing ${d.params.smooth}.
+      </p>`;
+    resultEl.hidden = false;
+  }
+
+  async function runCalc() {
+    const t = (tickerEl.value || '').trim().toUpperCase();
+    if (!t) { setStatus('Enter a ticker symbol first.'); return; }
+    runBtn.disabled = true;
+    setStatus('Calculating…');
+    try {
+      const qs = new URLSearchParams({
+        ticker: t,
+        interval: intervalEl.value,
+        k_len: document.getElementById('calc-stoch-klen').value || '14',
+        smooth: document.getElementById('calc-stoch-smooth').value || '3',
+        overbought: document.getElementById('calc-stoch-ob').value || '80',
+        oversold: document.getElementById('calc-stoch-os').value || '20',
+      });
+      const res = await fetch('/api/calc/stoch-reverse?' + qs.toString());
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setStatus(data.error || ('HTTP ' + res.status));
+        resultEl.hidden = true;
+        return;
+      }
+      setStatus('');
+      render(data);
+      clearBtn.disabled = false;
+    } catch (err) {
+      setStatus('Failed: ' + (err.message || 'network error'));
+      resultEl.hidden = true;
+    } finally {
+      runBtn.disabled = false;
+    }
+  }
+
+  runBtn.addEventListener('click', runCalc);
+  tickerEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') runCalc(); });
+  clearBtn.addEventListener('click', () => {
+    tickerEl.value = '';
+    resultEl.hidden = true;
+    resultEl.innerHTML = '';
+    setStatus('');
+    clearBtn.disabled = true;
+  });
+})();
+
 // --- workspace + sub-tab navigation ---------------------------------------
 // Two levels: a workspace (Stocks | Options) and, within it, a tool sub-tab.
 // The Stocks tools all live in the #tab-stock panel and are shown one at a
@@ -4335,7 +4460,7 @@ async function loadOptionsHistory(opts) {
 // and the endpoints they call — are untouched.
 const WS = {
   stocks:    { btn: 'tab-btn-stock',     strip: 'subtabs-stocks',
-               subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts'] },
+               subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts', 'calculators'] },
   options:   { btn: 'tab-btn-options',   strip: 'subtabs-options',
                subs: ['screener'] },
   // No sub-tab strip — a single view, so `strip` resolves to
