@@ -112,17 +112,40 @@ def stoch_series(bars: list[dict], k_len: int = 14, smooth: int = 3):
 
 
 def slow_k_after(bars: list[dict], price: float, k_bars: int,
-                 k_len: int = 14, smooth: int = 3) -> float | None:
-    """Slow %K after appending k_bars synthetic flat bars at `price`
-    (each O=H=L=C=price)."""
-    synth = [{"h": price, "l": price, "c": price}] * k_bars
+                 k_len: int = 14, smooth: int = 3,
+                 path: str = "hold") -> float | None:
+    """Slow %K after appending k_bars synthetic bars.
+
+    path 'hold':  every synthetic bar sits at `price` (gap and hold) —
+                  models an immediate move that then consolidates.
+    path 'drift': closes interpolate linearly from the last real close
+                  to `price` across the k bars — models a steady
+                  multi-bar swing, which is how OB→OS transitions
+                  usually unfold on intraday charts. The trailing HH/LL
+                  window rolls down (or up) along the path, so drift
+                  targets differ meaningfully from hold targets.
+    Either way each synthetic bar is flat (O=H=L=C)."""
+    if path == "drift" and k_bars > 1:
+        try:
+            p0 = float(bars[-1]["c"])
+        except (TypeError, ValueError, KeyError, IndexError):
+            p0 = price
+        synth = []
+        for i in range(1, k_bars + 1):
+            c = p0 + (price - p0) * i / k_bars
+            synth.append({"h": c, "l": c, "c": c})
+    else:
+        synth = [{"h": price, "l": price, "c": price}] * k_bars
     _, slow = stoch_series(list(bars) + synth, k_len, smooth)
     return slow[-1]
 
 
 def solve_price_for_slow_k(bars: list[dict], threshold: float, direction: str,
-                           k_bars: int, k_len: int = 14, smooth: int = 3) -> dict:
-    """Bisection solve on the flat-bar simulation.
+                           k_bars: int, k_len: int = 14, smooth: int = 3,
+                           path: str = "hold") -> dict:
+    """Bisection solve on the synthetic-bar simulation (see slow_k_after
+    for the 'hold' vs 'drift' path models — both are monotonic in P, so
+    the same bisection applies).
 
     direction 'down': highest price P with SlowK_after(P) <= threshold
                       (how far price must fall to reach oversold).
@@ -135,7 +158,7 @@ def solve_price_for_slow_k(bars: list[dict], threshold: float, direction: str,
     """
     # Only the tail matters once k_bars synthetic bars are appended.
     tail = bars[-(k_len + smooth + 2):]
-    f = lambda p: slow_k_after(tail, p, k_bars, k_len, smooth)
+    f = lambda p: slow_k_after(tail, p, k_bars, k_len, smooth, path)
 
     highs = [float(b["h"]) for b in tail if b.get("h") is not None]
     lo, hi = 0.0, max(highs) * 2.0 if highs else 1.0
@@ -288,18 +311,31 @@ def _anchor_index(bars: list[dict], anchor: str) -> int | None:
 
 def stoch_reverse(ticker: str, interval: str, *, k_len: int = 14,
                   smooth: int = 3, overbought: float = 80.0,
-                  oversold: float = 20.0, as_of: str | None = None) -> dict:
+                  oversold: float = 20.0, as_of: str | None = None,
+                  path: str = "hold", horizon: int | None = None) -> dict:
     """Full reverse-Slow-%K calculation. Returns a JSON-ready dict;
     on failure a dict with just {"error": ...}.
 
     as_of (normalized 'YYYY-MM-DD[ HH:MM]') anchors a backtest: only
     bars at or before it feed the calculation, and later bars — when
-    they exist — populate the `actual` outcome section."""
+    they exist — populate the `actual` outcome section.
+
+    path is the synthetic-bar model ('hold' or 'drift' — see
+    slow_k_after). horizon is the furthest bar count solved for
+    (default = smooth; capped at k_len - 1, beyond which the trailing
+    window would be entirely synthetic and the answer degenerates).
+    Past k = smooth, 'hold' targets move only through HH/LL window
+    rolloff (old extremes dropping out); 'drift' targets change with
+    every horizon since the path itself stretches."""
     ticker = ticker.strip().upper()
     if interval not in INTERVALS:
         return {"error": f"unsupported interval '{interval}'"}
+    if path not in ("hold", "drift"):
+        return {"error": f"unsupported path model '{path}'"}
     period, label, _ = INTERVALS[interval]
     needed = k_len + smooth - 1
+    horizon = smooth if horizon is None else int(horizon)
+    horizon = max(1, min(max(1, k_len - 1), horizon))
 
     bars, source = fetch_bars(ticker, interval)
     if not bars:
@@ -328,7 +364,7 @@ def stoch_reverse(ticker: str, interval: str, *, k_len: int = 14,
             return {"error": f"no {label} bars at or before {anchor} for "
                              f"{ticker} — this interval's history reaches "
                              f"back about {period}"}
-        future = bars[idx + 1: idx + 1 + smooth]
+        future = bars[idx + 1: idx + 1 + horizon]
         bars = bars[:idx + 1]
 
     if len(bars) < needed:
@@ -353,16 +389,16 @@ def stoch_reverse(ticker: str, interval: str, *, k_len: int = 14,
 
     def _solve(threshold: float, direction: str) -> list[dict]:
         out = []
-        for k in range(1, smooth + 1):
+        for k in range(1, horizon + 1):
             r = solve_price_for_slow_k(bars, threshold, direction, k,
-                                       k_len, smooth)
+                                       k_len, smooth, path)
             r["bars"] = k
             r["pct_move"] = (round((r["price"] - price) / price * 100.0, 2)
                              if (r["price"] is not None and price > 0) else None)
             out.append(r)
         return out
 
-    # Backtest outcome: what really happened over the next `smooth`
+    # Backtest outcome: what really happened over the next `horizon`
     # bars. Stochastic values at each future bar depend only on bars up
     # to that bar, so computing over past+future introduces no lookahead
     # into any individual reading.
@@ -404,6 +440,8 @@ def stoch_reverse(ticker: str, interval: str, *, k_len: int = 14,
         "slow_k": round(slow_k, 2),
         "percent_d": round(percent_d, 2) if percent_d is not None else None,
         "state": state,
+        "path": path,
+        "horizon": horizon,
         "params": {"k_len": k_len, "smooth": smooth,
                    "overbought": overbought, "oversold": oversold},
         "to_oversold": _solve(oversold, "down"),

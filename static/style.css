@@ -2772,13 +2772,15 @@ button.hidden { display: none; }
 .calc-note { margin: 10px 0 0; font-size: 12px; max-width: 640px; }
 
 /* Backtest anchor input + result decorations */
-.calc-asof {
+.calc-asof,
+.calc-horizon {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
   color: var(--muted);
 }
+.calc-horizon input { width: 3.5em; }
 .calc-asof input[type="datetime-local"] {
   color-scheme: dark;
 }

@@ -782,11 +782,16 @@ def api_calc_stoch_reverse():
     if as_of and calculators.normalize_anchor(as_of) is None:
         return jsonify({"error": "as_of must look like YYYY-MM-DD or "
                                  "YYYY-MM-DD HH:MM"}), 400
+    # Path model + how many future bars to solve for.
+    path = (request.args.get("path") or "hold").strip().lower()
+    if path not in ("hold", "drift"):
+        return jsonify({"error": "path must be 'hold' or 'drift'"}), 400
+    horizon = _bounded_int("horizon", smooth, 1, max(1, k_len - 1))
     try:
         result = calculators.stoch_reverse(
             ticker, interval, k_len=k_len, smooth=smooth,
             overbought=overbought, oversold=oversold,
-            as_of=as_of or None)
+            as_of=as_of or None, path=path, horizon=horizon)
     except Exception as exc:
         import traceback
         log.error("stoch-reverse failed for %s/%s: %s\n%s",

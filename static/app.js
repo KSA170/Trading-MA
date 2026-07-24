@@ -4332,6 +4332,8 @@ async function loadOptionsHistory(opts) {
 (function () {
   const tickerEl = document.getElementById('calc-stoch-ticker');
   const intervalEl = document.getElementById('calc-stoch-interval');
+  const pathEl = document.getElementById('calc-stoch-path');
+  const horizonEl = document.getElementById('calc-stoch-horizon');
   const asOfEl = document.getElementById('calc-stoch-asof');
   const runBtn = document.getElementById('calc-stoch-run');
   const clearBtn = document.getElementById('calc-stoch-clear');
@@ -4439,8 +4441,10 @@ async function loadOptionsHistory(opts) {
         ${actualHtml(d)}
       </div>
       <p class="muted calc-note">
-        Assumes price gaps to the level and holds it for the stated number
-        of bars (each bar open = high = low = close). %K ${d.params.k_len},
+        ${d.path === 'drift'
+          ? 'Assumes price drifts in a straight line from the current price to the level across the stated number of bars'
+          : 'Assumes price gaps to the level and holds it for the stated number of bars'}
+        (each bar open = high = low = close). %K ${d.params.k_len},
         smoothing ${d.params.smooth}.
       </p>`;
     resultEl.hidden = false;
@@ -4460,6 +4464,8 @@ async function loadOptionsHistory(opts) {
         overbought: document.getElementById('calc-stoch-ob').value || '80',
         oversold: document.getElementById('calc-stoch-os').value || '20',
       });
+      if (pathEl) qs.set('path', pathEl.value);
+      if (horizonEl && horizonEl.value) qs.set('horizon', horizonEl.value);
       if (asOfEl && asOfEl.value) qs.set('as_of', asOfEl.value);
       const res = await fetch('/api/calc/stoch-reverse?' + qs.toString());
       const data = await res.json();
