@@ -935,6 +935,10 @@ def api_alerts_rule_create():
         return jsonify({"error": "scope 'all' is only valid for setup rules"}), 400
     if scope_type in ("sector", "industry") and not scope_value:
         return jsonify({"error": "scope_value required for sector/industry rules"}), 400
+    if scope_type == "tickers" and not alerts.normalize_ticker_scope(scope_value):
+        return jsonify({"error": "enter 1-"
+                                 f"{alerts.MAX_SCOPE_TICKERS} ticker symbols "
+                                 "for the specific-tickers scope"}), 400
     if rule_type == "setup":
         sp = payload.get("setup_params") or {}
         # Drive the whitelist off alerts._SETUP_PARAM_KEYS (the canonical
@@ -1011,6 +1015,11 @@ def api_alerts_rule_update():
         return jsonify({"error": "id required"}), 400
     if not rule_id:
         return jsonify({"error": "id required"}), 400
+    if ((payload.get("scope_type") or "").strip().lower() == "tickers"
+            and not alerts.normalize_ticker_scope(payload.get("scope_value"))):
+        return jsonify({"error": "enter 1-"
+                                 f"{alerts.MAX_SCOPE_TICKERS} ticker symbols "
+                                 "for the specific-tickers scope"}), 400
     ok = alerts.update_rule(
         rule_id,
         name=payload.get("name"),

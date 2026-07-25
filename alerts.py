@@ -164,7 +164,27 @@ RULE_TYPES = ("screener", "setup", "stoch")
 # 'all' is a setup-only scope ("score every ticker the snapshot pre-filter
 # returns") — using it with a screener rule would blow up Alpaca quota,
 # and with a stoch rule the per-ticker Yahoo fetches.
-SCOPE_TYPES = ("watchlist", "sector", "industry", "all")
+# 'tickers' is a hand-typed per-rule list stored in scope_value as a
+# comma-separated string — the dedicated input for rules whose universe
+# the user curates directly (the main use: stoch rules, since the shared
+# alert watchlist is nightly-picker-derived, not hand-managed).
+SCOPE_TYPES = ("watchlist", "sector", "industry", "all", "tickers")
+
+# Per-rule ticker lists are fetched one Yahoo call per ticker per run
+# (stoch rules) — cap the list so a paste-accident can't melt the cron.
+MAX_SCOPE_TICKERS = 50
+
+
+def normalize_ticker_scope(value: str | None) -> str | None:
+    """Normalize a hand-typed ticker list ('qqq, spy aapl') into the
+    canonical stored form ('AAPL,QQQ,SPY'). None when empty or over the
+    MAX_SCOPE_TICKERS cap."""
+    import re as _re
+    parts = sorted({t.strip().upper()
+                    for t in _re.split(r"[,\s;]+", value or "") if t.strip()})
+    if not parts or len(parts) > MAX_SCOPE_TICKERS:
+        return None
+    return ",".join(parts)
 
 
 # --- schema ----------------------------------------------------------------
@@ -509,6 +529,10 @@ def add_rule(name: str, scope_type: str, scope_value: str, params: dict,
         return None
     if scope_type in ("sector", "industry") and not scope_value:
         return None
+    if scope_type == "tickers":
+        scope_value = normalize_ticker_scope(scope_value)
+        if not scope_value:
+            return None
     try:
         with snapshots._conn() as c, c.cursor() as cur:
             cur.execute(
@@ -555,6 +579,12 @@ def update_rule(rule_id: int,
         # should pass scope_value too — fall back to '' if not.
         if scope_value is None:
             scope_value = ""
+        # A hand-typed ticker list must normalize to a non-empty,
+        # capped, canonical form.
+        if st == "tickers":
+            scope_value = normalize_ticker_scope(scope_value)
+            if not scope_value:
+                return False
     if scope_value is not None:
         sv = (scope_value or "").strip()
         sets.append("scope_value = %s"); args.append(sv)
@@ -629,6 +659,8 @@ def tickers_for_scope(scope_type: str, scope_value: str) -> list[str] | None:
         return None
     if scope_type == "watchlist":
         return get_watchlist()
+    if scope_type == "tickers":
+        return [t for t in (scope_value or "").split(",") if t]
     if scope_type not in ("sector", "industry") or not enabled():
         return []
     col = "sector" if scope_type == "sector" else "industry"
