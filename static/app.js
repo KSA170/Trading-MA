@@ -2323,6 +2323,7 @@ function summarizeRuleParams(p, ruleType) {
       `OS ≤ ${n(p.oversold)} · OB ≥ ${n(p.overbought)}`,
       `%K ${n(p.k_len)} · smooth ${n(p.smooth)}`
         + (isCurl ? ` · lookback ${n(p.lookback_bars)}` : ''),
+      `Δ ${n(p.opt_delta)} × ${n(p.opt_contracts)} contract${Number(p.opt_contracts) > 1 ? 's' : ''}`,
     ];
   }
   if (ruleType === 'setup') {
@@ -2726,6 +2727,8 @@ const stochModalInputs = {
   oversold: $('#cm_stoch_oversold'),
   overbought: $('#cm_stoch_overbought'),
   lookback_bars: $('#cm_stoch_lookback'),
+  opt_delta: $('#cm_stoch_opt_delta'),
+  opt_contracts: $('#cm_stoch_opt_contracts'),
 };
 
 function applyStochParamsToModal(p) {
@@ -2749,6 +2752,8 @@ function buildStochParamsFromModal() {
     oversold: num(stochModalInputs.oversold, 20),
     overbought: num(stochModalInputs.overbought, 80),
     lookback_bars: num(stochModalInputs.lookback_bars, 4),
+    opt_delta: num(stochModalInputs.opt_delta, 0.35),
+    opt_contracts: num(stochModalInputs.opt_contracts, 1),
   };
 }
 
