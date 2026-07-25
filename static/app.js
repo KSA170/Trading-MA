@@ -2323,7 +2323,8 @@ function summarizeRuleParams(p, ruleType) {
       `OS ≤ ${n(p.oversold)} · OB ≥ ${n(p.overbought)}`,
       `%K ${n(p.k_len)} · smooth ${n(p.smooth)}`
         + (isCurl ? ` · lookback ${n(p.lookback_bars)}` : ''),
-      `Δ ${n(p.opt_delta)} × ${n(p.opt_contracts)} contract${Number(p.opt_contracts) > 1 ? 's' : ''}`,
+      `Δ ${n(p.opt_delta)} × ${n(p.opt_contracts)} contract${Number(p.opt_contracts) > 1 ? 's' : ''}`
+        + ` · ${n(p.opt_dte_min)}–${n(p.opt_dte_max)} DTE`,
     ];
   }
   if (ruleType === 'setup') {
@@ -2729,6 +2730,8 @@ const stochModalInputs = {
   lookback_bars: $('#cm_stoch_lookback'),
   opt_delta: $('#cm_stoch_opt_delta'),
   opt_contracts: $('#cm_stoch_opt_contracts'),
+  opt_dte_min: $('#cm_stoch_opt_dte_min'),
+  opt_dte_max: $('#cm_stoch_opt_dte_max'),
 };
 
 function applyStochParamsToModal(p) {
@@ -2754,6 +2757,8 @@ function buildStochParamsFromModal() {
     lookback_bars: num(stochModalInputs.lookback_bars, 4),
     opt_delta: num(stochModalInputs.opt_delta, 0.35),
     opt_contracts: num(stochModalInputs.opt_contracts, 1),
+    opt_dte_min: num(stochModalInputs.opt_dte_min, 2),
+    opt_dte_max: num(stochModalInputs.opt_dte_max, 6),
   };
 }
 

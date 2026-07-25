@@ -156,9 +156,16 @@ STOCH_DEFAULT_PARAMS: dict = {
     # Option-math framing for the alert body: estimated per-position
     # P&L at the target / risk levels via the linear delta
     # approximation (gain ≈ Δ × move × 100 × contracts). Delta is the
-    # magnitude of the contract you intend to trade (calls or puts).
+    # magnitude of the contract you intend to trade (calls or puts) —
+    # also the target for the contract recommendation below.
     "opt_delta": 0.35,
     "opt_contracts": 1,
+    # Contract recommendation: when the rule fires, pick the liquid
+    # contract closest to opt_delta inside this DTE window (the
+    # validated trades used 2-4 DTE). The pick's REAL delta then
+    # replaces the assumed one in the P&L estimate.
+    "opt_dte_min": 2,
+    "opt_dte_max": 6,
 }
 _STOCH_PARAM_KEYS = frozenset(STOCH_DEFAULT_PARAMS.keys())
 _STOCH_INTERVALS = ("1m", "5m", "15m", "30m", "1h", "1d")
@@ -318,6 +325,11 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _num("lookback_bars", 4, 1, 20, int)
         _num("opt_delta", 0.35, 0.05, 0.95)
         _num("opt_contracts", 1, 1, 1000, int)
+        _num("opt_dte_min", 2, 0, 60, int)
+        _num("opt_dte_max", 6, 1, 90, int)
+        if params["opt_dte_min"] > params["opt_dte_max"]:
+            params["opt_dte_min"], params["opt_dte_max"] = \
+                params["opt_dte_max"], params["opt_dte_min"]
         return params
     params = dict(DEFAULT_ALERT_PARAMS)
     for k, v in (raw or {}).items():
@@ -1237,19 +1249,43 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime) -> tuple[str, dict
         else:
             sig["target_price"] = ob.get("price")
             sig["risk_price"] = osb.get("price")
-        # Option framing — linear delta approximation of the position
-        # P&L if the underlying reaches the target / risk level. Gamma
-        # is ignored (it flatters winners slightly), so these are
-        # conservative ballparks, not quotes.
+        # Contract recommendation — the liquid contract closest to the
+        # rule's target delta inside its DTE window. Best-effort: on
+        # any failure (throttle, closed market, illiquid chain) the
+        # alert falls back to assumed-delta math.
         delta = float(p.get("opt_delta", 0.35))
         contracts = max(1, int(p.get("opt_contracts", 1)))
+        contract = None
+        try:
+            import options as options_mod
+            contract = options_mod.select_contract_for_delta(
+                ticker, "put" if bearish else "call", price, delta,
+                int(p.get("opt_dte_min", 2)), int(p.get("opt_dte_max", 6)))
+        except Exception as exc:
+            log.warning("stoch contract pick failed for %s: %s", ticker, exc)
+        if contract:
+            sig["contract"] = contract
+        # Option framing — linear delta approximation of the position
+        # P&L if the underlying reaches the target / risk level, using
+        # the recommended contract's REAL delta when one was found.
+        # Gamma is ignored (it flatters winners slightly), so these are
+        # conservative ballparks, not quotes.
+        if contract and contract.get("delta") is not None:
+            delta_used = abs(float(contract["delta"]))
+            sig["opt_delta_source"] = "chain"
+        else:
+            delta_used = delta
+            sig["opt_delta_source"] = "assumed"
         if sig.get("target_price") is not None and sig.get("risk_price") is not None:
-            sig["opt_delta"] = delta
+            sig["opt_delta"] = round(delta_used, 2)
             sig["opt_contracts"] = contracts
             sig["opt_gain"] = round(
-                abs(sig["target_price"] - price) * delta * 100 * contracts, 2)
+                abs(sig["target_price"] - price) * delta_used * 100 * contracts, 2)
             sig["opt_loss"] = round(
-                abs(price - sig["risk_price"]) * delta * 100 * contracts, 2)
+                abs(price - sig["risk_price"]) * delta_used * 100 * contracts, 2)
+            if contract and contract.get("mid"):
+                sig["opt_cost"] = round(
+                    float(contract["mid"]) * 100 * contracts, 2)
     except Exception as exc:
         log.warning("stoch bounce-map failed for %s: %s", ticker, exc)
     return "fired", sig
@@ -1293,9 +1329,28 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
                            T.b(T.money(sig["risk_price"]))
                            + (" — stays overbought above this" if bearish
                               else " — stays oversold below this")))
+    c = sig.get("contract")
+    if c:
+        kind = "put" if bearish else "call"
+        lines.append(T.row("🎫", "Contract",
+                           T.b(f"{T.money(c.get('strike'), 0)} {kind}")
+                           + f" · exp {T.esc(c.get('expiration') or '?')}"
+                           + f" ({c.get('dte', '?')} DTE)"))
+        oi = c.get("open_interest")
+        lines.append(T.row("💵", "Quote",
+                           "mid " + T.b(T.money(c.get("mid")))
+                           + f" (bid {T.money(c.get('bid'))} / ask {T.money(c.get('ask'))})"
+                           + f" · Δ{abs(c.get('delta') or 0):.2f}"
+                           + (f" · OI {oi:,}" if oi else "")))
+        if sig.get("opt_cost") is not None:
+            n_c = sig.get("opt_contracts") or 1
+            lines.append(T.row("🧾", "Cost",
+                               "≈ " + T.b(T.money(sig["opt_cost"], 0))
+                               + f" to open ({n_c} × {T.money(c.get('mid'))})"))
     if sig.get("opt_gain") is not None and sig.get("opt_loss") is not None:
         n_c = sig.get("opt_contracts") or 1
-        pos_txt = f"Δ{sig.get('opt_delta')} × {n_c} contract{'s' if n_c > 1 else ''}"
+        src = "chain Δ" if sig.get("opt_delta_source") == "chain" else "assumed Δ"
+        pos_txt = f"{src}{sig.get('opt_delta')} × {n_c} contract{'s' if n_c > 1 else ''}"
         lines.append(T.row("📐",
                            "Put est" if bearish else "Call est",
                            T.b("+" + T.money(sig["opt_gain"], 0)) + " at target · "

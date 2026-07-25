@@ -837,6 +837,14 @@
               <label>Contracts</label>
               <input id="cm_stoch_opt_contracts" type="number" min="1" max="1000" value="1" />
             </div>
+            <div class="filter" title="When the rule fires, the alert recommends the liquid contract (OI ≥ 100, spread ≤ 15% of mid) whose delta is closest to your Option delta, expiring inside this window. The validated trades used 2–4 days to expiry.">
+              <label>DTE min</label>
+              <input id="cm_stoch_opt_dte_min" type="number" min="0" max="60" value="2" />
+            </div>
+            <div class="filter" title="Upper bound of the expiry window for the recommended contract.">
+              <label>DTE max</label>
+              <input id="cm_stoch_opt_dte_max" type="number" min="1" max="90" value="6" />
+            </div>
           </div>
         </div>
 
