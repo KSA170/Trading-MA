@@ -7,8 +7,10 @@ name: Realtime alerts
 # First step is a market-hours gate: when it's not a weekday US session
 # (and force_run / test_telegram aren't set), every expensive step is
 # skipped, so an off-hours or weekend trigger costs only the ~1-minute
-# runner minimum. This keeps a 30-minute cadence inside the private
-# repo's 2,000 Actions-minute monthly budget.
+# runner minimum. Intended external cadence: ~5 minutes — tight enough
+# for the 5-minute-bar stochastic rules to catch a curl within a bar or
+# two. The repo is public, so Actions minutes are free; the concurrency
+# group below stops runs from piling up if one is slow.
 on:
   workflow_dispatch:
     inputs:

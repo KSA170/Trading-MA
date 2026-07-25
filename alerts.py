@@ -153,6 +153,12 @@ STOCH_DEFAULT_PARAMS: dict = {
     #                        latest bar.
     "trigger": "curl_up",
     "lookback_bars": 4,
+    # Option-math framing for the alert body: estimated per-position
+    # P&L at the target / risk levels via the linear delta
+    # approximation (gain ≈ Δ × move × 100 × contracts). Delta is the
+    # magnitude of the contract you intend to trade (calls or puts).
+    "opt_delta": 0.35,
+    "opt_contracts": 1,
 }
 _STOCH_PARAM_KEYS = frozenset(STOCH_DEFAULT_PARAMS.keys())
 _STOCH_INTERVALS = ("1m", "5m", "15m", "30m", "1h", "1d")
@@ -310,6 +316,8 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _num("oversold", 20.0, 0.0, 50.0)
         _num("overbought", 80.0, 50.0, 100.0)
         _num("lookback_bars", 4, 1, 20, int)
+        _num("opt_delta", 0.35, 0.05, 0.95)
+        _num("opt_contracts", 1, 1, 1000, int)
         return params
     params = dict(DEFAULT_ALERT_PARAMS)
     for k, v in (raw or {}).items():
@@ -1229,6 +1237,19 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime) -> tuple[str, dict
         else:
             sig["target_price"] = ob.get("price")
             sig["risk_price"] = osb.get("price")
+        # Option framing — linear delta approximation of the position
+        # P&L if the underlying reaches the target / risk level. Gamma
+        # is ignored (it flatters winners slightly), so these are
+        # conservative ballparks, not quotes.
+        delta = float(p.get("opt_delta", 0.35))
+        contracts = max(1, int(p.get("opt_contracts", 1)))
+        if sig.get("target_price") is not None and sig.get("risk_price") is not None:
+            sig["opt_delta"] = delta
+            sig["opt_contracts"] = contracts
+            sig["opt_gain"] = round(
+                abs(sig["target_price"] - price) * delta * 100 * contracts, 2)
+            sig["opt_loss"] = round(
+                abs(price - sig["risk_price"]) * delta * 100 * contracts, 2)
     except Exception as exc:
         log.warning("stoch bounce-map failed for %s: %s", ticker, exc)
     return "fired", sig
@@ -1272,6 +1293,14 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
                            T.b(T.money(sig["risk_price"]))
                            + (" — stays overbought above this" if bearish
                               else " — stays oversold below this")))
+    if sig.get("opt_gain") is not None and sig.get("opt_loss") is not None:
+        n_c = sig.get("opt_contracts") or 1
+        pos_txt = f"Δ{sig.get('opt_delta')} × {n_c} contract{'s' if n_c > 1 else ''}"
+        lines.append(T.row("📐",
+                           "Put est" if bearish else "Call est",
+                           T.b("+" + T.money(sig["opt_gain"], 0)) + " at target · "
+                           + T.b("−" + T.money(sig["opt_loss"], 0)) + " at stop"
+                           + f" ({pos_txt}, delta approx)"))
     if sig.get("bar_time"):
         lines.append(T.row("🕒", "Bar", T.esc(str(sig["bar_time"])) + " ET"))
     lines.append("")
