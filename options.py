@@ -871,6 +871,70 @@ def _select_best_contract(chains: list[dict], current_price: float,
     return best, override_used
 
 
+def select_contract_for_delta(ticker: str, direction: str, spot: float,
+                              target_delta: float, dte_min: int,
+                              dte_max: int) -> dict | None:
+    """Best-effort pick of the liquid contract whose BS delta magnitude
+    is closest to `target_delta` inside the DTE window. Reuses the
+    recommender's chain fetch and quality gates (OI ≥ OI_FLOOR, spread
+    ≤ SPREAD_FRAC_MAX) but targets a DELTA instead of a strike — built
+    for the stoch alerts, whose validated profile is "slightly OTM
+    ~0.3Δ, a few DTE". Ties break toward the nearer expiration (less
+    premium at risk for a minutes-long hold), then higher open
+    interest. Returns None on any failure or when nothing clears the
+    gates, so callers can degrade to assumed-delta math."""
+    if spot is None or spot <= 0:
+        return None
+    is_call = (direction or "").lower() != "put"
+    try:
+        # No cache: alerts fire at most once per ticker per day, in a
+        # fresh cron process — a stale mid would mislead more than a
+        # saved fetch would help.
+        chains = _fetch_chains_in_window(ticker, int(dte_min), int(dte_max),
+                                         use_cache=False)
+    except _ChainFetchError as exc:
+        log.warning("select_contract_for_delta(%s) fetch failed: %s",
+                    ticker, exc)
+        return None
+    best = None
+    best_key = None
+    for ch in chains:
+        df = ch["calls"] if is_call else ch["puts"]
+        if df is None or len(df) == 0:
+            continue
+        t_years = max(ch["dte"], 1) / 365.0
+        for _, row in df.iterrows():
+            try:
+                strike = float(row.get("strike") or 0)
+                iv = float(row.get("impliedVolatility") or 0)
+                bid = float(row.get("bid") or 0)
+                ask = float(row.get("ask") or 0)
+                oi = int(row.get("openInterest") or 0)
+                vol = int(row.get("volume") or 0)
+                sym = str(row.get("contractSymbol") or "")
+            except (TypeError, ValueError):
+                continue
+            if strike <= 0 or iv <= 0 or bid <= 0 or ask <= 0:
+                continue
+            if oi < OI_FLOOR:
+                continue
+            mid = (bid + ask) / 2.0
+            if mid <= 0 or (ask - bid) / mid > SPREAD_FRAC_MAX:
+                continue
+            delta = _bs_delta(spot, strike, t_years, iv, is_call)
+            key = (abs(abs(delta) - target_delta), ch["dte"], -oi)
+            if best_key is None or key < best_key:
+                best_key = key
+                best = {
+                    "contract_symbol": sym, "strike": strike,
+                    "expiration": ch["expiration"], "dte": ch["dte"],
+                    "bid": bid, "ask": ask, "mid": round(mid, 2),
+                    "delta": round(delta, 4), "iv": round(iv, 4),
+                    "open_interest": oi, "volume": vol,
+                }
+    return best
+
+
 # --- earnings + sector lookups -------------------------------------------
 
 def _next_earnings_date(ticker: str) -> str | None:
