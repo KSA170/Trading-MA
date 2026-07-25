@@ -730,6 +730,7 @@
           <select id="cm_rule_scope_type">
             <option value="all" hidden>All snapshot tickers</option>
             <option value="watchlist">Watchlist</option>
+            <option value="tickers">Specific tickers</option>
             <option value="industry">Industry</option>
             <option value="sector">Sector</option>
           </select>
@@ -739,6 +740,10 @@
           <select id="cm_rule_scope_value" disabled>
             <option value="">—</option>
           </select>
+        </div>
+        <div class="criteria-modal-field" id="cm-scope-tickers-field" hidden>
+          <label for="cm_rule_scope_tickers" title="This rule's own hand-managed ticker list — independent of the nightly watchlist. Edit it any time via Edit rule. Comma or space separated, up to 50 symbols.">Tickers (comma / space separated)</label>
+          <input id="cm_rule_scope_tickers" type="text" placeholder="e.g. QQQ, SPY, AAPL" autocomplete="off" spellcheck="false" />
         </div>
       </div>
       <p id="criteria-modal-context" class="muted criteria-modal-context"></p>

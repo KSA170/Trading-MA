@@ -146,6 +146,8 @@ const els = {
   cmName: $('#cm_rule_name'),
   cmScopeType: $('#cm_rule_scope_type'),
   cmScopeValue: $('#cm_rule_scope_value'),
+  cmScopeTickersField: $('#cm-scope-tickers-field'),
+  cmScopeTickers: $('#cm_rule_scope_tickers'),
   cmSubmit: $('#criteria-modal-submit'),
   cmMsg: $('#criteria-modal-msg'),
   cmSectionScreener: $('#cm-criteria-screener'),
@@ -2556,7 +2558,7 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
       els.cmSubtitle.textContent = ruleType === 'setup'
         ? 'Setup rules rank the latest EOD snapshot. Pick a scope and set min-score + price / dollar-volume thresholds.'
         : ruleType === 'stoch'
-        ? 'Stochastic rules watch intraday Slow %K for the oversold bounce (calls) or overbought rollover (puts). Best on the watchlist scope — each ticker costs one Yahoo fetch per check.'
+        ? 'Stochastic rules watch intraday Slow %K for the oversold bounce (calls) or overbought rollover (puts). Give the rule its own ticker list below — each ticker costs one Yahoo fetch per check, so keep it curated.'
         : 'Pick a scope and adjust filter criteria. The realtime engine checks these every ~15 min in market hours.';
     }
     if (els.cmMeta) els.cmMeta.hidden = false;
@@ -2566,13 +2568,17 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
       els.cmName.disabled = false;
     }
     if (els.cmScopeType) {
-      // Default scope per rule type: setup -> 'all', screener -> 'watchlist'.
-      const defaultScope = ruleType === 'setup' ? 'all' : 'watchlist';
+      // Default scope per rule type: setup -> 'all', stoch -> its own
+      // hand-typed ticker list (the shared watchlist is nightly-picker-
+      // derived, not hand-managed), screener -> 'watchlist'.
+      const defaultScope = ruleType === 'setup' ? 'all'
+        : ruleType === 'stoch' ? 'tickers' : 'watchlist';
       const seed = seedScopeType && (ruleType === 'setup' || seedScopeType !== 'all')
         ? seedScopeType : defaultScope;
       els.cmScopeType.value = seed;
       els.cmScopeType.disabled = false;
     }
+    if (els.cmScopeTickers) els.cmScopeTickers.value = '';
     populateModalScopeValues();
     if (els.cmScopeValue && seedScopeValue) {
       const opt = Array.from(els.cmScopeValue.options).find((o) => o.value === seedScopeValue);
@@ -2596,6 +2602,13 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
     if (els.cmScopeType) {
       els.cmScopeType.value = currentScopeType || (ruleType === 'setup' ? 'all' : 'watchlist');
       els.cmScopeType.disabled = false;
+    }
+    if (els.cmScopeTickers) {
+      // Pre-fill the per-rule ticker list, spaced for readability —
+      // the server re-normalizes on save.
+      els.cmScopeTickers.value = currentScopeType === 'tickers'
+        ? String(currentScopeValue || '').split(',').join(', ')
+        : '';
     }
     populateModalScopeValues();
     // For sector/industry scope, the rule's stored value may not be
@@ -2742,6 +2755,16 @@ function buildStochParamsFromModal() {
 function populateModalScopeValues() {
   if (!els.cmScopeType || !els.cmScopeValue) return;
   const type = els.cmScopeType.value;
+  // 'Specific tickers' swaps the sector/industry dropdown for the
+  // free-text ticker input; every other scope hides it again.
+  if (els.cmScopeTickersField) els.cmScopeTickersField.hidden = type !== 'tickers';
+  const valueField = els.cmScopeValue.closest('.criteria-modal-field');
+  if (valueField) valueField.hidden = type === 'tickers';
+  if (type === 'tickers') {
+    els.cmScopeValue.innerHTML = '<option value=""></option>';
+    els.cmScopeValue.disabled = true;
+    return;
+  }
   if (type === 'watchlist') {
     els.cmScopeValue.innerHTML = '<option value="">(the watchlist)</option>';
     els.cmScopeValue.disabled = true;
@@ -2794,12 +2817,17 @@ function syncModalDisabled() {
 
 async function submitCriteriaModal() {
   const ruleType = _criteriaModalState.ruleType || 'screener';
+  // Scope value source depends on the scope type: free-text list for
+  // 'tickers', the dropdown for sector/industry, empty otherwise.
+  const readScopeValue = (scopeType) => scopeType === 'tickers'
+    ? (els.cmScopeTickers && els.cmScopeTickers.value || '').trim()
+    : (scopeType === 'watchlist' || scopeType === 'all')
+    ? '' : (els.cmScopeValue && els.cmScopeValue.value) || '';
   if (_criteriaModalState.mode === 'create') {
     const name = (els.cmName && els.cmName.value || '').trim();
     const scopeType = (els.cmScopeType && els.cmScopeType.value)
       || (ruleType === 'setup' ? 'all' : 'watchlist');
-    const scopeValue = (scopeType === 'watchlist' || scopeType === 'all')
-      ? '' : (els.cmScopeValue && els.cmScopeValue.value) || '';
+    const scopeValue = readScopeValue(scopeType);
     if (!name) {
       setModalMsg('Enter a rule name.', 'error');
       if (els.cmName) els.cmName.focus();
@@ -2809,7 +2837,12 @@ async function submitCriteriaModal() {
       setModalMsg('"All snapshot tickers" is only valid for setup rules.', 'error');
       return;
     }
-    if (scopeType !== 'watchlist' && scopeType !== 'all' && !scopeValue) {
+    if (scopeType === 'tickers' && !scopeValue) {
+      setModalMsg('Enter at least one ticker symbol for this rule\'s list.', 'error');
+      if (els.cmScopeTickers) els.cmScopeTickers.focus();
+      return;
+    }
+    if (scopeType !== 'watchlist' && scopeType !== 'all' && scopeType !== 'tickers' && !scopeValue) {
       setModalMsg('Pick a sector / industry — run "Classify universe" if the list is empty.', 'error');
       return;
     }
@@ -2868,8 +2901,7 @@ async function submitCriteriaModal() {
   const name = (els.cmName && els.cmName.value || '').trim();
   const scopeType = (els.cmScopeType && els.cmScopeType.value)
     || (ruleType === 'setup' ? 'all' : 'watchlist');
-  const scopeValue = (scopeType === 'watchlist' || scopeType === 'all')
-    ? '' : (els.cmScopeValue && els.cmScopeValue.value) || '';
+  const scopeValue = readScopeValue(scopeType);
   if (!name) {
     setModalMsg('Enter a rule name.', 'error');
     if (els.cmName) els.cmName.focus();
@@ -2879,7 +2911,12 @@ async function submitCriteriaModal() {
     setModalMsg('"All snapshot tickers" is only valid for setup rules.', 'error');
     return;
   }
-  if (scopeType !== 'watchlist' && scopeType !== 'all' && !scopeValue) {
+  if (scopeType === 'tickers' && !scopeValue) {
+    setModalMsg('Enter at least one ticker symbol for this rule\'s list.', 'error');
+    if (els.cmScopeTickers) els.cmScopeTickers.focus();
+    return;
+  }
+  if (scopeType !== 'watchlist' && scopeType !== 'all' && scopeType !== 'tickers' && !scopeValue) {
     setModalMsg('Pick a sector / industry — run "Classify universe" if the list is empty.', 'error');
     return;
   }
