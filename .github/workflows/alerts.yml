@@ -7,10 +7,12 @@ name: Realtime alerts
 # First step is a market-hours gate: when it's not a weekday US session
 # (and force_run / test_telegram aren't set), every expensive step is
 # skipped, so an off-hours or weekend trigger costs only the ~1-minute
-# runner minimum. Intended external cadence: ~5 minutes — tight enough
-# for the 5-minute-bar stochastic rules to catch a curl within a bar or
-# two. The repo is public, so Actions minutes are free; the concurrency
-# group below stops runs from piling up if one is slow.
+# runner minimum. Intended external cadence: ~15 minutes — the screener
+# rules evaluate daily bars and dedupe per day, so a tighter cadence
+# only makes queued triggers cancel each other (the full sweep takes
+# 10+ minutes). Time-sensitive stochastic rules run in their own fast
+# lane (stoch-alerts.yml, ~5-minute cadence) and are skipped here via
+# ALERT_SKIP_STOCH.
 on:
   workflow_dispatch:
     inputs:
@@ -72,4 +74,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ALERT_FORCE_RUN: ${{ inputs.force_run }}
           ALERT_TEST_TELEGRAM: ${{ inputs.test_telegram }}
+          # Stoch rules run in their own fast lane (stoch-alerts.yml) so
+          # they aren't delayed behind the ~10-minute screener sweep.
+          ALERT_SKIP_STOCH: "1"
         run: python alerts.py
