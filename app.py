@@ -294,12 +294,23 @@ def _parse_params() -> dict:
 
 # --- routes ----------------------------------------------------------------
 
+# Cache-busting stamp for the static bundle — the max mtime of the two
+# assets, computed at boot (each deploy restarts the worker). Without
+# it, long-lived mobile-Safari tabs keep running a stale app.js against
+# fresh HTML, which shows up as "the new field doesn't save".
+_ASSET_REV = str(int(max(
+    (ROOT / "static" / "app.js").stat().st_mtime,
+    (ROOT / "static" / "style.css").stat().st_mtime,
+)))
+
+
 @app.route("/")
 def index():
     # Inject server-stored UI prefs into the page so the JS can read
     # them synchronously at boot (avoids a flash where collapsed
     # sections / column layout briefly show defaults before hydrating).
-    return render_template("index.html", ui_prefs=ui_prefs.get_all())
+    return render_template("index.html", ui_prefs=ui_prefs.get_all(),
+                           asset_rev=_ASSET_REV)
 
 
 @app.route("/api/screen")
@@ -1026,7 +1037,12 @@ def api_alerts_rule_update():
         scope_type=payload.get("scope_type"),
         scope_value=payload.get("scope_value"),
     )
-    return jsonify({"updated": ok, "rules": alerts.list_rules()})
+    if not ok:
+        # Surface the failure — a 200 with updated:false read as success
+        # in the UI, so a rejected save looked like a saved one.
+        return jsonify({"error": "rule update was not saved — check the "
+                                 "name and scope values", "updated": False}), 400
+    return jsonify({"updated": True, "rules": alerts.list_rules()})
 
 
 @app.route("/api/alerts/rules/history", methods=["GET"])

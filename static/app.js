@@ -2946,7 +2946,7 @@ async function submitCriteriaModal() {
       }),
     });
     const metaData = await metaRes.json().catch(() => ({}));
-    if (!metaRes.ok) {
+    if (!metaRes.ok || metaData.updated === false) {
       setModalMsg('Save rule failed (name/scope): '
                   + (metaData.error || ('HTTP ' + metaRes.status)), 'error');
       return;
@@ -2966,7 +2966,7 @@ async function submitCriteriaModal() {
       body: JSON.stringify(reqBody),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
+    if (!res.ok || data.updated === false) {
       setModalMsg('Save rule failed (criteria): '
                   + (data.error || ('HTTP ' + res.status)), 'error');
       return;
