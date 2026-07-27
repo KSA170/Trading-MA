@@ -19,13 +19,15 @@ import os
 
 import calculators
 
-# The trader's QQQ call entries (US market time, ET).
+# Temporary: replaying 2026-07-27's QQQ oversold dips (~10:10 and
+# ~10:40 ET) to verify the alert triggers would have fired had the
+# stoch rules' scope not been empty. Will be restored to the validated
+# trade set after the diagnostic run.
 DEFAULT_TRADES = [
-    {"ticker": "QQQ", "ts": "2026-07-16 10:28", "target": 714.6, "stop": 708.0, "outcome": "LOSS"},
-    {"ticker": "QQQ", "ts": "2026-07-17 12:12", "target": 701.5, "stop": 696.0, "outcome": "WIN"},
-    {"ticker": "QQQ", "ts": "2026-07-20 10:28", "target": 704.0, "stop": 697.5, "outcome": "WIN"},
-    {"ticker": "QQQ", "ts": "2026-07-21 10:40", "target": 708.6, "stop": 703.2, "outcome": "WIN"},
-    {"ticker": "QQQ", "ts": "2026-07-23 11:53", "target": 693.4, "stop": 687.0, "outcome": "WIN"},
+    {"ticker": "QQQ", "ts": "2026-07-27 10:15", "target": 0, "stop": 0, "outcome": "?"},
+    {"ticker": "QQQ", "ts": "2026-07-27 10:30", "target": 0, "stop": 0, "outcome": "?"},
+    {"ticker": "QQQ", "ts": "2026-07-27 10:45", "target": 0, "stop": 0, "outcome": "?"},
+    {"ticker": "QQQ", "ts": "2026-07-27 11:00", "target": 0, "stop": 0, "outcome": "?"},
 ]
 
 INTERVAL = "5m"
