@@ -1,0 +1,67 @@
+name: Stoch alerts
+
+# Fast lane for the time-sensitive stochastic rules. The main Realtime
+# alerts engine spends 10+ minutes sweeping the screener universe, which
+# both delayed 5-minute-bar stoch signals (evaluated last, ~13 minutes
+# after the trigger) and made queued cron triggers cancel each other.
+# This workflow runs `python alerts.py stoch` — ONLY the stoch rules, a
+# handful of Yahoo fetches, well under a minute — so a 5-minute external
+# cadence actually lands within a bar or two of the signal.
+#
+# Trigger from cron-job.org via the workflow_dispatch API (a second
+# job alongside the Realtime-alerts one), every 5 minutes. The main
+# engine sets ALERT_SKIP_STOCH so the two lanes never double-send;
+# per-day dedupe in alert_sent backstops that.
+on:
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force-run: evaluate stoch rules even if the market is closed'
+        type: boolean
+        default: false
+
+concurrency:
+  group: stoch-alerts
+  cancel-in-progress: false
+
+jobs:
+  stoch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Market-hours gate
+        id: gate
+        env:
+          FORCE_RUN: ${{ inputs.force_run }}
+        run: |
+          DOW=$(TZ=America/New_York date +%u)
+          HHMM=$((10#$(TZ=America/New_York date +%H%M)))
+          PROCEED=false
+          if [ "$DOW" -le 5 ] && [ "$HHMM" -ge 930 ] && [ "$HHMM" -le 1600 ]; then
+            PROCEED=true
+          fi
+          if [ "$FORCE_RUN" = "true" ]; then
+            PROCEED=true
+          fi
+          echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
+          echo "ET now: $(TZ=America/New_York date '+%a %Y-%m-%d %H:%M')  ->  proceed=$PROCEED"
+      - name: Checkout
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/checkout@v5
+      - name: Setup Python
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        if: steps.gate.outputs.proceed == 'true'
+        run: pip install -r requirements.txt
+      - name: Run stoch alert lane
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ALERT_FORCE_RUN: ${{ inputs.force_run }}
+        run: python alerts.py stoch

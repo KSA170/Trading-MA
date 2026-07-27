@@ -1363,6 +1363,24 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     return "\n".join(lines)
 
 
+def _partition_rules(rules: list[dict], only_stoch: bool = False,
+                     skip_stoch: bool = False) -> tuple[list, list, list]:
+    """Split enabled rules into the three evaluation groups.
+
+    only_stoch — the fast-lane 'python alerts.py stoch' mode: just the
+    stoch rules, nothing else (the skip flag is ignored there).
+    skip_stoch — the main engine when the fast lane owns stoch rules
+    (ALERT_SKIP_STOCH env): everything except stoch, so the two lanes
+    never double-send."""
+    stoch = [r for r in rules if r.get("rule_type") == "stoch"]
+    if only_stoch:
+        return [], [], stoch
+    screener = [r for r in rules
+                if r.get("rule_type") not in ("setup", "stoch")]
+    setup = [r for r in rules if r.get("rule_type") == "setup"]
+    return screener, setup, ([] if skip_stoch else stoch)
+
+
 def market_is_open(now: datetime | None = None) -> bool:
     """US regular session, weekdays 9:30am-4:00pm ET. Does not account
     for market holidays — a holiday just yields zero fresh bars, so the
@@ -1375,7 +1393,7 @@ def market_is_open(now: datetime | None = None) -> bool:
 
 # --- main loop -------------------------------------------------------------
 
-def run() -> int:
+def run(only_stoch: bool = False) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -1414,10 +1432,17 @@ def run() -> int:
         log.info("no enabled alert rules — nothing to evaluate")
         return 0
 
-    screener_rules = [r for r in rules
-                      if r.get("rule_type") not in ("setup", "stoch")]
-    setup_rules = [r for r in rules if r.get("rule_type") == "setup"]
-    stoch_rules = [r for r in rules if r.get("rule_type") == "stoch"]
+    # Lane split: the fast lane ('python alerts.py stoch', driven by its
+    # own workflow) evaluates only stoch rules so 5-minute-bar signals
+    # aren't stuck behind the ~10-minute screener sweep; the main engine
+    # sets ALERT_SKIP_STOCH so the two lanes never double-send.
+    skip_stoch = str(os.environ.get("ALERT_SKIP_STOCH", "")).strip().lower() \
+        in ("1", "true", "yes", "on")
+    screener_rules, setup_rules, stoch_rules = _partition_rules(
+        rules, only_stoch=only_stoch, skip_stoch=skip_stoch)
+    log.info("lane=%s: %d screener / %d setup / %d stoch rule(s) to evaluate",
+             "stoch-only" if only_stoch else "main",
+             len(screener_rules), len(setup_rules), len(stoch_rules))
 
     triggered_screener: list[tuple[dict, str, object]] = []   # (rule, ticker, hit)
     triggered_setup: list[tuple[dict, dict]] = []             # (rule, result)
@@ -1678,4 +1703,8 @@ def classify_main() -> int:
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "classify":
         raise SystemExit(classify_main())
+    if len(sys.argv) > 1 and sys.argv[1] == "stoch":
+        # Fast lane — evaluate only the stoch rules (~seconds), so the
+        # 5-minute cadence isn't consumed by the screener sweep.
+        raise SystemExit(run(only_stoch=True))
     raise SystemExit(run())
