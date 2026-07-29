@@ -2322,7 +2322,8 @@ function summarizeRuleParams(p, ruleType) {
       `${p.interval || '5m'} bars · ${trigTxt}`,
       `OS ≤ ${n(p.oversold)} · OB ≥ ${n(p.overbought)}`,
       `%K ${n(p.k_len)} · smooth ${n(p.smooth)}`
-        + (isCurl ? ` · lookback ${n(p.lookback_bars)}` : ''),
+        + (isCurl ? ` · lookback ${n(p.lookback_bars)}` : '')
+        + ` · re-arm ${n(p.rearm_level == null ? 50 : p.rearm_level)}`,
       `Δ ${n(p.opt_delta)} × ${n(p.opt_contracts)} contract${Number(p.opt_contracts) > 1 ? 's' : ''}`
         + ` · ${n(p.opt_dte_min)}–${n(p.opt_dte_max)} DTE`,
     ];
@@ -2728,6 +2729,7 @@ const stochModalInputs = {
   oversold: $('#cm_stoch_oversold'),
   overbought: $('#cm_stoch_overbought'),
   lookback_bars: $('#cm_stoch_lookback'),
+  rearm_level: $('#cm_stoch_rearm'),
   opt_delta: $('#cm_stoch_opt_delta'),
   opt_contracts: $('#cm_stoch_opt_contracts'),
   opt_dte_min: $('#cm_stoch_opt_dte_min'),
@@ -2755,6 +2757,7 @@ function buildStochParamsFromModal() {
     oversold: num(stochModalInputs.oversold, 20),
     overbought: num(stochModalInputs.overbought, 80),
     lookback_bars: num(stochModalInputs.lookback_bars, 4),
+    rearm_level: num(stochModalInputs.rearm_level, 50),
     opt_delta: num(stochModalInputs.opt_delta, 0.35),
     opt_contracts: num(stochModalInputs.opt_contracts, 1),
     opt_dte_min: num(stochModalInputs.opt_dte_min, 2),
