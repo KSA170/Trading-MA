@@ -829,6 +829,10 @@
               <label>Lookback (bars)</label>
               <input id="cm_stoch_lookback" type="number" min="1" max="20" value="4" />
             </div>
+            <div class="filter" title="Episode re-arm. After an alert fires for a ticker, no new alert until Slow %K crosses this level (upward for call-side rules — the bounce played out; downward for put-side). Each swing episode alerts once, and a fresh setup later the same day alerts again. 50 = midline; lower it (e.g. 35) for more frequent re-alerts, raise it (e.g. 70) to require a full swing before re-arming.">
+              <label>Re-arm at %K</label>
+              <input id="cm_stoch_rearm" type="number" min="0" max="100" step="5" value="50" />
+            </div>
             <div class="filter" title="Delta magnitude of the option contract you intend to trade (e.g. 0.35 for a slightly-OTM call or put). The alert converts the target/stop levels into an estimated position P&amp;L: gain ≈ delta × move × 100 × contracts. Linear delta approximation — gamma is ignored, so winners are slightly understated.">
               <label>Option delta (Δ)</label>
               <input id="cm_stoch_opt_delta" type="number" min="0.05" max="0.95" step="0.05" value="0.35" />

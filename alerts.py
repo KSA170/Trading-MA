@@ -153,6 +153,13 @@ STOCH_DEFAULT_PARAMS: dict = {
     #                        latest bar.
     "trigger": "curl_up",
     "lookback_bars": 4,
+    # Episode re-arm: after an alert fires for a ticker, no new alert
+    # until Slow %K has crossed this level on a later bar (>= for the
+    # call side — the bounce played out; <= for the put side). Each
+    # swing episode alerts once, and a fresh setup the same day alerts
+    # again — unlike the one-per-day dedupe the other rule types use.
+    # 50 = the midline.
+    "rearm_level": 50.0,
     # Option-math framing for the alert body: estimated per-position
     # P&L at the target / risk levels via the linear delta
     # approximation (gain ≈ Δ × move × 100 × contracts). Delta is the
@@ -250,6 +257,13 @@ CREATE TABLE IF NOT EXISTS rule_run_stats (
     no_data     INT NOT NULL DEFAULT 0,
     errors      INT NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS stoch_rule_state (
+    rule_id  INT  NOT NULL,
+    ticker   TEXT NOT NULL,
+    last_bar TEXT,
+    fired_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (rule_id, ticker)
+);
 """
 
 
@@ -323,6 +337,7 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _num("oversold", 20.0, 0.0, 50.0)
         _num("overbought", 80.0, 50.0, 100.0)
         _num("lookback_bars", 4, 1, 20, int)
+        _num("rearm_level", 50.0, 0.0, 100.0)
         _num("opt_delta", 0.35, 0.05, 0.95)
         _num("opt_contracts", 1, 1, 1000, int)
         _num("opt_dte_min", 2, 0, 60, int)
@@ -812,11 +827,47 @@ def record_sent(rule_id: int, ticker: str, trigger_date: str, detail: str) -> No
             cur.execute(
                 "INSERT INTO alert_sent (rule_id, ticker, trigger_date, detail) "
                 "VALUES (%s, %s, %s, %s) "
-                "ON CONFLICT (rule_id, ticker, trigger_date) DO NOTHING",
+                # Stoch rules can legitimately alert the same ticker more
+                # than once per day (episode re-arm); refresh the row so
+                # the UI's "Last alert" header tracks the latest one.
+                "ON CONFLICT (rule_id, ticker, trigger_date) "
+                "DO UPDATE SET detail = EXCLUDED.detail, sent_at = now()",
                 (rule_id, ticker, trigger_date, detail),
             )
     except Exception as exc:
         log.warning("alerts: record_sent failed: %s", exc)
+
+
+def _stoch_state_for_rule(rule_id: int) -> dict[str, str]:
+    """ticker -> bar label of the last alert this stoch rule fired."""
+    if not enabled():
+        return {}
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT ticker, last_bar FROM stoch_rule_state WHERE rule_id = %s",
+                (int(rule_id),),
+            )
+            return {r[0]: r[1] for r in cur.fetchall() if r[1]}
+    except Exception as exc:
+        log.warning("alerts: _stoch_state_for_rule failed: %s", exc)
+        return {}
+
+
+def _record_stoch_state(rule_id: int, ticker: str, last_bar: str | None) -> None:
+    if not enabled() or not last_bar:
+        return
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO stoch_rule_state (rule_id, ticker, last_bar) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (rule_id, ticker) "
+                "DO UPDATE SET last_bar = EXCLUDED.last_bar, fired_at = now()",
+                (int(rule_id), ticker, str(last_bar)),
+            )
+    except Exception as exc:
+        log.warning("alerts: _record_stoch_state failed: %s", exc)
 
 
 # --- Alpaca market data ----------------------------------------------------
@@ -1171,10 +1222,35 @@ def _now_et() -> datetime:
 _STOCH_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
 
 
-def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime) -> tuple[str, dict | None]:
+def _stoch_rearmed(slow: list, bars: list[dict], last_bar: str,
+                   bearish: bool, rearm_level: float) -> bool:
+    """True when a new alert may fire after one at `last_bar`: some Slow
+    %K reading on a bar strictly after it must have crossed the re-arm
+    level (>= for call-side rules — the bounce played out; <= for
+    put-side — the pullback completed). Marks the previous swing episode
+    finished so the next dip/rollover counts as a new one. Day
+    boundaries need no special-casing: a cross on any later bar
+    (including the next session) re-arms."""
+    since = [s for b, s in zip(bars, slow)
+             if s is not None and str(b.get("d") or "") > last_bar]
+    if not since:
+        return False
+    return (min(since) <= rearm_level) if bearish else (max(since) >= rearm_level)
+
+
+def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
+                         last_bar: str | None = None) -> tuple[str, dict | None]:
     """Evaluate one ticker against a stoch rule's params. Returns
-    (status, signal): status is 'no_data' | 'stale' | 'quiet' | 'fired';
-    signal is populated only when fired.
+    (status, signal): status is 'no_data' | 'stale' | 'deduped' |
+    'quiet' | 'fired'; signal is populated only when fired.
+
+    last_bar is the bar label of this rule's previous alert for the
+    ticker (from stoch_rule_state) — episode dedupe: no re-fire on the
+    same or an older bar, and none until Slow %K has crossed
+    rearm_level since (see _stoch_rearmed). This replaces the
+    one-per-day dedupe the other rule types use: a 5m stochastic can
+    legitimately set up several times a day, and each episode should
+    alert once.
 
     Data comes from calculators.fetch_bars (Yahoo intraday, TTL-cached;
     snapshot-first for 1d) — no Alpaca dependency."""
@@ -1209,6 +1285,17 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime) -> tuple[str, dict
     trigger = p.get("trigger", "curl_up")
     overbought = float(p.get("overbought", 80.0))
     bearish = trigger in _STOCH_BEARISH_TRIGGERS
+
+    # Episode dedupe — same/older bar can't re-fire (the cron often runs
+    # more than once inside one bar), and after a fire the ticker stays
+    # quiet until Slow %K crosses the re-arm level.
+    if last_bar:
+        if str(bars[-1].get("d") or "") <= str(last_bar):
+            return "deduped", None
+        if not _stoch_rearmed(slow, bars, str(last_bar), bearish,
+                              float(p.get("rearm_level", 50.0))):
+            return "deduped", None
+
     # Curl turns must be a real half-point move, not float jitter on a
     # flat tape — a steady one-way tape keeps Slow %K mathematically
     # constant, and an any-epsilon comparison would fire on noise.
@@ -1575,17 +1662,22 @@ def run(only_stoch: bool = False) -> int:
         for rule in stoch_rules:
             p = rule["params"]
             scope = tickers_for_scope(rule["scope_type"], rule["scope_value"]) or []
+            # Episode dedupe replaces the one-per-day gate: the evaluator
+            # blocks re-fires until Slow %K crosses the rule's re-arm
+            # level after the previous alert's bar (stoch_rule_state).
+            fired_state = _stoch_state_for_rule(rule["id"])
             ev = de = nd = er = mt = 0
             for ticker in scope:
-                if already_sent(rule["id"], ticker, today):
-                    de += 1
-                    continue
                 try:
-                    status, sig = _evaluate_stoch_rule(ticker, p, now)
+                    status, sig = _evaluate_stoch_rule(
+                        ticker, p, now, last_bar=fired_state.get(ticker))
                 except Exception as exc:
                     log.warning("stoch evaluate failed for %s (rule %s): %s",
                                 ticker, rule["id"], exc)
                     er += 1
+                    continue
+                if status == "deduped":
+                    de += 1
                     continue
                 if status in ("no_data", "stale"):
                     nd += 1
@@ -1674,6 +1766,8 @@ def run(only_stoch: bool = False) -> int:
         if send_telegram(_format_stoch_alert(rule["name"], sig, now)):
             record_sent(rule["id"], sig["ticker"], today,
                         f"slow_k={sig['slow_k']}")
+            _record_stoch_state(rule["id"], sig["ticker"],
+                                sig.get("bar_time"))
             outcomes.record_stock_outcome(
                 sig["ticker"], today, sig.get("price"),
                 {"kind": "alert_stoch", "id": rule["id"],
