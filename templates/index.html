@@ -833,6 +833,10 @@
               <label>Re-arm at %K</label>
               <input id="cm_stoch_rearm" type="number" min="0" max="100" step="5" value="50" />
             </div>
+            <div class="filter" title="The alert's stop-loss price sits this % beyond the stays-oversold boundary (below it for calls, above the stays-overbought ceiling for puts). At the boundary itself, a normal flush can tag the stop on the low tick of a winning trade — the validated trades survived because their stops sat just past the band. 0 = stop exactly at the boundary.">
+              <label>Stop buffer (%)</label>
+              <input id="cm_stoch_stop_buffer" type="number" min="0" max="2" step="0.05" value="0.15" />
+            </div>
             <div class="filter" title="Delta magnitude of the option contract you intend to trade (e.g. 0.35 for a slightly-OTM call or put). The alert converts the target/stop levels into an estimated position P&amp;L: gain ≈ delta × move × 100 × contracts. Linear delta approximation — gamma is ignored, so winners are slightly understated.">
               <label>Option delta (Δ)</label>
               <input id="cm_stoch_opt_delta" type="number" min="0.05" max="0.95" step="0.05" value="0.35" />
