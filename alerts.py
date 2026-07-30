@@ -160,6 +160,13 @@ STOCH_DEFAULT_PARAMS: dict = {
     # again — unlike the one-per-day dedupe the other rule types use.
     # 50 = the midline.
     "rearm_level": 50.0,
+    # Stop placement: the stop-loss price sits this % BEYOND the
+    # stays-oversold boundary (below it for calls, above the
+    # stays-overbought ceiling for puts). The validated trades placed
+    # stops just past the band — at the boundary itself, a normal
+    # oversold flush tags the stop on the low tick of a winning trade.
+    # 0 = stop exactly at the boundary.
+    "stop_buffer_pct": 0.15,
     # Option-math framing for the alert body: estimated per-position
     # P&L at the target / risk levels via the linear delta
     # approximation (gain ≈ Δ × move × 100 × contracts). Delta is the
@@ -338,6 +345,7 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _num("overbought", 80.0, 50.0, 100.0)
         _num("lookback_bars", 4, 1, 20, int)
         _num("rearm_level", 50.0, 0.0, 100.0)
+        _num("stop_buffer_pct", 0.15, 0.0, 2.0)
         _num("opt_delta", 0.35, 0.05, 0.95)
         _num("opt_contracts", 1, 1, 1000, int)
         _num("opt_dte_min", 2, 0, 60, int)
@@ -1336,6 +1344,22 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
         else:
             sig["target_price"] = ob.get("price")
             sig["risk_price"] = osb.get("price")
+        # Explicit trade-plan prices. The STOP sits `stop_buffer_pct`
+        # beyond the boundary (below it for calls, above for puts) — at
+        # the boundary itself, a normal in-band flush tags the stop on
+        # the low tick of a winning trade (the 7/20 validated trade
+        # survived by ~$1 for exactly this reason).
+        buf = float(p.get("stop_buffer_pct", 0.15)) / 100.0
+        if sig.get("risk_price") is not None:
+            sig["stop_price"] = round(
+                sig["risk_price"] * ((1 + buf) if bearish else (1 - buf)), 4)
+        if price > 0:
+            if sig.get("target_price") is not None:
+                sig["target_pct"] = round(
+                    (sig["target_price"] - price) / price * 100.0, 2)
+            if sig.get("stop_price") is not None:
+                sig["stop_pct"] = round(
+                    (sig["stop_price"] - price) / price * 100.0, 2)
         # Contract recommendation — the liquid contract closest to the
         # rule's target delta inside its DTE window. Best-effort: on
         # any failure (throttle, closed market, illiquid chain) the
@@ -1368,8 +1392,12 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
             sig["opt_contracts"] = contracts
             sig["opt_gain"] = round(
                 abs(sig["target_price"] - price) * delta_used * 100 * contracts, 2)
+            # Loss estimate uses the actual (buffered) stop price, not
+            # the raw boundary, so the alert's risk number matches the
+            # stop it recommends.
+            stop_ref = sig.get("stop_price", sig["risk_price"])
             sig["opt_loss"] = round(
-                abs(price - sig["risk_price"]) * delta_used * 100 * contracts, 2)
+                abs(price - stop_ref) * delta_used * 100 * contracts, 2)
             if contract and contract.get("mid"):
                 sig["opt_cost"] = round(
                     float(contract["mid"]) * 100 * contracts, 2)
@@ -1399,23 +1427,38 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
                      emoji="🌀")
     lines.append(T.row("🏷", "Rule", T.b(rule_name) + f" · {side_txt}"))
     lines.append("")
-    lines.append(T.row("💰", "Price", T.b(T.money(sig.get("price")))
+    lines.append(T.row("💰", "Entry", T.b(T.money(sig.get("price")))
                        + f" · {T.esc(sig.get('interval') or '')} bars"))
     lines.append(T.row("🌀", "Slow %K",
                        T.b(f"{sig['slow_k_prev']} → {sig['slow_k']}")
                        + f" · fast {sig['fast_k']} · {trig_txt}"))
+
+    # Trade plan — the two prices to act on, stated plainly. The
+    # reasoning (which stochastic level each comes from) rides along as
+    # a smaller footnote line underneath.
+    def _pct_sfx(key: str) -> str:
+        v = sig.get(key)
+        return f" ({v:+.2f}%)" if isinstance(v, (int, float)) else ""
+
+    plan = []
     if sig.get("target_price") is not None:
-        lines.append(T.row("🎯",
-                           "OS target" if bearish else "OB target",
-                           T.b(T.money(sig["target_price"]))
-                           + (" — drift-to-oversold level" if bearish
-                              else " — drift-to-overbought level")))
-    if sig.get("risk_price") is not None:
-        lines.append(T.row("🛑",
-                           "OB ceiling" if bearish else "OS boundary",
-                           T.b(T.money(sig["risk_price"]))
-                           + (" — stays overbought above this" if bearish
-                              else " — stays oversold below this")))
+        plan.append(T.row("🎯", "Target",
+                          T.b(T.money(sig["target_price"])) + _pct_sfx("target_pct")
+                          + " — take profit here"))
+    if sig.get("stop_price") is not None:
+        plan.append(T.row("🛑", "Stop loss",
+                          T.b(T.money(sig["stop_price"])) + _pct_sfx("stop_pct")
+                          + " — exit if reached"))
+    if plan:
+        lines.append("")
+        lines += plan
+        if sig.get("risk_price") is not None:
+            note = (f"target = drift-to-{'oversold' if bearish else 'overbought'}"
+                    f" level · stop sits just "
+                    f"{'above the stays-overbought ceiling' if bearish else 'below the stays-oversold boundary'}"
+                    f" ({T.money(sig['risk_price'])})")
+            lines.append(T.i(note))
+        lines.append("")
     c = sig.get("contract")
     if c:
         kind = "put" if bearish else "call"
