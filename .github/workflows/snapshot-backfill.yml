@@ -12,16 +12,12 @@ on:
   workflow_dispatch:
     inputs:
       target_date:
-        description: 'Close date to rebuild (YYYY-MM-DD)'
+        description: 'Close date(s) to rebuild (YYYY-MM-DD, comma list ok)'
         required: true
       tickers:
         description: 'Optional comma-separated subset (default: full universe)'
         required: false
         default: ''
-      workers:
-        description: 'Fetch threads (keep modest — Yahoo throttles runners)'
-        required: false
-        default: '4'
   push:
     branches:
       - claude/stock-filter-builder-PrUrK
@@ -50,7 +46,6 @@ jobs:
       - name: Run snapshot backfill
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SNAPSHOT_TARGET_DATE: ${{ inputs.target_date || '2026-07-30' }}
+          SNAPSHOT_TARGET_DATE: ${{ inputs.target_date || '2026-07-30,2026-07-31' }}
           SNAPSHOT_TICKERS: ${{ inputs.tickers }}
-          SNAPSHOT_WORKERS: ${{ inputs.workers || '4' }}
         run: python backfill_snapshot.py

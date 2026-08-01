@@ -1,25 +1,33 @@
-"""One-shot daily-snapshot backfill for a missed close date.
+"""Daily-snapshot backfill for close dates the nightly writer missed.
 
-The nightly snapshot writer lives in the Render web app's auto-warm
-scheduler (16:30 / 19:00 ET) — when the service is suspended, that
-date is simply absent from daily_snapshot (2026-07-30 was missed this
-way). This script rebuilds a specific date from GitHub Actions: fetch +
-enrich each universe ticker through the screener's own cache path,
-truncate the frame to bars at or before the target date, and build the
-row with the same _row_from_df the app uses. Indicator math stays
-identical because enrichment is causal (rolling/ewm at a row only uses
-rows at or before it), so truncating an enriched frame preserves the
-target date's values exactly.
+The nightly writer lives in the Render web app's auto-warm scheduler
+(16:30 / 19:00 ET) — a suspended service silently skips that close
+(2026-07-30 was lost this way, and 07-31 came back short). This script
+rebuilds specific dates from GitHub Actions.
 
-Rows are written only for tickers that actually have a bar ON the
-target date — a truncated frame ending earlier (halted, delisted, IPO
-after the date) is skipped, never mislabeled.
+Fetching is BATCHED via yf.download (200 symbols per request, ~42
+requests for the whole universe) because Yahoo aggressively rate-limits
+per-ticker calls from runner IPs — the first version of this script got
+7,421 instant 429s out of 8,309 tickers. Each batch frame is split per
+ticker, enriched with the screener's own indicator pipeline, truncated
+to bars at or before each target date (safe: enrichment is causal, so
+the target date's values match what the nightly run would have
+written), and rowed via the same _row_from_df.
+
+Notes:
+  - Rows are only written for tickers with a bar ON the target date.
+  - Tickers already present for every requested date are skipped, so
+    reruns only chase the stragglers.
+  - Shares outstanding is NOT fetched (it would need one Yahoo call
+    per ticker — the exact thing that gets rate-limited). Backfilled
+    rows carry shares=NULL, so turnover/market-cap columns are blank
+    for that date; every indicator/price field is complete.
 
 Env:
-  SNAPSHOT_TARGET_DATE  required, YYYY-MM-DD.
-  SNAPSHOT_TICKERS      optional comma/space list (default: universe).
-  SNAPSHOT_WORKERS      optional, default 4 — deliberately modest;
-                        Yahoo rate-limits GitHub runner IPs.
+  SNAPSHOT_TARGET_DATE  required — one date or a comma list
+                        ("2026-07-30,2026-07-31").
+  SNAPSHOT_TICKERS      optional comma/space subset (default universe).
+  SNAPSHOT_BATCH        optional symbols per Yahoo request (default 200).
 """
 
 from __future__ import annotations
@@ -27,7 +35,9 @@ from __future__ import annotations
 import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
+import time
+
+import pandas as pd
 
 import screener
 import snapshots
@@ -36,74 +46,129 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("backfill_snapshot")
 
-_BATCH = 500
+_UPSERT_BATCH = 500
+
+
+def _existing_tickers(as_of: str) -> set[str]:
+    try:
+        with snapshots._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT ticker FROM daily_snapshot WHERE as_of = %s",
+                        (as_of,))
+            return {r[0] for r in cur.fetchall()}
+    except Exception as exc:
+        log.warning("existing-ticker query failed for %s: %s", as_of, exc)
+        return set()
+
+
+def _fetch_batch(symbols: list[str]):
+    """One batched Yahoo request for 6mo daily bars. Returns
+    {symbol: flat OHLCV frame} for symbols that came back with data.
+    Retries the whole batch once on failure."""
+    import yfinance as yf
+    for attempt in (1, 2):
+        try:
+            df = yf.download(
+                tickers=" ".join(symbols), period="6mo", interval="1d",
+                auto_adjust=False, progress=False, threads=False,
+                group_by="ticker",
+            )
+            break
+        except Exception as exc:
+            log.warning("batch download failed (attempt %d, %d syms): %s",
+                        attempt, len(symbols), exc)
+            if attempt == 2:
+                return {}
+            time.sleep(30)
+    if df is None or df.empty:
+        return {}
+    out = {}
+    is_multi = isinstance(df.columns, pd.MultiIndex)
+    for sym in symbols:
+        try:
+            sub = df[sym] if is_multi else df
+        except (KeyError, ValueError):
+            continue
+        if sub is None or sub.empty:
+            continue
+        sub = sub.dropna(subset=["Close"])
+        if len(sub) >= 2:
+            out[sym] = sub
+    return out
 
 
 def main() -> int:
-    target = (os.environ.get("SNAPSHOT_TARGET_DATE") or "").strip()
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", target):
-        log.error("SNAPSHOT_TARGET_DATE (YYYY-MM-DD) is required")
+    raw_dates = (os.environ.get("SNAPSHOT_TARGET_DATE") or "").strip()
+    dates = [d.strip() for d in raw_dates.split(",") if d.strip()]
+    if not dates or any(not re.match(r"^\d{4}-\d{2}-\d{2}$", d) for d in dates):
+        log.error("SNAPSHOT_TARGET_DATE (YYYY-MM-DD[,YYYY-MM-DD...]) required")
         return 1
     if not snapshots.enabled():
         log.error("DATABASE_URL not set")
         return 1
     snapshots.init()
-    if snapshots.has_date(target):
-        log.info("note: %s already has rows — upserting over them "
-                 "(idempotent)", target)
 
     tick_env = (os.environ.get("SNAPSHOT_TICKERS") or "").strip()
-    tickers = ([t.strip().upper() for t in re.split(r"[,\s]+", tick_env) if t.strip()]
-               if tick_env else screener.all_tickers())
-    workers = max(1, int(os.environ.get("SNAPSHOT_WORKERS") or 4))
-    log.info("backfilling %s for %d tickers (%d workers)",
-             target, len(tickers), workers)
+    universe = ([t.strip().upper() for t in re.split(r"[,\s]+", tick_env) if t.strip()]
+                if tick_env else screener.all_tickers())
+    batch_size = max(20, int(os.environ.get("SNAPSHOT_BATCH") or 200))
+
+    have = {d: _existing_tickers(d) for d in dates}
+    for d in dates:
+        log.info("%s currently has %d rows", d, len(have[d]))
+    todo = [t for t in universe if any(t not in have[d] for d in dates)]
+    log.info("backfilling %s: %d of %d tickers still needed",
+             dates, len(todo), len(universe))
 
     counts = {"written": 0, "no_data": 0, "no_target_bar": 0,
               "row_none": 0, "errors": 0}
+    rows: list[dict] = []
 
-    def _one(t: str):
-        try:
-            df = screener._cached_history(t, period="6mo", need_shares=True)
-        except Exception as exc:
-            log.warning("fetch failed for %s: %s", t, exc)
-            return ("errors", None)
-        if df is None or df.empty:
-            return ("no_data", None)
-        try:
-            df = df[df.index.strftime("%Y-%m-%d") <= target]
-        except Exception as exc:
-            log.warning("truncate failed for %s: %s", t, exc)
-            return ("errors", None)
-        if df is None or len(df) < 2:
-            return ("no_target_bar", None)
-        if df.index[-1].strftime("%Y-%m-%d") != target:
-            return ("no_target_bar", None)
-        try:
-            row = screener._row_from_df(t, df)
-        except Exception as exc:
-            log.warning("row build failed for %s: %s", t, exc)
-            return ("errors", None)
-        if row is None:
-            return ("row_none", None)
-        return ("ok", row)
+    def _flush():
+        if rows:
+            counts["written"] += snapshots.upsert_many(rows)
+            rows.clear()
 
-    batch: list[dict] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for i, (status, row) in enumerate(pool.map(_one, tickers), start=1):
-            if status == "ok":
-                batch.append(row)
-                if len(batch) >= _BATCH:
-                    counts["written"] += snapshots.upsert_many(batch)
-                    batch.clear()
-            else:
-                counts[status] += 1
-            if i % 500 == 0:
-                log.info("progress %d/%d — %s", i, len(tickers), counts)
-    if batch:
-        counts["written"] += snapshots.upsert_many(batch)
-        batch.clear()
+    for i in range(0, len(todo), batch_size):
+        chunk = todo[i:i + batch_size]
+        frames = _fetch_batch(chunk)
+        for sym in chunk:
+            df = frames.get(sym)
+            if df is None:
+                counts["no_data"] += 1
+                continue
+            try:
+                enriched = screener._enrich(df.copy())
+            except Exception as exc:
+                log.warning("enrich failed for %s: %s", sym, exc)
+                counts["errors"] += 1
+                continue
+            wrote_any = False
+            for d in dates:
+                if sym in have[d]:
+                    continue
+                cut = enriched[enriched.index.strftime("%Y-%m-%d") <= d]
+                if len(cut) < 2 or cut.index[-1].strftime("%Y-%m-%d") != d:
+                    continue
+                try:
+                    row = screener._row_from_df(sym, cut)
+                except Exception as exc:
+                    log.warning("row build failed for %s@%s: %s", sym, d, exc)
+                    counts["errors"] += 1
+                    continue
+                if row is None:
+                    counts["row_none"] += 1
+                    continue
+                rows.append(row)
+                wrote_any = True
+                if len(rows) >= _UPSERT_BATCH:
+                    _flush()
+            if not wrote_any:
+                counts["no_target_bar"] += 1
+        log.info("progress %d/%d — %s", min(i + batch_size, len(todo)),
+                 len(todo), counts)
+        time.sleep(1.5)   # be polite between batch requests
 
+    _flush()
     trimmed = (snapshots.trim_to_last(snapshots.RETENTION_DAYS)
                if counts["written"] else 0)
     log.info("done: %s · trimmed=%d", counts, trimmed)
