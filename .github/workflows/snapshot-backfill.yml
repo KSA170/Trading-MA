@@ -1,0 +1,56 @@
+name: Snapshot backfill
+
+# Rebuilds daily_snapshot rows for a date the nightly writer missed
+# (e.g. the Render web service — which hosts the auto-warm snapshot
+# scheduler — was suspended over a close). Fetches from Yahoo on the
+# runner and upserts straight into Postgres; idempotent, safe to rerun.
+#
+# Triggers: manual dispatch with a target date, plus pushes touching
+# these two files (the push default below covers the immediate
+# 2026-07-30 gap without waiting for a merge).
+on:
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: 'Close date to rebuild (YYYY-MM-DD)'
+        required: true
+      tickers:
+        description: 'Optional comma-separated subset (default: full universe)'
+        required: false
+        default: ''
+      workers:
+        description: 'Fetch threads (keep modest — Yahoo throttles runners)'
+        required: false
+        default: '4'
+  push:
+    branches:
+      - claude/stock-filter-builder-PrUrK
+    paths:
+      - '.github/workflows/snapshot-backfill.yml'
+      - 'backfill_snapshot.py'
+
+concurrency:
+  group: snapshot-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run snapshot backfill
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SNAPSHOT_TARGET_DATE: ${{ inputs.target_date || '2026-07-30' }}
+          SNAPSHOT_TICKERS: ${{ inputs.tickers }}
+          SNAPSHOT_WORKERS: ${{ inputs.workers || '4' }}
+        run: python backfill_snapshot.py
