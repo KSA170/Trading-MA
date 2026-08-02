@@ -5,25 +5,19 @@ name: Snapshot backfill
 # scheduler — was suspended over a close). Fetches from Yahoo on the
 # runner and upserts straight into Postgres; idempotent, safe to rerun.
 #
-# Triggers: manual dispatch with a target date, plus pushes touching
-# these two files (the push default below covers the immediate
-# 2026-07-30 gap without waiting for a merge).
+# Trigger: manual dispatch with a target date. (A temporary push
+# trigger performed the original 2026-07-30/31 repair; the scheduled
+# nightly capture lives in snapshot-nightly.yml.)
 on:
   workflow_dispatch:
     inputs:
       target_date:
-        description: 'Close date(s) to rebuild (YYYY-MM-DD, comma list ok)'
+        description: 'Close date(s) to rebuild (YYYY-MM-DD, comma list ok, or "auto")'
         required: true
       tickers:
         description: 'Optional comma-separated subset (default: full universe)'
         required: false
         default: ''
-  push:
-    branches:
-      - claude/stock-filter-builder-PrUrK
-    paths:
-      - '.github/workflows/snapshot-backfill.yml'
-      - 'backfill_snapshot.py'
 
 concurrency:
   group: snapshot-backfill
@@ -46,6 +40,6 @@ jobs:
       - name: Run snapshot backfill
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SNAPSHOT_TARGET_DATE: ${{ inputs.target_date || '2026-07-30,2026-07-31' }}
+          SNAPSHOT_TARGET_DATE: ${{ inputs.target_date }}
           SNAPSHOT_TICKERS: ${{ inputs.tickers }}
         run: python backfill_snapshot.py

@@ -24,10 +24,17 @@ Notes:
     for that date; every indicator/price field is complete.
 
 Env:
-  SNAPSHOT_TARGET_DATE  required — one date or a comma list
-                        ("2026-07-30,2026-07-31").
+  SNAPSHOT_TARGET_DATE  required — one date, a comma list
+                        ("2026-07-30,2026-07-31"), or "auto" for the
+                        most recent completed US close (see
+                        _resolve_auto_date) — the nightly-cron mode.
   SNAPSHOT_TICKERS      optional comma/space subset (default universe).
   SNAPSHOT_BATCH        optional symbols per Yahoo request (default 200).
+  SNAPSHOT_ALLOW_EMPTY  "1" -> exit 0 even when nothing was written.
+                        The nightly cron sets it: on a market holiday
+                        no ticker has a bar for the date, and on a
+                        quiet rerun skip-existing leaves nothing to do
+                        — both are clean no-ops, not failures.
 """
 
 from __future__ import annotations
@@ -36,6 +43,8 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -47,6 +56,25 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("backfill_snapshot")
 
 _UPSERT_BATCH = 500
+
+
+def _resolve_auto_date(now_et: datetime | None = None) -> str:
+    """The most recent COMPLETED US close, in ET.
+
+    Before ~16:05 ET on a weekday, "today" is still an in-progress
+    session — writing it would mislabel partial bars as the close — so
+    auto resolves to the previous trading day instead. Weekends roll
+    back to Friday. Market holidays are not special-cased: on a holiday
+    the resolved date simply has no bars, every ticker skips as
+    no_target_bar, and the run is a clean no-op (SNAPSHOT_ALLOW_EMPTY).
+    """
+    now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
+    d = now_et.date()
+    if now_et.hour * 60 + now_et.minute < 16 * 60 + 5:
+        d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
 
 
 def _existing_tickers(as_of: str) -> set[str]:
@@ -98,9 +126,12 @@ def _fetch_batch(symbols: list[str]):
 
 def main() -> int:
     raw_dates = (os.environ.get("SNAPSHOT_TARGET_DATE") or "").strip()
+    if raw_dates.lower() == "auto":
+        raw_dates = _resolve_auto_date()
+        log.info("auto target date resolved to %s", raw_dates)
     dates = [d.strip() for d in raw_dates.split(",") if d.strip()]
     if not dates or any(not re.match(r"^\d{4}-\d{2}-\d{2}$", d) for d in dates):
-        log.error("SNAPSHOT_TARGET_DATE (YYYY-MM-DD[,YYYY-MM-DD...]) required")
+        log.error("SNAPSHOT_TARGET_DATE (YYYY-MM-DD[,...] or 'auto') required")
         return 1
     if not snapshots.enabled():
         log.error("DATABASE_URL not set")
@@ -175,7 +206,9 @@ def main() -> int:
     log.info("date_counts now: %s", snapshots.date_counts(8))
     if snapshots.last_write_error():
         log.error("last write error: %s", snapshots.last_write_error())
-    return 0 if counts["written"] else 1
+    allow_empty = str(os.environ.get("SNAPSHOT_ALLOW_EMPTY", "")).strip() \
+        in ("1", "true", "yes", "on")
+    return 0 if (counts["written"] or allow_empty) else 1
 
 
 if __name__ == "__main__":
