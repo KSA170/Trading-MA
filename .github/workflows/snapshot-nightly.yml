@@ -1,0 +1,51 @@
+name: Nightly snapshot
+
+# Guaranteed close capture for daily_snapshot, independent of Render's
+# uptime. The Render web app's auto-warm scheduler (16:30/19:00 ET)
+# remains the primary writer when the service is up — its rows include
+# shares outstanding — and this workflow acts as the safety net: with
+# skip-existing semantics it only fills whatever the primary missed
+# (everything, when the service is suspended like over the 2026-07-30
+# close; nothing, on a normal day).
+#
+# Two passes per weekday. GitHub's schedule can drift by minutes to
+# tens of minutes under load — fine for a nightly job (unlike the
+# 5-minute alert lanes, which stay on cron-job.org). Cron times are
+# UTC: pass 1 lands 16:15-17:15 ET across DST, pass 2 18:45-19:45 ET —
+# both safely after the close, so target 'auto' always resolves to
+# today's completed session.
+on:
+  schedule:
+    - cron: '15 21 * * 1-5'
+    - cron: '45 23 * * 1-5'
+  workflow_dispatch: {}
+  push:
+    branches:
+      - claude/stock-filter-builder-PrUrK
+    paths:
+      - '.github/workflows/snapshot-nightly.yml'
+
+concurrency:
+  group: snapshot-nightly
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Capture the close
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SNAPSHOT_TARGET_DATE: auto
+          SNAPSHOT_ALLOW_EMPTY: '1'
+        run: python backfill_snapshot.py
