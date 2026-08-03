@@ -187,7 +187,17 @@ _STOCH_TRIGGERS = ("curl_up", "entered_oversold",
                    "curl_down", "entered_overbought")
 _STOCH_BEARISH_TRIGGERS = ("curl_down", "entered_overbought")
 
-RULE_TYPES = ("screener", "setup", "stoch")
+# Technical rules: RSI / MACD / price-streak conditions AND-ed together on
+# any interval. Params + condition math live in technicals.py.
+import technicals
+
+TECHNICAL_DEFAULT_PARAMS: dict = dict(technicals.DEFAULT_PARAMS)
+_TECHNICAL_PARAM_KEYS = frozenset(TECHNICAL_DEFAULT_PARAMS.keys())
+# Daily+ rules evaluate the last CLOSED bar (a partial session would fire
+# alerts that are false by the close); intraday uses the latest bar.
+_TECH_CLOSED_ONLY_INTERVALS = ("1d", "1wk", "1mo")
+
+RULE_TYPES = ("screener", "setup", "stoch", "technical")
 # 'all' is a setup-only scope ("score every ticker the snapshot pre-filter
 # returns") — using it with a screener rule would blow up Alpaca quota,
 # and with a stoch rule the per-ticker Yahoo fetches.
@@ -322,6 +332,43 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         for k, v in (raw or {}).items():
             if k in _SETUP_PARAM_KEYS:
                 params[k] = v
+        return params
+    if rule_type == "technical":
+        params = dict(TECHNICAL_DEFAULT_PARAMS)
+        for k, v in (raw or {}).items():
+            if k in _TECHNICAL_PARAM_KEYS:
+                params[k] = v
+        if params.get("interval") not in _STOCH_INTERVALS + ("1wk", "1mo"):
+            params["interval"] = "1d"
+        if params.get("direction") not in technicals.DIRECTIONS:
+            params["direction"] = "bullish"
+        for key in ("rsi_mode", "rsi_sma_mode", "macd_mode"):
+            if params.get(key) not in technicals.MODES:
+                params[key] = "cross"
+        if params.get("streak_mode") not in technicals.STREAK_MODES:
+            params["streak_mode"] = "close"
+
+        def _tnum(key, dflt, lo, hi, cast=float):
+            try:
+                params[key] = max(lo, min(hi, cast(params[key])))
+            except (TypeError, ValueError):
+                params[key] = dflt
+        _tnum("rsi_length", 14, 2, 50, int)
+        _tnum("rsi_threshold", 60.0, 0.0, 100.0)
+        _tnum("rsi_sma_length", 9, 2, 50, int)
+        _tnum("rsi_sma_min_gap_pct", 0.0, 0.0, 100.0)
+        _tnum("macd_fast", 12, 2, 50, int)
+        _tnum("macd_slow", 26, 3, 100, int)
+        _tnum("macd_signal", 9, 2, 50, int)
+        _tnum("macd_min_gap_pct", 0.0, 0.0, 100.0)
+        _tnum("streak_bars", 3, 1, 20, int)
+        _tnum("avg_volume_lookback", 20, 1, 100, int)
+        _tnum("avg_volume_min", 500000.0, 0.0, 1e12)
+        if params["macd_fast"] >= params["macd_slow"]:
+            params["macd_fast"], params["macd_slow"] = 12, 26
+        for key in ("apply_rsi_level", "apply_rsi_vs_sma", "apply_macd",
+                    "apply_streak", "apply_avg_volume", "macd_hist_rising"):
+            params[key] = bool(params.get(key))
         return params
     if rule_type == "stoch":
         params = dict(STOCH_DEFAULT_PARAMS)
@@ -1493,20 +1540,92 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     return "\n".join(lines)
 
 
+def _evaluate_technical_rule(ticker: str, p: dict, now: datetime,
+                             last_bar: str | None = None) -> tuple[str, dict | None]:
+    """Evaluate one ticker against a technical rule. Returns
+    (status, signal) with status in 'no_data' | 'stale' | 'deduped' |
+    'quiet' | 'fired'.
+
+    Dedupe is once per bar period: the rule can't re-fire while the
+    evaluated bar label is unchanged (a 1d rule alerts at most once per
+    session; a 5m rule once per 5m bar)."""
+    import calculators
+
+    interval = p.get("interval", "1d")
+    bars, source = calculators.fetch_bars(ticker, interval)
+    if not bars or len(bars) < 3:
+        return "no_data", None
+
+    # Stale-tape guard for intraday intervals only (daily+ bars are
+    # naturally "old" outside market hours).
+    mins = _STOCH_INTERVAL_MINUTES.get(interval)
+    if mins:
+        from datetime import timedelta
+        cutoff = (now - timedelta(minutes=6 * mins)).strftime("%Y-%m-%d %H:%M")
+        if str(bars[-1].get("d") or "") < cutoff:
+            return "stale", None
+
+    closed_only = interval in _TECH_CLOSED_ONLY_INTERVALS
+    res = technicals.evaluate(bars, p, closed_only=closed_only)
+    if not res.get("ok"):
+        reason = res.get("reason")
+        return ("no_data" if reason in ("no_bars", "not_warm") else "quiet"), None
+
+    bar_label = str(res.get("bar") or "")
+    if last_bar and bar_label <= str(last_bar):
+        return "deduped", None
+
+    return "fired", {
+        "ticker": ticker, "interval": interval, "source": source,
+        "direction": p.get("direction", "bullish"),
+        "price": res.get("price"), "bar_time": res.get("bar"),
+        "details": res.get("details") or [],
+        "closed_only": closed_only,
+    }
+
+
+def _format_technical_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
+    """Telegram body for a technical-rule trigger: which conditions
+    matched, on which bar, at what price."""
+    import tg_format as T
+    bearish = str(sig.get("direction")) == "bearish"
+    side = "bearish" if bearish else "bullish"
+    lines = T.header("TECHNICAL ALERT", sig["ticker"], when=T.time_et(as_of),
+                     emoji="📐")
+    lines.append(T.row("🏷", "Rule", T.b(rule_name) + f" · {side}"))
+    lines.append("")
+    lines.append(T.row("💰", "Price", T.b(T.money(sig.get("price")))
+                       + f" · {T.esc(sig.get('interval') or '')} bars"))
+    lines.append("")
+    lines.append("✅ <b>Conditions met</b>")
+    for d in sig.get("details") or []:
+        lines.append("• " + T.esc(str(d)))
+    if sig.get("bar_time"):
+        lines.append("")
+        suffix = " (closed bar)" if sig.get("closed_only") else ""
+        lines.append(T.row("🕒", "Bar", T.esc(str(sig["bar_time"])) + suffix))
+    lines.append("")
+    lines.append(T.i("Informational only — not financial advice."))
+    return "\n".join(lines)
+
+
 def _partition_rules(rules: list[dict], only_stoch: bool = False,
                      skip_stoch: bool = False) -> tuple[list, list, list]:
     """Split enabled rules into the three evaluation groups.
 
-    only_stoch — the fast-lane 'python alerts.py stoch' mode: just the
-    stoch rules, nothing else (the skip flag is ignored there).
-    skip_stoch — the main engine when the fast lane owns stoch rules
-    (ALERT_SKIP_STOCH env): everything except stoch, so the two lanes
-    never double-send."""
-    stoch = [r for r in rules if r.get("rule_type") == "stoch"]
+    The third group is the FAST LANE — stoch and technical rules alike:
+    both read intraday bars via calculators.fetch_bars and finish in
+    seconds, so they share `python alerts.py stoch` and the 5-minute
+    stoch-alerts workflow.
+
+    only_stoch — the fast-lane mode: just that group (skip flag ignored).
+    skip_stoch — the main engine when the fast lane owns the group
+    (ALERT_SKIP_STOCH env), so the two lanes never double-send."""
+    stoch = [r for r in rules if r.get("rule_type") in ("stoch", "technical")]
     if only_stoch:
         return [], [], stoch
     screener = [r for r in rules
-                if r.get("rule_type") not in ("setup", "stoch")]
+                if r.get("rule_type") not in ("setup", "stoch", "technical")]
     setup = [r for r in rules if r.get("rule_type") == "setup"]
     return screener, setup, ([] if skip_stoch else stoch)
 
@@ -1710,12 +1829,16 @@ def run(only_stoch: bool = False) -> int:
             # level after the previous alert's bar (stoch_rule_state).
             fired_state = _stoch_state_for_rule(rule["id"])
             ev = de = nd = er = mt = 0
+            is_tech = rule.get("rule_type") == "technical"
             for ticker in scope:
                 try:
-                    status, sig = _evaluate_stoch_rule(
+                    evaluator = (_evaluate_technical_rule if is_tech
+                                 else _evaluate_stoch_rule)
+                    status, sig = evaluator(
                         ticker, p, now, last_bar=fired_state.get(ticker))
                 except Exception as exc:
-                    log.warning("stoch evaluate failed for %s (rule %s): %s",
+                    log.warning("%s evaluate failed for %s (rule %s): %s",
+                                "technical" if is_tech else "stoch",
                                 ticker, rule["id"], exc)
                     er += 1
                     continue
@@ -1730,7 +1853,8 @@ def run(only_stoch: bool = False) -> int:
                     mt += 1
                     triggered_stoch.append((rule, sig))
             log.info(
-                'rule %d "%s" (stoch %s%s): scope=%d evaluated=%d '
+                'rule %d "%s" (' + ("technical" if is_tech else "stoch")
+                + ' %s%s): scope=%d evaluated=%d '
                 'matched=%d deduped=%d no_data=%d errors=%d',
                 rule["id"], rule["name"], rule["scope_type"],
                 (":" + rule["scope_value"]) if rule["scope_value"] else "",
@@ -1806,15 +1930,21 @@ def run(only_stoch: bool = False) -> int:
             )
             sent += 1
     for rule, sig in triggered_stoch:
-        if send_telegram(_format_stoch_alert(rule["name"], sig, now)):
-            record_sent(rule["id"], sig["ticker"], today,
-                        f"slow_k={sig['slow_k']}")
+        is_tech = rule.get("rule_type") == "technical"
+        body = (_format_technical_alert(rule["name"], sig, now) if is_tech
+                else _format_stoch_alert(rule["name"], sig, now))
+        if send_telegram(body):
+            detail = ("; ".join(sig.get("details") or [])[:200] if is_tech
+                      else f"slow_k={sig['slow_k']}")
+            record_sent(rule["id"], sig["ticker"], today, detail)
             _record_stoch_state(rule["id"], sig["ticker"],
                                 sig.get("bar_time"))
             outcomes.record_stock_outcome(
                 sig["ticker"], today, sig.get("price"),
-                {"kind": "alert_stoch", "id": rule["id"],
-                 "label": rule.get("name") or "Stoch alert"},
+                {"kind": "alert_technical" if is_tech else "alert_stoch",
+                 "id": rule["id"],
+                 "label": rule.get("name")
+                          or ("Technical alert" if is_tech else "Stoch alert")},
             )
             sent += 1
     total = (len(triggered_screener) + len(triggered_setup)
