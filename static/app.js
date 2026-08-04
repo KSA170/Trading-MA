@@ -153,6 +153,7 @@ const els = {
   cmSectionScreener: $('#cm-criteria-screener'),
   cmSectionSetup: $('#cm-criteria-setup'),
   cmSectionStoch: $('#cm-criteria-stoch'),
+  cmSectionTechnical: $('#cm-criteria-technical'),
   diagnoseTicker: $('#diagnose-ticker'),
   diagnoseBtn: $('#diagnose-btn'),
   diagnoseClearBtn: $('#diagnose-clear-btn'),
@@ -2202,16 +2203,20 @@ function renderRules(data) {
       ? `Last scan: ${formatTriggerTime(r.last_run_at)} · ${scanParts.join(' · ')}`
       : 'Not scanned yet (the alert engine hasn’t run since this rule was created).';
     const isStoch = r.rule_type === 'stoch';
+    const isTech = r.rule_type === 'technical';
     const row = document.createElement('div');
     row.className = 'rule-row'
       + (r.enabled ? '' : ' rule-off')
       + (isSetup ? ' rule-setup' : '')
-      + (isStoch ? ' rule-stoch' : '');
+      + (isStoch ? ' rule-stoch' : '')
+      + (isTech ? ' rule-technical' : '');
     row.dataset.id = r.id;
     const typeChip = isSetup
       ? '<span class="rule-type-chip rule-type-setup">Setup</span>'
       : isStoch
       ? '<span class="rule-type-chip rule-type-stoch">Stoch</span>'
+      : isTech
+      ? '<span class="rule-type-chip rule-type-technical">Technical</span>'
       : '<span class="rule-type-chip rule-type-screener">Screener</span>';
     row.innerHTML = `
       <div class="rule-head">
@@ -2310,6 +2315,39 @@ function streakModeLabel(m) {
 }
 function summarizeRuleParams(p, ruleType) {
   const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
+  if (ruleType === 'technical') {
+    const bear = p.direction === 'bearish';
+    const rel = bear ? '≤' : '≥';
+    const side = bear ? 'below' : 'above';
+    const out = [`${p.interval || '1d'} bars · ${bear ? 'bearish' : 'bullish'}`];
+    if (p.apply_rsi_level) {
+      out.push(`RSI(${n(p.rsi_length)}) ${rel} ${n(p.rsi_threshold)}`
+               + ` (${p.rsi_mode || 'cross'})`);
+    }
+    if (p.apply_rsi_vs_sma) {
+      out.push(`RSI ${side} SMA(${n(p.rsi_sma_length)})`
+               + (Number(p.rsi_sma_min_gap_pct) > 0 ? ` by ${n(p.rsi_sma_min_gap_pct)}%` : '')
+               + ` (${p.rsi_sma_mode || 'cross'})`);
+    }
+    if (p.apply_macd) {
+      out.push(`MACD(${n(p.macd_fast)},${n(p.macd_slow)},${n(p.macd_signal)}) ${side} signal`
+               + (Number(p.macd_min_gap_pct) > 0 ? ` by ${n(p.macd_min_gap_pct)}%` : '')
+               + ` (${p.macd_mode || 'cross'})`
+               + (p.macd_hist_rising ? ' + hist expanding' : ''));
+    }
+    if (p.apply_streak) {
+      const modeTxt = { close: bear ? 'lower-close' : 'higher-close',
+                        high: bear ? 'lower-low' : 'higher-high',
+                        green: bear ? 'red' : 'green',
+                        close_green: bear ? 'lower-close + red' : 'higher-close + green',
+                      }[p.streak_mode] || p.streak_mode;
+      out.push(`${n(p.streak_bars)}-bar ${modeTxt} streak`);
+    }
+    if (p.apply_avg_volume) {
+      out.push(`avg vol ≥ ${n(p.avg_volume_min)} (${n(p.avg_volume_lookback)} bars)`);
+    }
+    return out;
+  }
   if (ruleType === 'stoch') {
     const trigTxt = {
       curl_up: 'Slow %K curls up from oversold (calls)',
@@ -2532,6 +2570,7 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
   if (els.cmSectionScreener) els.cmSectionScreener.hidden = ruleType !== 'screener';
   if (els.cmSectionSetup) els.cmSectionSetup.hidden = ruleType !== 'setup';
   if (els.cmSectionStoch) els.cmSectionStoch.hidden = ruleType !== 'stoch';
+  if (els.cmSectionTechnical) els.cmSectionTechnical.hidden = ruleType !== 'technical';
 
   // Pre-fill criteria. CREATE seeds from the relevant live form (main
   // filter form for screener, Setups toolbar for setup, defaults for
@@ -2541,6 +2580,8 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
     applySetupParamsToModal(prefill || readSetupToolbarAsParams());
   } else if (ruleType === 'stoch') {
     applyStochParamsToModal(prefill || {});
+  } else if (ruleType === 'technical') {
+    applyTechParamsToModal(prefill || {});
   } else {
     applyParamsToModal(prefill || readMainFormAsParams());
   }
@@ -2555,13 +2596,16 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
 
   if (mode === 'create') {
     const ruleLabel = ruleType === 'setup' ? 'setup'
-      : ruleType === 'stoch' ? 'stochastic' : 'screener';
+      : ruleType === 'stoch' ? 'stochastic'
+      : ruleType === 'technical' ? 'technical' : 'screener';
     if (els.cmTitle) els.cmTitle.textContent = `Create ${ruleLabel} alert rule`;
     if (els.cmSubtitle) {
       els.cmSubtitle.textContent = ruleType === 'setup'
         ? 'Setup rules rank the latest EOD snapshot. Pick a scope and set min-score + price / dollar-volume thresholds.'
         : ruleType === 'stoch'
         ? 'Stochastic rules watch intraday Slow %K for the oversold bounce (calls) or overbought rollover (puts). Give the rule its own ticker list below — each ticker costs one Yahoo fetch per check, so keep it curated.'
+        : ruleType === 'technical'
+        ? 'Technical rules AND together RSI, MACD and price-streak conditions on any interval. Give the rule its own ticker list below — each ticker costs one Yahoo fetch per check, so keep it curated.'
         : 'Pick a scope and adjust filter criteria. The realtime engine checks these every ~15 min in market hours.';
     }
     if (els.cmMeta) els.cmMeta.hidden = false;
@@ -2737,6 +2781,72 @@ const stochModalInputs = {
   opt_dte_max: $('#cm_stoch_opt_dte_max'),
 };
 
+// Technical-rule criteria fields. Keys match technicals.DEFAULT_PARAMS.
+const techModalInputs = {
+  interval: $('#cm_tech_interval'),
+  direction: $('#cm_tech_direction'),
+  rsi_length: $('#cm_tech_rsi_length'),
+  rsi_threshold: $('#cm_tech_rsi_threshold'),
+  rsi_mode: $('#cm_tech_rsi_mode'),
+  rsi_sma_length: $('#cm_tech_rsi_sma_length'),
+  rsi_sma_min_gap_pct: $('#cm_tech_rsi_sma_gap'),
+  rsi_sma_mode: $('#cm_tech_rsi_sma_mode'),
+  macd_fast: $('#cm_tech_macd_fast'),
+  macd_slow: $('#cm_tech_macd_slow'),
+  macd_signal: $('#cm_tech_macd_signal'),
+  macd_min_gap_pct: $('#cm_tech_macd_gap'),
+  macd_mode: $('#cm_tech_macd_mode'),
+  streak_bars: $('#cm_tech_streak_bars'),
+  streak_mode: $('#cm_tech_streak_mode'),
+  avg_volume_lookback: $('#cm_tech_vol_lookback'),
+  avg_volume_min: $('#cm_tech_vol_min'),
+};
+const techModalToggles = {
+  apply_rsi_level: $('#cm_tech_apply_rsi'),
+  apply_rsi_vs_sma: $('#cm_tech_apply_rsi_sma'),
+  apply_macd: $('#cm_tech_apply_macd'),
+  macd_hist_rising: $('#cm_tech_macd_hist'),
+  apply_streak: $('#cm_tech_apply_streak'),
+  apply_avg_volume: $('#cm_tech_apply_vol'),
+};
+// Numeric keys — everything else in techModalInputs is a select.
+const _TECH_NUM_KEYS = new Set([
+  'rsi_length', 'rsi_threshold', 'rsi_sma_length', 'rsi_sma_min_gap_pct',
+  'macd_fast', 'macd_slow', 'macd_signal', 'macd_min_gap_pct',
+  'streak_bars', 'avg_volume_lookback', 'avg_volume_min',
+]);
+
+function applyTechParamsToModal(p) {
+  p = p || {};
+  for (const [k, el] of Object.entries(techModalInputs)) {
+    if (el && p[k] !== undefined && p[k] !== null) el.value = String(p[k]);
+  }
+  for (const [k, el] of Object.entries(techModalToggles)) {
+    if (!el) continue;
+    if (p[k] !== undefined && p[k] !== null) {
+      const v = p[k];
+      el.checked = !(v === false || v === 0 || v === '0' || v === 'false');
+    }
+  }
+}
+
+function buildTechParamsFromModal() {
+  const out = {};
+  for (const [k, el] of Object.entries(techModalInputs)) {
+    if (!el) continue;
+    if (_TECH_NUM_KEYS.has(k)) {
+      const v = parseFloat(el.value);
+      out[k] = Number.isFinite(v) ? v : 0;
+    } else {
+      out[k] = el.value;
+    }
+  }
+  for (const [k, el] of Object.entries(techModalToggles)) {
+    if (el) out[k] = !!el.checked;
+  }
+  return out;
+}
+
 function applyStochParamsToModal(p) {
   p = p || {};
   for (const [k, el] of Object.entries(stochModalInputs)) {
@@ -2819,12 +2929,25 @@ function syncModalDisabled() {
     apply_macd_vs_signal: 'cm_macd_vs_signal',
     apply_macd_hist_rising: 'cm_macd_hist_rising',
     apply_turnover: 'cm_turnover',
+    // Technical-rule condition blocks (own toggle map — see below).
     apply_market_cap: 'cm_market_cap',
     apply_pct_change: 'cm_pct_change',
     apply_sma_revival: 'cm_sma_revival',
   };
   for (const [toggleKey, groupKey] of Object.entries(map)) {
     const t = modalToggles[toggleKey];
+    const g = els.cmModal && els.cmModal.querySelector(`[data-group="${groupKey}"]`);
+    if (t && g) g.classList.toggle('disabled', !t.checked);
+  }
+  const techMap = {
+    apply_rsi_level: 'cm_tech_rsi',
+    apply_rsi_vs_sma: 'cm_tech_rsisma',
+    apply_macd: 'cm_tech_macd',
+    apply_streak: 'cm_tech_streak',
+    apply_avg_volume: 'cm_tech_vol',
+  };
+  for (const [toggleKey, groupKey] of Object.entries(techMap)) {
+    const t = techModalToggles[toggleKey];
     const g = els.cmModal && els.cmModal.querySelector(`[data-group="${groupKey}"]`);
     if (t && g) g.classList.toggle('disabled', !t.checked);
   }
@@ -2878,6 +3001,13 @@ async function submitCriteriaModal() {
           name, scope_type: scopeType, scope_value: scopeValue,
           rule_type: 'stoch',
           stoch_params: buildStochParamsFromModal(),
+        };
+      } else if (ruleType === 'technical') {
+        url = '/api/alerts/rules';
+        body = {
+          name, scope_type: scopeType, scope_value: scopeValue,
+          rule_type: 'technical',
+          technical_params: buildTechParamsFromModal(),
         };
       } else {
         url = '/api/alerts/rules?' + buildModalQuery();
@@ -2957,13 +3087,16 @@ async function submitCriteriaModal() {
       return;
     }
 
-    const url = (ruleType === 'setup' || ruleType === 'stoch')
+    const url = (ruleType === 'setup' || ruleType === 'stoch'
+                 || ruleType === 'technical')
       ? '/api/alerts/rules/update-criteria'
       : '/api/alerts/rules/update-criteria?' + buildModalQuery();
     const reqBody = ruleType === 'setup'
       ? { id: ruleId, setup_params: buildSetupParamsFromModal() }
       : ruleType === 'stoch'
       ? { id: ruleId, stoch_params: buildStochParamsFromModal() }
+      : ruleType === 'technical'
+      ? { id: ruleId, technical_params: buildTechParamsFromModal() }
       : { id: ruleId };
     const res = await fetch(url, {
       method: 'POST',
@@ -3009,6 +3142,7 @@ if (els.cmScopeType) {
   els.cmScopeType.addEventListener('change', populateModalScopeValues);
 }
 Object.values(modalToggles).forEach((t) => t && t.addEventListener('change', syncModalDisabled));
+Object.values(techModalToggles).forEach((t) => t && t.addEventListener('change', syncModalDisabled));
 
 
 if (els.ruleScopeType) {
@@ -4033,11 +4167,15 @@ function syncRuleTypeUI() {
       ? 'Create setup rule…'
       : rt === 'stoch'
       ? 'Create stochastic rule…'
+      : rt === 'technical'
+      ? 'Create technical rule…'
       : 'Create screener rule…';
     els.ruleCreateBtn.title = rt === 'setup'
       ? 'Open the dialog to pick scope and setup score / price / volume thresholds'
       : rt === 'stoch'
       ? 'Open the dialog to pick scope, bar interval, and stochastic thresholds'
+      : rt === 'technical'
+      ? 'Open the dialog to pick scope, interval, and RSI / MACD / streak conditions'
       : 'Open the dialog to pick scope and screener filter criteria';
   }
   // Inline name + scope inputs are now redundant — the modal collects

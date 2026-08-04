@@ -620,6 +620,7 @@
             <option value="screener">Screener filters</option>
             <option value="setup">Setup score</option>
             <option value="stoch">Stochastic swing</option>
+            <option value="technical">Technical (RSI / MACD / streak)</option>
           </select>
           <input id="rule-name" type="text" placeholder="Rule name — e.g. Biotech momentum" autocomplete="off" />
           <select id="rule-scope-type" title="What set of stocks this rule scans">
@@ -853,6 +854,93 @@
               <label>DTE max</label>
               <input id="cm_stoch_opt_dte_max" type="number" min="1" max="90" value="6" />
             </div>
+          </div>
+        </div>
+
+        <div id="cm-criteria-technical" data-criteria-section="technical" hidden>
+          <h3 class="criteria-modal-section-h">Technical criteria</h3>
+          <p class="muted criteria-modal-help">Every enabled condition must hold on the same bar (AND). Each condition can fire on the <b>state</b> (any bar it's true) or the <b>cross</b> (only the bar it first becomes true). Bearish direction mirrors every comparison — RSI below, MACD below signal, lower-low / red streaks. Daily, weekly and monthly rules evaluate the last <b>closed</b> bar so a partial session can't fire a signal that's false by the close; intraday rules use the latest bar. One alert per ticker per bar period.</p>
+          <div class="criteria-setup-grid">
+            <div class="filter">
+              <label>Interval</label>
+              <select id="cm_tech_interval">
+                <option value="1m">1 minute</option>
+                <option value="5m">5 minutes</option>
+                <option value="15m">15 minutes</option>
+                <option value="30m">30 minutes</option>
+                <option value="1h">1 hour</option>
+                <option value="1d" selected>1 day</option>
+                <option value="1wk">1 week</option>
+                <option value="1mo">1 month</option>
+              </select>
+            </div>
+            <div class="filter" title="Bullish looks for strength (RSI above, MACD above signal, rising streaks). Bearish mirrors every comparison.">
+              <label>Direction</label>
+              <select id="cm_tech_direction">
+                <option value="bullish" selected>Bullish</option>
+                <option value="bearish">Bearish</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="filter-group" data-group="cm_tech_rsi">
+            <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_rsi" checked /> RSI level</label>
+            <div class="filter"><label>length</label><input id="cm_tech_rsi_length" type="number" min="2" max="50" value="14" /></div>
+            <div class="filter"><label>threshold</label><input id="cm_tech_rsi_threshold" type="number" min="0" max="100" step="1" value="60" /></div>
+            <div class="filter"><label>fires on</label>
+              <select id="cm_tech_rsi_mode">
+                <option value="cross" selected>cross</option>
+                <option value="state">state</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="filter-group" data-group="cm_tech_rsisma" title="RSI relative to its own moving average — the momentum-of-momentum check.">
+            <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_rsi_sma" /> RSI vs its SMA</label>
+            <div class="filter"><label>SMA length</label><input id="cm_tech_rsi_sma_length" type="number" min="2" max="50" value="9" /></div>
+            <div class="filter" title="Require RSI to be at least this far above (bullish) or below (bearish) its SMA, as a percentage. 0 = any gap."><label>min gap (%)</label><input id="cm_tech_rsi_sma_gap" type="number" min="0" max="100" step="0.5" value="0" /></div>
+            <div class="filter"><label>fires on</label>
+              <select id="cm_tech_rsi_sma_mode">
+                <option value="cross" selected>cross</option>
+                <option value="state">state</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="filter-group" data-group="cm_tech_macd">
+            <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_macd" /> MACD vs signal line</label>
+            <div class="filter"><label>fast</label><input id="cm_tech_macd_fast" type="number" min="2" max="50" value="12" /></div>
+            <div class="filter"><label>slow</label><input id="cm_tech_macd_slow" type="number" min="3" max="100" value="26" /></div>
+            <div class="filter"><label>signal</label><input id="cm_tech_macd_signal" type="number" min="2" max="50" value="9" /></div>
+            <div class="filter" title="Require the MACD line to be at least this far above (bullish) or below (bearish) the signal line, as a percentage of the signal. 0 = any gap."><label>min gap (%)</label><input id="cm_tech_macd_gap" type="number" min="0" max="100" step="0.5" value="0" /></div>
+            <div class="filter"><label>fires on</label>
+              <select id="cm_tech_macd_mode">
+                <option value="cross" selected>cross</option>
+                <option value="state">state</option>
+              </select>
+            </div>
+            <div class="filter inline-toggle" title="Also require the histogram to be expanding in the rule's direction (rising for bullish, falling for bearish) — momentum building, not fading.">
+              <label class="inline-checkbox"><input type="checkbox" id="cm_tech_macd_hist" /> histogram expanding</label>
+            </div>
+          </div>
+
+          <div class="filter-group" data-group="cm_tech_streak" title="Consecutive-bar price pattern, same modes as the screener's streak filter.">
+            <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_streak" /> Price streak</label>
+            <div class="filter"><label>bars</label><input id="cm_tech_streak_bars" type="number" min="1" max="20" value="3" /></div>
+            <div class="filter"><label>mode</label>
+              <select id="cm_tech_streak_mode">
+                <option value="close" selected>higher / lower close</option>
+                <option value="high">higher high / lower low</option>
+                <option value="green">green / red candles</option>
+                <option value="close_green">close + candle colour</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="filter-group" data-group="cm_tech_vol" title="Liquidity gate so thin names don't fire signals you can't trade. Averaged over the rule's own interval bars.">
+            <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_vol" checked /> Avg volume floor</label>
+            <div class="filter"><label>lookback (bars)</label><input id="cm_tech_vol_lookback" type="number" min="1" max="100" value="20" /></div>
+            <div class="filter"><label>min avg volume</label><input id="cm_tech_vol_min" type="number" min="0" step="50000" value="500000" /></div>
           </div>
         </div>
 
