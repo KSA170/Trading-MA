@@ -234,8 +234,56 @@ def _bars_from_snapshot(ticker: str) -> tuple[list | None, str | None]:
     return None, None
 
 
+def _bar_label_fmt(interval: str) -> str:
+    if interval in ("1m", "5m", "15m", "30m", "1h"):
+        return "%Y-%m-%d %H:%M"
+    if interval == "1mo":
+        return "%Y-%m"
+    return "%Y-%m-%d"
+
+
+def _df_to_bars(df, interval: str) -> list[dict]:
+    """OHLCV frame -> the bar-dict list the rest of the app consumes.
+
+    Open and Volume are included: the technical rules' green/red candle
+    streaks read 'o' and the liquidity gate reads 'v'. (They were absent
+    here originally, which silently made every candle-colour streak and
+    every avg-volume gate fail on Yahoo-sourced bars.)
+
+    Intraday timestamps are normalized to America/New_York so a bar
+    label means the same thing no matter which fetch path produced it —
+    stoch_rule_state dedupe compares these labels as strings."""
+    fmt = _bar_label_fmt(interval)
+    tz_convert = interval in ("1m", "5m", "15m", "30m", "1h")
+    out: list[dict] = []
+    for idx, r in df.iterrows():
+        try:
+            o = float(r["Open"]); h = float(r["High"])
+            l = float(r["Low"]); c = float(r["Close"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        # NaN row (halted / not-yet-traded bar in a batch frame)
+        if o != o or h != h or l != l or c != c:
+            continue
+        try:
+            v = float(r["Volume"])
+            if v != v:
+                v = None
+        except (TypeError, ValueError, KeyError):
+            v = None
+        ts = idx
+        if tz_convert and getattr(ts, "tzinfo", None) is not None:
+            try:
+                ts = ts.tz_convert("America/New_York")
+            except Exception:
+                pass
+        out.append({"d": ts.strftime(fmt), "o": o, "h": h,
+                    "l": l, "c": c, "v": v})
+    return out
+
+
 def _bars_from_yahoo(ticker: str, interval: str) -> tuple[list | None, str | None]:
-    """Fetch OHLC bars from Yahoo for any supported interval."""
+    """Fetch OHLC bars from Yahoo for a single ticker."""
     period = INTERVALS[interval][0]
     try:
         import yfinance as yf
@@ -248,22 +296,78 @@ def _bars_from_yahoo(ticker: str, interval: str) -> tuple[list | None, str | Non
         return None, None
     if df is None or df.empty:
         return None, None
-    if interval in ("1m", "5m", "15m", "30m", "1h"):
-        dfmt = "%Y-%m-%d %H:%M"
-    elif interval == "1mo":
-        dfmt = "%Y-%m"
-    else:
-        dfmt = "%Y-%m-%d"
-    bars = []
-    for idx, r in df.iterrows():
-        try:
-            h, l, c = float(r["High"]), float(r["Low"]), float(r["Close"])
-        except (TypeError, ValueError, KeyError):
-            continue
-        if h != h or l != l or c != c:   # NaN row (halted / partial bar)
-            continue
-        bars.append({"d": idx.strftime(dfmt), "h": h, "l": l, "c": c})
+    bars = _df_to_bars(df, interval)
     return (bars, "live (Yahoo)") if bars else (None, None)
+
+
+def prefetch_bars(tickers, interval: str, chunk: int = 50) -> int:
+    """Warm the cache for many tickers with ONE Yahoo request per chunk.
+
+    Per-ticker fetching does not survive a 5-minute alert cadence: with
+    several rules × a dozen-plus tickers each, the lane was issuing ~50
+    requests every run and Yahoo answered with empty frames (logged as
+    no_data on every ticker, so no rule could ever evaluate). Batched
+    downloads collapse that to 1-2 requests per interval per run.
+
+    Only fills cache entries that are missing or stale, and never
+    overwrites a good entry with an empty result, so a partial batch
+    failure degrades to the per-ticker path rather than poisoning the
+    cache. Returns the number of tickers warmed."""
+    want = [t for t in dict.fromkeys(tickers) if t]
+    if not want or interval not in INTERVALS:
+        return 0
+    period, _, ttl = INTERVALS[interval]
+    now = time.time()
+    with _cache_lock:
+        todo = [t for t in want
+                if not (_cache.get((t, interval, False))
+                        and (now - _cache[(t, interval, False)][0]) < ttl)]
+    if not todo:
+        return 0
+
+    try:
+        import yfinance as yf
+        import pandas as pd
+    except Exception as exc:
+        log.warning("prefetch_bars: import failed: %s", exc)
+        return 0
+
+    warmed = 0
+    for i in range(0, len(todo), chunk):
+        batch = todo[i:i + chunk]
+        try:
+            df = yf.download(tickers=" ".join(batch), period=period,
+                             interval=interval, auto_adjust=False,
+                             progress=False, threads=False,
+                             group_by="ticker", prepost=False)
+        except Exception as exc:
+            log.warning("prefetch_bars %s batch (%d syms) failed: %s",
+                        interval, len(batch), exc)
+            continue
+        if df is None or df.empty:
+            log.info("prefetch_bars %s: empty frame for %d syms",
+                     interval, len(batch))
+            continue
+        multi = isinstance(df.columns, pd.MultiIndex)
+        stamp = time.time()
+        for sym in batch:
+            try:
+                sub = df[sym] if multi else df
+            except (KeyError, ValueError):
+                continue
+            if sub is None or sub.empty:
+                continue
+            bars = _df_to_bars(sub, interval)
+            if not bars:
+                continue
+            with _cache_lock:
+                _cache[(sym, interval, False)] = (stamp, bars, "live (Yahoo)")
+            warmed += 1
+    if warmed:
+        log.info("prefetch_bars: warmed %d/%d %s tickers in %d request(s)",
+                 warmed, len(todo), interval,
+                 (len(todo) + chunk - 1) // chunk)
+    return warmed
 
 
 def fetch_bars(ticker: str, interval: str,
