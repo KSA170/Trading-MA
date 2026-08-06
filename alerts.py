@@ -1821,6 +1821,29 @@ def run(only_stoch: bool = False) -> int:
 
     # --- stoch-type rules (Yahoo intraday via calculators) ----------------
     if stoch_rules:
+        # Warm the bar cache with ONE batched Yahoo request per interval
+        # before evaluating anything. Per-ticker fetching does not
+        # survive the 5-minute cadence once several rules each carry a
+        # dozen-plus tickers: Yahoo throttles and every ticker comes
+        # back no_data, so no rule can evaluate. Tickers shared across
+        # rules on the same interval are fetched once.
+        try:
+            import calculators as _calc
+            by_interval: dict[str, set] = {}
+            for rule in stoch_rules:
+                iv = rule["params"].get("interval", "5m")
+                scope = tickers_for_scope(rule["scope_type"],
+                                          rule["scope_value"]) or []
+                by_interval.setdefault(iv, set()).update(scope)
+            for iv, tks in by_interval.items():
+                # '1d' is served from the daily_snapshot table (free, no
+                # Yahoo request) — batching it would ADD load, not save it.
+                if iv == "1d":
+                    continue
+                _calc.prefetch_bars(sorted(tks), iv)
+        except Exception as exc:
+            log.warning("prefetch failed (falling back to per-ticker): %s", exc)
+
         for rule in stoch_rules:
             p = rule["params"]
             scope = tickers_for_scope(rule["scope_type"], rule["scope_value"]) or []
