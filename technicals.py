@@ -375,12 +375,21 @@ DEFAULT_PARAMS: dict = {
     "streak_bars": 3,
     "streak_mode": "close",          # high | close | green | close_green
 
-    "apply_avg_volume": True,
+    # Absolute liquidity floor, OFF by default. It is measured in
+    # PER-BAR volume on the rule's own interval, which makes a single
+    # default number a trap: 500k is a sane daily floor and roughly 20x
+    # too high for a 5m bar, so a daily-scaled floor silently muted
+    # every intraday rule it was left on for. Turn it on only to screen
+    # out thin names on a wide scope; for confirmation, the relative
+    # gate below is the better instrument and needs no per-interval
+    # tuning at all.
+    "apply_avg_volume": False,
     "avg_volume_lookback": 20,
     "avg_volume_min": 500000.0,
 
     # Participation confirmation, distinct from the liquidity floor
-    # above: this bar's volume against the bars right before it.
+    # above: this bar's volume against the bars right before it. Being
+    # a ratio, it means the same thing on every interval.
     "apply_vol_expansion": False,
     "vol_expansion_lookback": 5,
     "vol_expansion_min_ratio": 1.5,

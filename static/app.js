@@ -2588,9 +2588,13 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
   if (ruleType === 'setup') {
     applySetupParamsToModal(prefill || readSetupToolbarAsParams());
   } else if (ruleType === 'stoch') {
-    applyStochParamsToModal(prefill || {});
+    applyStochParamsToModal(prefill || _stochModalDefaults);
   } else if (ruleType === 'technical') {
-    applyTechParamsToModal(prefill || {});
+    // Seed from the pristine defaults, not `{}`: an empty prefill leaves
+    // whatever the LAST dialog put in the DOM, so creating a rule right
+    // after editing one silently inherited that rule's conditions — and
+    // an "off by default" gate would arrive pre-enabled.
+    applyTechParamsToModal(prefill || _techModalDefaults);
   } else {
     applyParamsToModal(prefill || readMainFormAsParams());
   }
@@ -2830,6 +2834,19 @@ const _TECH_NUM_KEYS = new Set([
   'streak_bars', 'avg_volume_lookback', 'avg_volume_min',
   'vol_expansion_lookback', 'vol_expansion_min_ratio',
 ]);
+
+// Pristine dialog state, captured once before any user interaction, so a
+// CREATE can reset the form instead of inheriting the last rule's values.
+// Snapshotting the DOM rather than duplicating a defaults table keeps this
+// automatically in step with the markup (which mirrors the Python defaults).
+function _snapshotModalState(inputs, toggles) {
+  const out = {};
+  for (const [k, el] of Object.entries(inputs || {})) if (el) out[k] = el.value;
+  for (const [k, el] of Object.entries(toggles || {})) if (el) out[k] = !!el.checked;
+  return out;
+}
+const _techModalDefaults = _snapshotModalState(techModalInputs, techModalToggles);
+const _stochModalDefaults = _snapshotModalState(stochModalInputs, null);
 
 function applyTechParamsToModal(p) {
   p = p || {};
