@@ -788,7 +788,7 @@
 
         <div id="cm-criteria-stoch" data-criteria-section="stoch" hidden>
           <h3 class="criteria-modal-section-h">Stochastic criteria</h3>
-          <p class="muted criteria-modal-help">Fires when a ticker's Slow %K puts in the chosen swing signature on the selected bar interval — oversold bounce for the call side, overbought rollover for the put side (data fetched live from Yahoo at evaluation time). The alert includes the reverse-solver's drift target and boundary levels for that side. One alert per ticker per day per rule; triggers can lag the bar by the alert cron's cadence.</p>
+          <p class="muted criteria-modal-help">Fires when a ticker's Slow %K puts in the chosen swing signature on the selected bar interval — oversold bounce for the call side, overbought rollover for the put side (data fetched live from Yahoo at evaluation time). The alert includes the reverse-solver's drift target and boundary levels for that side, plus the <b>prior session's high / close / low</b>, the overnight gap and whether it's still unfilled — the structural levels price actually reacts to. One alert per ticker per day per rule; triggers can lag the bar by the alert cron's cadence.</p>
           <div class="criteria-setup-grid">
             <div class="filter">
               <label>Interval</label>
@@ -853,6 +853,14 @@
             <div class="filter" title="Upper bound of the expiry window for the recommended contract.">
               <label>DTE max</label>
               <input id="cm_stoch_opt_dte_max" type="number" min="1" max="90" value="6" />
+            </div>
+            <div class="filter" title="Participation confirmation. Require the trigger bar's volume to be at least this multiple of the bars immediately before it. 0 = off — the ratio is still measured and reported in the alert, it just won't veto. Relative rather than absolute on purpose: intraday index volume is dominated by the opening bar, and both validated trades entered BELOW their 20-bar average while running 1.1x and 2.1x their immediate predecessors.">
+              <label>Vol expansion (×)</label>
+              <input id="cm_stoch_volexp_ratio" type="number" min="0" max="100" step="0.25" value="0" />
+            </div>
+            <div class="filter" title="How many bars immediately before the trigger bar form the volume baseline.">
+              <label>Vol baseline (bars)</label>
+              <input id="cm_stoch_volexp_lookback" type="number" min="1" max="100" value="5" />
             </div>
           </div>
         </div>
@@ -941,6 +949,12 @@
             <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_vol" checked /> Avg volume floor</label>
             <div class="filter"><label>lookback (bars)</label><input id="cm_tech_vol_lookback" type="number" min="1" max="100" value="20" /></div>
             <div class="filter"><label>min avg volume</label><input id="cm_tech_vol_min" type="number" min="0" step="50000" value="500000" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_tech_volexp" title="Participation confirmation — require the signal bar's volume to be a multiple of the bars immediately before it. Relative, not absolute: on an intraday index tape the opening bar dominates the session, so a 20-bar average says little about whether THIS bar is where the money showed up. 1.5x is a reasonable start; 2x is strict.">
+            <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_volexp" /> Volume expansion</label>
+            <div class="filter" title="How many bars immediately before the signal bar form the baseline average."><label>baseline (bars)</label><input id="cm_tech_volexp_lookback" type="number" min="1" max="100" value="5" /></div>
+            <div class="filter" title="Signal-bar volume ÷ baseline average must be at least this."><label>min ratio (×)</label><input id="cm_tech_volexp_ratio" type="number" min="0" max="100" step="0.1" value="1.5" /></div>
           </div>
         </div>
 

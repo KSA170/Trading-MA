@@ -2346,6 +2346,10 @@ function summarizeRuleParams(p, ruleType) {
     if (p.apply_avg_volume) {
       out.push(`avg vol ≥ ${n(p.avg_volume_min)} (${n(p.avg_volume_lookback)} bars)`);
     }
+    if (p.apply_vol_expansion) {
+      out.push(`vol ≥ ${n(p.vol_expansion_min_ratio)}× prior`
+               + ` ${n(p.vol_expansion_lookback)} bars`);
+    }
     return out;
   }
   if (ruleType === 'stoch') {
@@ -2356,7 +2360,7 @@ function summarizeRuleParams(p, ruleType) {
       entered_overbought: 'Slow %K enters overbought',
     }[p.trigger] || 'Slow %K curls up from oversold (calls)';
     const isCurl = p.trigger !== 'entered_oversold' && p.trigger !== 'entered_overbought';
-    return [
+    const out = [
       `${p.interval || '5m'} bars · ${trigTxt}`,
       `OS ≤ ${n(p.oversold)} · OB ≥ ${n(p.overbought)}`,
       `%K ${n(p.k_len)} · smooth ${n(p.smooth)}`
@@ -2365,6 +2369,11 @@ function summarizeRuleParams(p, ruleType) {
       `Δ ${n(p.opt_delta)} × ${n(p.opt_contracts)} contract${Number(p.opt_contracts) > 1 ? 's' : ''}`
         + ` · ${n(p.opt_dte_min)}–${n(p.opt_dte_max)} DTE`,
     ];
+    if (Number(p.vol_expansion_min_ratio) > 0) {
+      out.push(`vol ≥ ${n(p.vol_expansion_min_ratio)}× prior`
+               + ` ${n(p.vol_expansion_lookback == null ? 5 : p.vol_expansion_lookback)} bars`);
+    }
+    return out;
   }
   if (ruleType === 'setup') {
     const out = [`Setup score ≥ ${n(p.score_min)}`];
@@ -2779,6 +2788,8 @@ const stochModalInputs = {
   opt_contracts: $('#cm_stoch_opt_contracts'),
   opt_dte_min: $('#cm_stoch_opt_dte_min'),
   opt_dte_max: $('#cm_stoch_opt_dte_max'),
+  vol_expansion_min_ratio: $('#cm_stoch_volexp_ratio'),
+  vol_expansion_lookback: $('#cm_stoch_volexp_lookback'),
 };
 
 // Technical-rule criteria fields. Keys match technicals.DEFAULT_PARAMS.
@@ -2800,6 +2811,8 @@ const techModalInputs = {
   streak_mode: $('#cm_tech_streak_mode'),
   avg_volume_lookback: $('#cm_tech_vol_lookback'),
   avg_volume_min: $('#cm_tech_vol_min'),
+  vol_expansion_lookback: $('#cm_tech_volexp_lookback'),
+  vol_expansion_min_ratio: $('#cm_tech_volexp_ratio'),
 };
 const techModalToggles = {
   apply_rsi_level: $('#cm_tech_apply_rsi'),
@@ -2808,12 +2821,14 @@ const techModalToggles = {
   macd_hist_rising: $('#cm_tech_macd_hist'),
   apply_streak: $('#cm_tech_apply_streak'),
   apply_avg_volume: $('#cm_tech_apply_vol'),
+  apply_vol_expansion: $('#cm_tech_apply_volexp'),
 };
 // Numeric keys — everything else in techModalInputs is a select.
 const _TECH_NUM_KEYS = new Set([
   'rsi_length', 'rsi_threshold', 'rsi_sma_length', 'rsi_sma_min_gap_pct',
   'macd_fast', 'macd_slow', 'macd_signal', 'macd_min_gap_pct',
   'streak_bars', 'avg_volume_lookback', 'avg_volume_min',
+  'vol_expansion_lookback', 'vol_expansion_min_ratio',
 ]);
 
 function applyTechParamsToModal(p) {
@@ -2874,6 +2889,8 @@ function buildStochParamsFromModal() {
     opt_contracts: num(stochModalInputs.opt_contracts, 1),
     opt_dte_min: num(stochModalInputs.opt_dte_min, 2),
     opt_dte_max: num(stochModalInputs.opt_dte_max, 6),
+    vol_expansion_min_ratio: num(stochModalInputs.vol_expansion_min_ratio, 0),
+    vol_expansion_lookback: num(stochModalInputs.vol_expansion_lookback, 5),
   };
 }
 
@@ -2945,6 +2962,7 @@ function syncModalDisabled() {
     apply_macd: 'cm_tech_macd',
     apply_streak: 'cm_tech_streak',
     apply_avg_volume: 'cm_tech_vol',
+    apply_vol_expansion: 'cm_tech_volexp',
   };
   for (const [toggleKey, groupKey] of Object.entries(techMap)) {
     const t = techModalToggles[toggleKey];

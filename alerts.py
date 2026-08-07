@@ -180,6 +180,17 @@ STOCH_DEFAULT_PARAMS: dict = {
     # replaces the assumed one in the P&L estimate.
     "opt_dte_min": 2,
     "opt_dte_max": 6,
+    # Volume-expansion confirmation: require the trigger bar's volume to
+    # be at least this multiple of the mean of the `vol_expansion_lookback`
+    # bars immediately before it. 0 = off (the ratio is still measured and
+    # reported in the alert, it just doesn't gate).
+    #
+    # Relative, not absolute, on purpose — see technicals.volume_expansion.
+    # On the replayed 5m QQQ trades the entry bars ran 1.1x and 2.1x their
+    # immediate predecessors while sitting BELOW the 20-bar average, so an
+    # absolute floor would have vetoed both winners.
+    "vol_expansion_min_ratio": 0.0,
+    "vol_expansion_lookback": 5,
 }
 _STOCH_PARAM_KEYS = frozenset(STOCH_DEFAULT_PARAMS.keys())
 _STOCH_INTERVALS = ("1m", "5m", "15m", "30m", "1h", "1d")
@@ -364,10 +375,13 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _tnum("streak_bars", 3, 1, 20, int)
         _tnum("avg_volume_lookback", 20, 1, 100, int)
         _tnum("avg_volume_min", 500000.0, 0.0, 1e12)
+        _tnum("vol_expansion_lookback", 5, 1, 100, int)
+        _tnum("vol_expansion_min_ratio", 1.5, 0.0, 100.0)
         if params["macd_fast"] >= params["macd_slow"]:
             params["macd_fast"], params["macd_slow"] = 12, 26
         for key in ("apply_rsi_level", "apply_rsi_vs_sma", "apply_macd",
-                    "apply_streak", "apply_avg_volume", "macd_hist_rising"):
+                    "apply_streak", "apply_avg_volume", "apply_vol_expansion",
+                    "macd_hist_rising"):
             params[key] = bool(params.get(key))
         return params
     if rule_type == "stoch":
@@ -397,6 +411,8 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _num("opt_contracts", 1, 1, 1000, int)
         _num("opt_dte_min", 2, 0, 60, int)
         _num("opt_dte_max", 6, 1, 90, int)
+        _num("vol_expansion_min_ratio", 0.0, 0.0, 100.0)
+        _num("vol_expansion_lookback", 5, 1, 100, int)
         if params["opt_dte_min"] > params["opt_dte_max"]:
             params["opt_dte_min"], params["opt_dte_max"] = \
                 params["opt_dte_max"], params["opt_dte_min"]
@@ -1293,6 +1309,82 @@ def _stoch_rearmed(slow: list, bars: list[dict], last_bar: str,
     return (min(since) <= rearm_level) if bearish else (max(since) >= rearm_level)
 
 
+def _attach_levels(sig: dict, bars: list[dict], price: float,
+                   bearish: bool) -> None:
+    """Add prior-session structure to a signal, in place.
+
+    Best-effort by design: a ticker whose history doesn't cover two
+    sessions still alerts, just without the levels block."""
+    try:
+        import levels as levels_mod
+        lv = levels_mod.session_levels(bars)
+        if not lv:
+            return
+        sig["levels"] = lv
+        cands = levels_mod.target_candidates(lv, price, bearish)
+        if cands:
+            sig["level_targets"] = cands
+            sig["level_target"] = levels_mod.primary_target(cands)
+        gap_txt = levels_mod.describe_gap(lv)
+        if gap_txt:
+            sig["gap_text"] = gap_txt
+    except Exception as exc:                    # pragma: no cover
+        log.warning("session levels failed for %s: %s",
+                    sig.get("ticker"), exc)
+
+
+def _levels_lines(sig: dict) -> list[str]:
+    """Telegram rows for the prior-session block, or [] when there's
+    nothing to show. Shared by the stoch and technical bodies."""
+    import tg_format as T
+    lv = sig.get("levels")
+    if not lv:
+        return []
+    lines: list[str] = []
+    parts = []
+    for key, label in (("prior_high", "H"), ("prior_close", "C"),
+                       ("prior_low", "L")):
+        if lv.get(key) is not None:
+            parts.append(f"{label} {T.money(lv[key])}")
+    if parts:
+        row = " / ".join(parts)
+        if sig.get("gap_text"):
+            row += " · " + T.esc(sig["gap_text"])
+        lines.append(T.row("🧱", "Prior session", row))
+    tgt = sig.get("level_target")
+    if tgt:
+        why = "gap fill" if tgt.get("gap_fill") else "first level ahead"
+        lines.append(T.row("📍", "Level target",
+                           T.b(T.money(tgt["price"]))
+                           + f" ({tgt['pct']:+.2f}%) — {T.esc(tgt['label'])}"
+                           + f", {why}"))
+    return lines
+
+
+def _volume_line(sig: dict) -> str | None:
+    """Participation row: this bar's volume against the bars right
+    before it. None when the tape didn't give us enough to measure."""
+    import tg_format as T
+    ratio = sig.get("vol_ratio")
+    if ratio is None or sig.get("vol_now") is None:
+        return None
+    lb = sig.get("vol_lookback") or 5
+    # Bands are calibrated to the replayed winners: Aug 6 entered at 1.20x
+    # and Jul 30 at 2.07x, so 1.2 has to read as expansion rather than
+    # noise for the row to be worth anything.
+    if ratio >= 2.0:
+        verdict = "strong expansion"
+    elif ratio >= 1.2:
+        verdict = "expanding"
+    elif ratio >= 0.85:
+        verdict = "in line"
+    else:
+        verdict = "contracting"
+    return T.row("📊", "Volume",
+                 T.b(f"{ratio:.2f}x") + f" prior {lb} bars — {verdict}"
+                 + f" ({sig['vol_now']:,.0f})")
+
+
 def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
                          last_bar: str | None = None) -> tuple[str, dict | None]:
     """Evaluate one ticker against a stoch rule's params. Returns
@@ -1368,6 +1460,18 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
     if not fired:
         return "quiet", None
 
+    # Volume-expansion confirmation. Measured on every trigger so the
+    # alert can report participation; it only VETOES when the rule sets a
+    # min ratio above 0. A bar whose volume can't be measured (missing
+    # `v`, not enough history) never vetoes — the gate degrades to off
+    # rather than silently muting the rule.
+    vol_lb = max(1, int(p.get("vol_expansion_lookback", 5)))
+    vol_now, vol_base, vol_ratio = technicals.volume_expansion(
+        bars, len(bars) - 1, vol_lb)
+    min_ratio = float(p.get("vol_expansion_min_ratio", 0.0) or 0.0)
+    if min_ratio > 0 and vol_ratio is not None and vol_ratio < min_ratio:
+        return "quiet", None
+
     price = float(bars[-1]["c"])
     sig = {
         "ticker": ticker, "interval": interval, "price": price,
@@ -1375,7 +1479,12 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
         "direction": "bearish" if bearish else "bullish",
         "fast_k": round(fast[-1], 1), "slow_k": round(slow[-1], 1),
         "slow_k_prev": round(slow[-2], 1),
+        "vol_now": vol_now, "vol_base": vol_base,
+        "vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
+        "vol_min_ratio": min_ratio or None,
+        "vol_lookback": vol_lb,
     }
+    _attach_levels(sig, bars, price, bearish)
     # Bounce map from the reverse solver (steady drift over `smooth`
     # bars). Call side: target = drift-to-overbought level, risk = the
     # stays-oversold boundary below. Put side mirrors: target =
@@ -1479,6 +1588,17 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     lines.append(T.row("🌀", "Slow %K",
                        T.b(f"{sig['slow_k_prev']} → {sig['slow_k']}")
                        + f" · fast {sig['fast_k']} · {trig_txt}"))
+    vol_row = _volume_line(sig)
+    if vol_row:
+        lines.append(vol_row)
+
+    # Prior-session structure. The oscillator says WHEN; these levels say
+    # WHERE — on the replayed winners the actual profit target was the
+    # gap fill or the prior high, not the solver's projection.
+    lvl_rows = _levels_lines(sig)
+    if lvl_rows:
+        lines.append("")
+        lines += lvl_rows
 
     # Trade plan — the two prices to act on, stated plainly. The
     # reasoning (which stochastic level each comes from) rides along as
@@ -1505,6 +1625,16 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
                     f"{'above the stays-overbought ceiling' if bearish else 'below the stays-oversold boundary'}"
                     f" ({T.money(sig['risk_price'])})")
             lines.append(T.i(note))
+        # When prior-session structure sits between here and the solver's
+        # projection, that level gets hit first — say so rather than
+        # leaving two target numbers to reconcile in the moment.
+        tgt = sig.get("level_target")
+        if (tgt and sig.get("target_price") is not None
+                and abs(tgt["price"] - sig["price"])
+                < abs(sig["target_price"] - sig["price"])):
+            lines.append(T.i(
+                f"{T.esc(tgt['label'])} at {T.money(tgt['price'])} is nearer "
+                f"— consider taking partial size there first"))
         lines.append("")
     c = sig.get("contract")
     if c:
@@ -1575,13 +1705,22 @@ def _evaluate_technical_rule(ticker: str, p: dict, now: datetime,
     if last_bar and bar_label <= str(last_bar):
         return "deduped", None
 
-    return "fired", {
+    sig = {
         "ticker": ticker, "interval": interval, "source": source,
         "direction": p.get("direction", "bullish"),
         "price": res.get("price"), "bar_time": res.get("bar"),
         "details": res.get("details") or [],
         "closed_only": closed_only,
+        "vol_now": res.get("vol_now"), "vol_base": res.get("vol_base"),
+        "vol_ratio": res.get("vol_ratio"),
+        "vol_lookback": int(p.get("vol_expansion_lookback", 5)),
     }
+    # Levels come off the same (possibly closed-only-trimmed) series the
+    # conditions ran on, so the alert can't quote a level from a bar the
+    # rule deliberately ignored.
+    _attach_levels(sig, res.get("eval_bars") or bars, float(res["price"]),
+                   str(p.get("direction", "bullish")).lower() == "bearish")
+    return "fired", sig
 
 
 def _format_technical_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
@@ -1596,10 +1735,17 @@ def _format_technical_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     lines.append("")
     lines.append(T.row("💰", "Price", T.b(T.money(sig.get("price")))
                        + f" · {T.esc(sig.get('interval') or '')} bars"))
+    vol_row = _volume_line(sig)
+    if vol_row:
+        lines.append(vol_row)
     lines.append("")
     lines.append("✅ <b>Conditions met</b>")
     for d in sig.get("details") or []:
         lines.append("• " + T.esc(str(d)))
+    lvl_rows = _levels_lines(sig)
+    if lvl_rows:
+        lines.append("")
+        lines += lvl_rows
     if sig.get("bar_time"):
         lines.append("")
         suffix = " (closed bar)" if sig.get("closed_only") else ""
