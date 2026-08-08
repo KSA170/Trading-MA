@@ -1,6 +1,6 @@
 """Pure technical-condition engine for the 'technical' alert rule type.
 
-Evaluates RSI, MACD and price-streak conditions over a plain bar list
+Evaluates RSI, MACD, price-streak and volume conditions over a plain bar list
 (the {d,o,h,l,c,v} dicts calculators.fetch_bars returns), so it works
 on ANY interval — 1m through 1mo — with no DataFrame or DB dependency.
 Every function here is deterministic and network-free; alerts.py owns
@@ -284,6 +284,68 @@ def cond_avg_volume(bars: list[dict], idx: int, *, lookback: int,
     return True, f"avg vol {avg:,.0f} ≥ {min_avg:,.0f} ({lookback} bars)"
 
 
+def _median(vals: list[float]) -> float:
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def volume_expansion(bars: list[dict], idx: int, lookback: int = 5):
+    """(bar_volume, baseline, ratio) at `idx`, where the baseline is the
+    MEDIAN volume of the `lookback` bars IMMEDIATELY BEFORE it. Any of
+    the three is None when the data doesn't support the measure.
+
+    Relative-to-preceding, deliberately: on a 5m index tape the session's
+    absolute volume is dominated by the opening bar, so an absolute floor
+    or a 20-bar average says almost nothing about whether *this* bar is
+    where participation showed up. Replaying Jul 30, the entry bar ran
+    1,066,455 — only 0.84x the 20-bar average, and an absolute gate would
+    have rejected it, but a clean 2.1x the four bars that preceded it.
+    That local expansion is the confirmation; the absolute number isn't.
+
+    Median rather than mean because a short baseline is easily poisoned
+    by one outlier bar, and near the open that outlier is guaranteed: at
+    09:50 on Aug 6 the trailing five bars still contained the 2.97M
+    opening print, so a mean baseline scored a genuinely expanding entry
+    bar at 0.80x — it read as CONTRACTION and would have vetoed the
+    trade. The median of the same window scores it 1.20x. Nothing about
+    this is specific to the open; any single spike bar would do the same
+    damage a few bars later.
+    """
+    if lookback < 1 or idx < lookback or idx >= len(bars):
+        return None, None, None
+
+    def _v(b):
+        try:
+            v = b.get("v")
+            return None if v is None else float(v)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    now = _v(bars[idx])
+    base_vals = [v for v in (_v(b) for b in bars[idx - lookback:idx])
+                 if v is not None]
+    if now is None or len(base_vals) < lookback:
+        return now, None, None
+    base = _median(base_vals)
+    if base <= 0:
+        return now, base, None
+    return now, base, now / base
+
+
+def cond_volume_expansion(bars: list[dict], idx: int, *, lookback: int,
+                          min_ratio: float):
+    """Participation confirmation — the evaluated bar's volume must be at
+    least `min_ratio` times the mean of the preceding `lookback` bars.
+    Direction-independent: expansion confirms a move either way."""
+    now, base, ratio = volume_expansion(bars, idx, lookback)
+    if ratio is None or ratio < min_ratio:
+        return False, None
+    return True, (f"vol {now:,.0f} = {ratio:.2f}x prior {lookback}-bar median "
+                  f"{base:,.0f} (≥ {min_ratio:.2f}x)")
+
+
 # --- rule evaluation ------------------------------------------------------
 
 # Only these keys are meaningful for a technical rule.
@@ -313,9 +375,24 @@ DEFAULT_PARAMS: dict = {
     "streak_bars": 3,
     "streak_mode": "close",          # high | close | green | close_green
 
-    "apply_avg_volume": True,
+    # Absolute liquidity floor, OFF by default. It is measured in
+    # PER-BAR volume on the rule's own interval, which makes a single
+    # default number a trap: 500k is a sane daily floor and roughly 20x
+    # too high for a 5m bar, so a daily-scaled floor silently muted
+    # every intraday rule it was left on for. Turn it on only to screen
+    # out thin names on a wide scope; for confirmation, the relative
+    # gate below is the better instrument and needs no per-interval
+    # tuning at all.
+    "apply_avg_volume": False,
     "avg_volume_lookback": 20,
     "avg_volume_min": 500000.0,
+
+    # Participation confirmation, distinct from the liquidity floor
+    # above: this bar's volume against the bars right before it. Being
+    # a ratio, it means the same thing on every interval.
+    "apply_vol_expansion": False,
+    "vol_expansion_lookback": 5,
+    "vol_expansion_min_ratio": 1.5,
 }
 
 MODES = ("state", "cross")
@@ -400,10 +477,27 @@ def evaluate(bars: list[dict], p: dict, *, closed_only: bool) -> dict:
             return {"ok": False, "reason": "no_match"}
         details.append(d)
 
+    if p.get("apply_vol_expansion"):
+        enabled += 1
+        ok, d = cond_volume_expansion(
+            bars, idx, lookback=int(p.get("vol_expansion_lookback", 5)),
+            min_ratio=float(p.get("vol_expansion_min_ratio", 1.5)))
+        if not ok:
+            return {"ok": False, "reason": "no_match"}
+        details.append(d)
+
     if not enabled:
         # A rule with nothing enabled would alert on every bar — treat it
         # as inert rather than a firehose.
         return {"ok": False, "reason": "no_conditions"}
 
-    return {"ok": True, "bar": bars[idx].get("d"),
-            "price": closes[idx], "details": details}
+    # Volume context rides along whether or not it gated anything — the
+    # alert body shows it either way so a signal can be judged on
+    # participation even when the rule didn't require it.
+    vol_now, vol_base, vol_ratio = volume_expansion(
+        bars, idx, max(1, int(p.get("vol_expansion_lookback", 5))))
+    return {"ok": True, "bar": bars[idx].get("d"), "eval_bars": bars,
+            "price": closes[idx], "details": details,
+            "vol_now": vol_now, "vol_base": vol_base,
+            "vol_ratio": (round(vol_ratio, 2) if vol_ratio is not None
+                          else None)}
