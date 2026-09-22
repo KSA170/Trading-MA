@@ -334,6 +334,51 @@ def volume_expansion(bars: list[dict], idx: int, lookback: int = 5):
     return now, base, now / base
 
 
+def rsi_regime_block(closes: list[float], idx: int, *, length: int = 14,
+                     bearish: bool = False, put_max: float = 60.0,
+                     call_min: float = 40.0):
+    """Trend-regime veto — is this signal fighting a live trend?
+
+    Returns (blocked, detail). When blocked, detail says why; when not,
+    detail is the passing RSI reading so the alert can show it.
+
+    The 2026-09-15 / 09-17 post-mortem is the whole argument for this.
+    The same stochastic rollover was a winner on one day and a 2x-sized
+    loser on the other, and RSI was the one reading that told them apart:
+    33.9 on the day the fade worked, 72.5 on the day it didn't (and never
+    below 63 afterwards, while price ran another 3.6%).
+
+    PUT SIDE is a hard ceiling. Above `put_max` buyers are in control, and
+    a stochastic can sit pinned in overbought for hours: on 9/17 Slow %K
+    unwound 97.4 -> 38.4 while QQQ fell all of 1.21 points. Every entry
+    in that window lost.
+
+    CALL SIDE is deliberately NOT the mirror. A curl-up off capitulation
+    lows has a low RSI BY CONSTRUCTION — that is the setup, not a warning.
+    The 9/15 707-call entry printed RSI 31.1 and won. What kills a long is
+    a low RSI that is STILL FALLING, so the floor only blocks when RSI is
+    under `call_min` AND has not yet turned up. A mirror-image rule would
+    have vetoed that winner.
+
+    Never blocks on data it cannot read: an RSI that isn't warm yet
+    returns (False, None) rather than muting the rule.
+    """
+    r = rsi_wilder(closes, length)
+    if idx < 0 or idx >= len(r) or r[idx] is None:
+        return False, None
+    now = r[idx]
+    prev = r[idx - 1] if idx - 1 >= 0 else None
+    rising = prev is not None and now > prev
+    if bearish:
+        if now > put_max:
+            return True, (f"RSI({length}) {now:.1f} above {put_max:g} — uptrend "
+                          f"intact, a put here fades strength")
+    elif now < call_min and not rising:
+        return True, (f"RSI({length}) {now:.1f} below {call_min:g} and still "
+                      f"falling — downtrend intact, a call here catches a knife")
+    return False, f"RSI({length}) {now:.1f}"
+
+
 def cond_volume_expansion(bars: list[dict], idx: int, *, lookback: int,
                           min_ratio: float):
     """Participation confirmation — the evaluated bar's volume must be at
@@ -393,6 +438,28 @@ DEFAULT_PARAMS: dict = {
     "apply_vol_expansion": False,
     "vol_expansion_lookback": 5,
     "vol_expansion_min_ratio": 1.5,
+
+    # Step-1 context filters. These are VETOES, not conditions: they can
+    # only suppress a signal the rest of the rule already produced, never
+    # create one. Both off by default. See rsi_regime_block and
+    # levels.gap_veto for why the RSI side is asymmetric.
+    "apply_rsi_regime": False,
+    "regime_rsi_length": 14,
+    "rsi_max_for_puts": 60.0,
+    "rsi_min_for_calls": 40.0,
+    "apply_gap_filter": False,
+    "gap_veto_pct": 0.5,
+}
+
+# Shared by the technical and stoch rule types — the filters are about
+# market context, not about which oscillator produced the signal.
+REGIME_PARAM_DEFAULTS: dict = {
+    "apply_rsi_regime": False,
+    "regime_rsi_length": 14,
+    "rsi_max_for_puts": 60.0,
+    "rsi_min_for_calls": 40.0,
+    "apply_gap_filter": False,
+    "gap_veto_pct": 0.5,
 }
 
 MODES = ("state", "cross")
