@@ -963,6 +963,9 @@ def api_alerts_rule_create():
     elif rule_type == "technical":
         tp = payload.get("technical_params") or {}
         params = {k: tp[k] for k in alerts._TECHNICAL_PARAM_KEYS if k in tp}
+    elif rule_type == "checklist":
+        cp = payload.get("checklist_params") or {}
+        params = {k: cp[k] for k in alerts._CHECKLIST_PARAM_KEYS if k in cp}
     else:
         params = _parse_params()
         params.pop("lists", None)  # not an evaluate_ticker kwarg
@@ -1002,6 +1005,7 @@ def api_alerts_rule_update_criteria():
     sp = payload.get("setup_params")
     stp = payload.get("stoch_params")
     tp = payload.get("technical_params")
+    cp = payload.get("checklist_params")
     if sp:
         # Same single-source-of-truth pattern as api_alerts_rule_create.
         params = {k: sp[k] for k in alerts._SETUP_PARAM_KEYS if k in sp}
@@ -1009,6 +1013,8 @@ def api_alerts_rule_update_criteria():
         params = {k: stp[k] for k in alerts._STOCH_PARAM_KEYS if k in stp}
     elif tp:
         params = {k: tp[k] for k in alerts._TECHNICAL_PARAM_KEYS if k in tp}
+    elif cp:
+        params = {k: cp[k] for k in alerts._CHECKLIST_PARAM_KEYS if k in cp}
     else:
         params = _parse_params()
         params.pop("lists", None)

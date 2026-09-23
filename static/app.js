@@ -154,6 +154,7 @@ const els = {
   cmSectionSetup: $('#cm-criteria-setup'),
   cmSectionStoch: $('#cm-criteria-stoch'),
   cmSectionTechnical: $('#cm-criteria-technical'),
+  cmSectionChecklist: $('#cm-criteria-checklist'),
   diagnoseTicker: $('#diagnose-ticker'),
   diagnoseBtn: $('#diagnose-btn'),
   diagnoseClearBtn: $('#diagnose-clear-btn'),
@@ -2209,14 +2210,18 @@ function renderRules(data) {
       + (r.enabled ? '' : ' rule-off')
       + (isSetup ? ' rule-setup' : '')
       + (isStoch ? ' rule-stoch' : '')
-      + (isTech ? ' rule-technical' : '');
+      + (isTech ? ' rule-technical' : '')
+      + (r.rule_type === 'checklist' ? ' rule-checklist' : '');
     row.dataset.id = r.id;
+    const isChecklist = r.rule_type === 'checklist';
     const typeChip = isSetup
       ? '<span class="rule-type-chip rule-type-setup">Setup</span>'
       : isStoch
       ? '<span class="rule-type-chip rule-type-stoch">Stoch</span>'
       : isTech
       ? '<span class="rule-type-chip rule-type-technical">Technical</span>'
+      : isChecklist
+      ? '<span class="rule-type-chip rule-type-checklist">Checklist</span>'
       : '<span class="rule-type-chip rule-type-screener">Screener</span>';
     row.innerHTML = `
       <div class="rule-head">
@@ -2333,6 +2338,29 @@ function summarizeRegimeFilters(p, bearish) {
 
 function summarizeRuleParams(p, ruleType) {
   const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
+  if (ruleType === 'checklist') {
+    const sides = p.sides === 'call' ? 'calls only'
+                : p.sides === 'put' ? 'puts only' : 'puts + calls';
+    const out = [`${p.interval || '5m'} bars · ${sides}`];
+    // Only the items actually enforced, so the row says what the gate is.
+    const step1 = [];
+    if (p.step1_gap) step1.push(`no unfilled gap ≥ ${n(p.gap_veto_pct)}%`);
+    if (p.step1_rsi) step1.push(`RSI ${n(p.rsi_max_for_puts)}/${n(p.rsi_min_for_calls)}`);
+    if (p.step1_failed_extreme) step1.push('failed at the session extreme');
+    if (p.step1_open_bar) step1.push(`open ≤ ${n(p.open_bar_max_ratio)}× normal`);
+    if (step1.length) out.push('Step 1: ' + step1.join(' · '));
+    const step2 = [`%K ${n(p.k_len)}/${n(p.smooth)}/${n(p.d_len)}`,
+                   `turn ≥ ${n(p.step2_turn_min)} pts`];
+    if (p.step2_fast_k) step2.push('Fast %K');
+    if (p.step2_kd) step2.push('%K vs %D');
+    if (p.step2_exit_band) step2.push('back out of band');
+    out.push('Step 2: ' + step2.join(' · '));
+    const rest = [];
+    if (p.step3_volume) rest.push(`vol ≥ ${n(p.vol_min_ratio)}× prior ${n(p.vol_lookback)}`);
+    if (p.step4_rr) rest.push(`R:R ≥ ${n(p.min_rr)}`);
+    if (rest.length) out.push(rest.join(' · '));
+    return out;
+  }
   if (ruleType === 'technical') {
     const bear = p.direction === 'bearish';
     const rel = bear ? '≤' : '≥';
@@ -2606,6 +2634,7 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
   if (els.cmSectionSetup) els.cmSectionSetup.hidden = ruleType !== 'setup';
   if (els.cmSectionStoch) els.cmSectionStoch.hidden = ruleType !== 'stoch';
   if (els.cmSectionTechnical) els.cmSectionTechnical.hidden = ruleType !== 'technical';
+  if (els.cmSectionChecklist) els.cmSectionChecklist.hidden = ruleType !== 'checklist';
 
   // Pre-fill criteria. CREATE seeds from the relevant live form (main
   // filter form for screener, Setups toolbar for setup, defaults for
@@ -2615,6 +2644,8 @@ function openCriteriaModal({ mode, ruleType, ruleId, ruleName, scopeText,
     applySetupParamsToModal(prefill || readSetupToolbarAsParams());
   } else if (ruleType === 'stoch') {
     applyStochParamsToModal(prefill || _stochModalDefaults);
+  } else if (ruleType === 'checklist') {
+    applyChecklistParamsToModal(prefill || _clModalDefaults);
   } else if (ruleType === 'technical') {
     // Seed from the pristine defaults, not `{}`: an empty prefill leaves
     // whatever the LAST dialog put in the DOM, so creating a rule right
@@ -2893,6 +2924,75 @@ function _snapshotModalState(inputs, toggles) {
 const _techModalDefaults = _snapshotModalState(techModalInputs, techModalToggles);
 const _stochModalDefaults = _snapshotModalState(stochModalInputs, stochModalToggles);
 
+// Checklist-rule criteria fields. Keys match checklist.DEFAULT_PARAMS.
+const clModalInputs = {
+  interval: $('#cm_cl_interval'),
+  sides: $('#cm_cl_sides'),
+  gap_veto_pct: $('#cm_cl_gap_veto_pct'),
+  rsi_length: $('#cm_cl_rsi_length'),
+  rsi_max_for_puts: $('#cm_cl_rsi_max_for_puts'),
+  rsi_min_for_calls: $('#cm_cl_rsi_min_for_calls'),
+  open_bar_max_ratio: $('#cm_cl_open_bar_max_ratio'),
+  k_len: $('#cm_cl_k_len'),
+  smooth: $('#cm_cl_smooth'),
+  d_len: $('#cm_cl_d_len'),
+  oversold: $('#cm_cl_oversold'),
+  overbought: $('#cm_cl_overbought'),
+  lookback_bars: $('#cm_cl_lookback_bars'),
+  step2_turn_min: $('#cm_cl_step2_turn_min'),
+  vol_lookback: $('#cm_cl_vol_lookback'),
+  vol_min_ratio: $('#cm_cl_vol_min_ratio'),
+  min_rr: $('#cm_cl_min_rr'),
+  stop_buffer_pct: $('#cm_cl_stop_buffer_pct'),
+};
+const clModalToggles = {
+  step1_gap: $('#cm_cl_step1_gap'),
+  step1_rsi: $('#cm_cl_step1_rsi'),
+  step1_failed_extreme: $('#cm_cl_step1_failed_extreme'),
+  step1_open_bar: $('#cm_cl_step1_open_bar'),
+  step2_fast_k: $('#cm_cl_step2_fast_k'),
+  step2_kd: $('#cm_cl_step2_kd'),
+  step2_exit_band: $('#cm_cl_step2_exit_band'),
+  step3_volume: $('#cm_cl_step3_volume'),
+  step4_rr: $('#cm_cl_step4_rr'),
+};
+// Everything in clModalInputs except these two selects is numeric.
+const _CL_TEXT_KEYS = new Set(['interval', 'sides']);
+// Declared after the maps above: this snapshot READS them, so hoisting
+// it next to the other defaults puts it in their temporal dead zone.
+const _clModalDefaults = _snapshotModalState(clModalInputs, clModalToggles);
+
+function applyChecklistParamsToModal(p) {
+  p = p || {};
+  for (const [k, el] of Object.entries(clModalInputs)) {
+    if (el && p[k] !== undefined && p[k] !== null) el.value = String(p[k]);
+  }
+  for (const [k, el] of Object.entries(clModalToggles)) {
+    if (!el) continue;
+    if (p[k] !== undefined && p[k] !== null) {
+      const v = p[k];
+      el.checked = !(v === false || v === 0 || v === '0' || v === 'false');
+    }
+  }
+}
+
+function buildChecklistParamsFromModal() {
+  const out = {};
+  for (const [k, el] of Object.entries(clModalInputs)) {
+    if (!el) continue;
+    if (_CL_TEXT_KEYS.has(k)) {
+      out[k] = el.value;
+    } else {
+      const v = parseFloat(el.value);
+      out[k] = Number.isFinite(v) ? v : 0;
+    }
+  }
+  for (const [k, el] of Object.entries(clModalToggles)) {
+    if (el) out[k] = !!el.checked;
+  }
+  return out;
+}
+
 function applyTechParamsToModal(p) {
   p = p || {};
   for (const [k, el] of Object.entries(techModalInputs)) {
@@ -3052,6 +3152,18 @@ function syncModalDisabled() {
     const g = els.cmModal && els.cmModal.querySelector(`[data-group="${groupKey}"]`);
     if (t && g) g.classList.toggle('disabled', !t.checked);
   }
+  const clMap = {
+    step1_gap: 'cm_cl_gap', step1_rsi: 'cm_cl_rsi',
+    step1_failed_extreme: 'cm_cl_ext', step1_open_bar: 'cm_cl_open',
+    step2_fast_k: 'cm_cl_fastk', step2_kd: 'cm_cl_kd',
+    step2_exit_band: 'cm_cl_band', step3_volume: 'cm_cl_vol',
+    step4_rr: 'cm_cl_rr',
+  };
+  for (const [toggleKey, groupKey] of Object.entries(clMap)) {
+    const t = clModalToggles[toggleKey];
+    const g = els.cmModal && els.cmModal.querySelector(`[data-group="${groupKey}"]`);
+    if (t && g) g.classList.toggle('disabled', !t.checked);
+  }
 }
 
 async function submitCriteriaModal() {
@@ -3109,6 +3221,13 @@ async function submitCriteriaModal() {
           name, scope_type: scopeType, scope_value: scopeValue,
           rule_type: 'technical',
           technical_params: buildTechParamsFromModal(),
+        };
+      } else if (ruleType === 'checklist') {
+        url = '/api/alerts/rules';
+        body = {
+          name, scope_type: scopeType, scope_value: scopeValue,
+          rule_type: 'checklist',
+          checklist_params: buildChecklistParamsFromModal(),
         };
       } else {
         url = '/api/alerts/rules?' + buildModalQuery();
@@ -3198,6 +3317,8 @@ async function submitCriteriaModal() {
       ? { id: ruleId, stoch_params: buildStochParamsFromModal() }
       : ruleType === 'technical'
       ? { id: ruleId, technical_params: buildTechParamsFromModal() }
+      : ruleType === 'checklist'
+      ? { id: ruleId, checklist_params: buildChecklistParamsFromModal() }
       : { id: ruleId };
     const res = await fetch(url, {
       method: 'POST',
@@ -3244,6 +3365,7 @@ if (els.cmScopeType) {
 }
 Object.values(modalToggles).forEach((t) => t && t.addEventListener('change', syncModalDisabled));
 Object.values(techModalToggles).forEach((t) => t && t.addEventListener('change', syncModalDisabled));
+Object.values(clModalToggles).forEach((t) => t && t.addEventListener('change', syncModalDisabled));
 
 
 if (els.ruleScopeType) {
@@ -4270,6 +4392,8 @@ function syncRuleTypeUI() {
       ? 'Create stochastic rule…'
       : rt === 'technical'
       ? 'Create technical rule…'
+      : rt === 'checklist'
+      ? 'Create checklist rule…'
       : 'Create screener rule…';
     els.ruleCreateBtn.title = rt === 'setup'
       ? 'Open the dialog to pick scope and setup score / price / volume thresholds'
@@ -4277,6 +4401,8 @@ function syncRuleTypeUI() {
       ? 'Open the dialog to pick scope, bar interval, and stochastic thresholds'
       : rt === 'technical'
       ? 'Open the dialog to pick scope, interval, and RSI / MACD / streak conditions'
+      : rt === 'checklist'
+      ? 'Open the dialog to pick scope and which Checklist-tab items the gate enforces'
       : 'Open the dialog to pick scope and screener filter criteria';
   }
   // Inline name + scope inputs are now redundant — the modal collects

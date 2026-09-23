@@ -230,7 +230,20 @@ _TECHNICAL_PARAM_KEYS = frozenset(TECHNICAL_DEFAULT_PARAMS.keys())
 # alerts that are false by the close); intraday uses the latest bar.
 _TECH_CLOSED_ONLY_INTERVALS = ("1d", "1wk", "1mo")
 
-RULE_TYPES = ("screener", "setup", "stoch", "technical")
+# Checklist rules run the machine-checkable part of the Checklist tab's
+# gate over a ticker list. Unlike a stoch rule they evaluate BOTH sides on
+# every bar and report which one set up, because the checklist mirrors and
+# the side is an outcome rather than a setting. Params + item math live in
+# checklist.py.
+import checklist as checklist_mod
+
+CHECKLIST_DEFAULT_PARAMS: dict = dict(checklist_mod.DEFAULT_PARAMS)
+_CHECKLIST_PARAM_KEYS = frozenset(CHECKLIST_DEFAULT_PARAMS.keys())
+
+RULE_TYPES = ("screener", "setup", "stoch", "technical", "checklist")
+# Rule types the 5-minute fast lane owns: all of them read intraday bars
+# through calculators.fetch_bars rather than the nightly snapshot.
+_FAST_LANE_TYPES = ("stoch", "technical", "checklist")
 # 'all' is a setup-only scope ("score every ticker the snapshot pre-filter
 # returns") — using it with a screener rule would blow up Alpaca quota,
 # and with a stoch rule the per-ticker Yahoo fetches.
@@ -365,6 +378,44 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         for k, v in (raw or {}).items():
             if k in _SETUP_PARAM_KEYS:
                 params[k] = v
+        return params
+    if rule_type == "checklist":
+        params = dict(CHECKLIST_DEFAULT_PARAMS)
+        for k, v in (raw or {}).items():
+            if k in _CHECKLIST_PARAM_KEYS:
+                params[k] = v
+        if params.get("interval") not in _STOCH_INTERVALS:
+            params["interval"] = "5m"
+        if params.get("sides") not in checklist_mod.SIDES:
+            params["sides"] = "both"
+
+        def _cnum(key, dflt, lo, hi, cast=float):
+            try:
+                params[key] = max(lo, min(hi, cast(params[key])))
+            except (TypeError, ValueError):
+                params[key] = dflt
+        _cnum("gap_veto_pct", 0.5, 0.0, 100.0)
+        _cnum("rsi_length", 14, 2, 50, int)
+        _cnum("rsi_max_for_puts", 60.0, 0.0, 100.0)
+        _cnum("rsi_min_for_calls", 40.0, 0.0, 100.0)
+        _cnum("open_bar_max_ratio", 2.5, 1.0, 100.0)
+        _cnum("k_len", 14, 2, 50, int)
+        _cnum("smooth", 3, 1, 10, int)
+        # 2 minimum: at 1 the %D average is the identity and the %K-vs-%D
+        # item could never pass, muting the rule with no visible cause.
+        _cnum("d_len", 3, 2, 50, int)
+        _cnum("oversold", 20.0, 0.0, 50.0)
+        _cnum("overbought", 80.0, 50.0, 100.0)
+        _cnum("lookback_bars", 4, 1, 20, int)
+        _cnum("step2_turn_min", 3.0, 0.0, 50.0)
+        _cnum("vol_lookback", 5, 1, 100, int)
+        _cnum("vol_min_ratio", 1.5, 0.0, 100.0)
+        _cnum("min_rr", 1.5, 0.0, 100.0)
+        _cnum("stop_buffer_pct", 0.15, 0.0, 2.0)
+        for key in ("step1_gap", "step1_rsi", "step1_failed_extreme",
+                    "step1_open_bar", "step2_fast_k", "step2_kd",
+                    "step2_exit_band", "step3_volume", "step4_rr"):
+            params[key] = bool(params.get(key))
         return params
     if rule_type == "technical":
         params = dict(TECHNICAL_DEFAULT_PARAMS)
@@ -1890,23 +1941,157 @@ def _format_technical_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     return "\n".join(lines)
 
 
+def _evaluate_checklist_rule(ticker: str, p: dict, now: datetime,
+                             last_bar: str | None = None) -> tuple[str, dict | None]:
+    """Evaluate one ticker against a checklist rule.
+
+    Unlike the stoch rules this runs BOTH sides and reports whichever
+    passed, so one rule on a ticker list covers puts and calls. Dedupe is
+    per bar label, same as the technical rules: the gate can re-pass on a
+    later bar of the same swing, and the re-arm level would be meaningless
+    here because the gate is not a single oscillator event."""
+    import calculators
+
+    interval = p.get("interval", "5m")
+    bars, source = calculators.fetch_bars(ticker, interval)
+    if not bars:
+        return "no_data", None
+
+    mins = _STOCH_INTERVAL_MINUTES.get(interval)
+    if mins:
+        from datetime import timedelta
+        cutoff = (now - timedelta(minutes=6 * mins)).strftime("%Y-%m-%d %H:%M")
+        if str(bars[-1].get("d") or "") < cutoff:
+            return "stale", None
+
+    bar_label = str(bars[-1].get("d") or "")
+    if last_bar and bar_label <= str(last_bar):
+        return "deduped", None
+
+    res = checklist_mod.evaluate(bars, p)
+    if not res.get("ok"):
+        if res.get("reason") == "no_data":
+            return "no_data", None
+        near = res.get("result") or {}
+        # The closest near-miss goes back so the run log can say how far
+        # off a ticker was — a gate this wide is otherwise a black box.
+        return "quiet", {"ticker": ticker, "near_side": near.get("side"),
+                         "failed": near.get("failed") or []}
+
+    r = res["result"]
+    bearish = r["side"] == "put"
+    sig = {
+        "ticker": ticker, "interval": interval, "source": source,
+        "side": r["side"], "direction": "bearish" if bearish else "bullish",
+        "price": r["price"], "bar_time": bar_label,
+        "items": r["items"], "plan": r["plan"], "levels": r.get("levels"),
+        "slow_k": r["slow_k"], "slow_k_prev": r["slow_k_prev"],
+        "fast_k": r["fast_k"], "pct_d": r["pct_d"],
+        "manual": list(checklist_mod.MANUAL_ITEMS),
+    }
+    if r["plan"]:
+        sig["target_price"] = r["plan"]["target"]
+        sig["stop_price"] = r["plan"]["stop"]
+        sig["target_pct"] = r["plan"]["target_pct"]
+        sig["stop_pct"] = r["plan"]["stop_pct"]
+    # Contract pick + option framing, same treatment as the stoch alerts.
+    try:
+        import options as options_mod
+        contract = options_mod.select_contract_for_delta(
+            ticker, "put" if bearish else "call", r["price"],
+            float(p.get("opt_delta", 0.35)),
+            int(p.get("opt_dte_min", 2)), int(p.get("opt_dte_max", 6)))
+        if contract:
+            sig["contract"] = contract
+    except Exception as exc:
+        log.warning("checklist contract pick failed for %s: %s", ticker, exc)
+    return "fired", sig
+
+
+def _format_checklist_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
+    """Telegram body for a checklist trigger — rendered as the ticked
+    checklist it is, because the reader's trust in the alert comes from
+    seeing which items were actually evaluated."""
+    import tg_format as T
+    bearish = sig.get("side") == "put"
+    kind = "PUT" if bearish else "CALL"
+    lines = T.header("CHECKLIST PASS", sig["ticker"], when=T.time_et(as_of),
+                     emoji="✅")
+    lines.append(T.row("🏷", "Rule", T.b(rule_name) + f" · buy {kind}S"))
+    lines.append("")
+    lines.append(T.row("💰", "Price", T.b(T.money(sig.get("price")))
+                       + f" · {T.esc(sig.get('interval') or '')} bars"))
+    stoch = T.b(f"{sig['slow_k_prev']} → {sig['slow_k']}")
+    if sig.get("pct_d") is not None:
+        stoch += f" · %D {sig['pct_d']}"
+    stoch += f" · Fast %K {sig['fast_k']}"
+    lines.append(T.row("🌀", "%K", stoch))
+
+    lines.append("")
+    lines.append(f"✅ <b>Checklist passed — {len(sig.get('items') or [])} checks</b>")
+    for label, ok, detail in sig.get("items") or []:
+        mark = "✓" if ok else "✗"
+        lines.append(f"{mark} {T.esc(str(label))}")
+        if detail:
+            lines.append("   " + T.i(T.esc(str(detail))))
+
+    plan = sig.get("plan")
+    if plan:
+        lines.append("")
+        lines.append(T.row("🎯", "Target",
+                           T.b(T.money(plan["target"]))
+                           + f" ({plan['target_pct']:+.2f}%) — "
+                           + T.esc(plan["target_label"])
+                           + (", gap fill" if plan.get("gap_fill") else "")))
+        lines.append(T.row("🛑", "Stop loss",
+                           T.b(T.money(plan["stop"]))
+                           + f" ({plan['stop_pct']:+.2f}%) — just past the session "
+                           + ("high" if bearish else "low")))
+        if plan.get("rr") is not None:
+            lines.append(T.row("⚖️", "Risk : reward", T.b(f"{plan['rr']:.2f} : 1")))
+    c = sig.get("contract")
+    if c:
+        lines.append("")
+        lines.append(T.row("🎫", "Contract",
+                           T.b(f"{T.money(c.get('strike'), 0)} {kind.lower()[:-1] if kind.endswith('S') else kind.lower()}")
+                           + f" · exp {T.esc(c.get('expiration') or '?')}"
+                           + f" ({c.get('dte', '?')} DTE)"))
+        lines.append(T.row("💵", "Quote",
+                           "mid " + T.b(T.money(c.get("mid")))
+                           + f" (bid {T.money(c.get('bid'))} / ask {T.money(c.get('ask'))})"
+                           + f" · Δ{abs(c.get('delta') or 0):.2f}"))
+
+    manual = sig.get("manual") or []
+    if manual:
+        lines.append("")
+        lines.append("👤 <b>Your call — not checked by the engine</b>")
+        for m in manual:
+            lines.append("• " + T.esc(str(m)))
+    if sig.get("bar_time"):
+        lines.append("")
+        lines.append(T.row("🕒", "Bar", T.esc(str(sig["bar_time"])) + " ET"))
+    lines.append("")
+    lines.append(T.i("Informational only — not financial advice."))
+    return "\n".join(lines)
+
+
 def _partition_rules(rules: list[dict], only_stoch: bool = False,
                      skip_stoch: bool = False) -> tuple[list, list, list]:
     """Split enabled rules into the three evaluation groups.
 
-    The third group is the FAST LANE — stoch and technical rules alike:
-    both read intraday bars via calculators.fetch_bars and finish in
-    seconds, so they share `python alerts.py stoch` and the 5-minute
-    stoch-alerts workflow.
+    The third group is the FAST LANE — stoch, technical and checklist
+    rules alike: all three read intraday bars via calculators.fetch_bars
+    and finish in seconds, so they share `python alerts.py stoch` and
+    the 5-minute stoch-alerts workflow.
 
     only_stoch — the fast-lane mode: just that group (skip flag ignored).
     skip_stoch — the main engine when the fast lane owns the group
     (ALERT_SKIP_STOCH env), so the two lanes never double-send."""
-    stoch = [r for r in rules if r.get("rule_type") in ("stoch", "technical")]
+    stoch = [r for r in rules if r.get("rule_type") in _FAST_LANE_TYPES]
     if only_stoch:
         return [], [], stoch
     screener = [r for r in rules
-                if r.get("rule_type") not in ("setup", "stoch", "technical")]
+                if r.get("rule_type") not in ("setup",) + _FAST_LANE_TYPES]
     setup = [r for r in rules if r.get("rule_type") == "setup"]
     return screener, setup, ([] if skip_stoch else stoch)
 
@@ -2133,17 +2318,20 @@ def run(only_stoch: bool = False) -> int:
             # level after the previous alert's bar (stoch_rule_state).
             fired_state = _stoch_state_for_rule(rule["id"])
             ev = de = nd = er = mt = vt = 0
-            is_tech = rule.get("rule_type") == "technical"
+            rtype = rule.get("rule_type") or "stoch"
+            is_tech = rtype == "technical"
+            near_misses = []
             for ticker in scope:
                 try:
-                    evaluator = (_evaluate_technical_rule if is_tech
-                                 else _evaluate_stoch_rule)
+                    evaluator = {
+                        "technical": _evaluate_technical_rule,
+                        "checklist": _evaluate_checklist_rule,
+                    }.get(rtype, _evaluate_stoch_rule)
                     status, sig = evaluator(
                         ticker, p, now, last_bar=fired_state.get(ticker))
                 except Exception as exc:
                     log.warning("%s evaluate failed for %s (rule %s): %s",
-                                "technical" if is_tech else "stoch",
-                                ticker, rule["id"], exc)
+                                rtype, ticker, rule["id"], exc)
                     er += 1
                     continue
                 if status == "deduped":
@@ -2153,6 +2341,14 @@ def run(only_stoch: bool = False) -> int:
                     nd += 1
                     continue
                 ev += 1
+                if status == "quiet" and rtype == "checklist" and sig:
+                    # A checklist gate is wide: knowing WHICH item blocked
+                    # each ticker is the difference between tuning it and
+                    # guessing at it.
+                    near_misses.append(
+                        f"{ticker}({sig.get('near_side')}): "
+                        + ", ".join(sig.get("failed") or [])[:120])
+                    continue
                 if status == "vetoed":
                     # A real signal the Step-1 context filters suppressed.
                     # Logged per ticker on purpose: "why did I not get an
@@ -2166,8 +2362,11 @@ def run(only_stoch: bool = False) -> int:
                 if status == "fired":
                     mt += 1
                     triggered_stoch.append((rule, sig))
+            for nm in near_misses[:8]:
+                log.info('rule %d "%s" near-miss %s',
+                         rule["id"], rule["name"], nm)
             log.info(
-                'rule %d "%s" (' + ("technical" if is_tech else "stoch")
+                'rule %d "%s" (' + rtype
                 + ' %s%s): scope=%d evaluated=%d '
                 'matched=%d vetoed=%d deduped=%d no_data=%d errors=%d',
                 rule["id"], rule["name"], rule["scope_type"],
@@ -2243,22 +2442,36 @@ def run(only_stoch: bool = False) -> int:
                  "label": rule.get("name") or "Setup alert"},
             )
             sent += 1
+    _FAST_LANE_BODY = {
+        "technical": _format_technical_alert,
+        "checklist": _format_checklist_alert,
+    }
+    _FAST_LANE_LABEL = {"technical": "Technical alert",
+                        "checklist": "Checklist alert",
+                        "stoch": "Stoch alert"}
     for rule, sig in triggered_stoch:
-        is_tech = rule.get("rule_type") == "technical"
-        body = (_format_technical_alert(rule["name"], sig, now) if is_tech
-                else _format_stoch_alert(rule["name"], sig, now))
+        rtype = rule.get("rule_type") or "stoch"
+        body = _FAST_LANE_BODY.get(rtype, _format_stoch_alert)(
+            rule["name"], sig, now)
         if send_telegram(body):
-            detail = ("; ".join(sig.get("details") or [])[:200] if is_tech
-                      else f"slow_k={sig['slow_k']}")
+            if rtype == "technical":
+                detail = "; ".join(sig.get("details") or [])[:200]
+            elif rtype == "checklist":
+                # Which side passed and how many items it cleared — enough
+                # to reconstruct the alert from the history table alone.
+                detail = (f"{sig.get('side')} · "
+                          f"{len(sig.get('items') or [])} checks · "
+                          f"slow_k={sig.get('slow_k')}")[:200]
+            else:
+                detail = f"slow_k={sig['slow_k']}"
             record_sent(rule["id"], sig["ticker"], today, detail)
             _record_stoch_state(rule["id"], sig["ticker"],
                                 sig.get("bar_time"))
             outcomes.record_stock_outcome(
                 sig["ticker"], today, sig.get("price"),
-                {"kind": "alert_technical" if is_tech else "alert_stoch",
-                 "id": rule["id"],
-                 "label": rule.get("name")
-                          or ("Technical alert" if is_tech else "Stoch alert")},
+                {"kind": "alert_" + rtype, "id": rule["id"],
+                 "label": rule.get("name") or _FAST_LANE_LABEL.get(
+                     rtype, "Stoch alert")},
             )
             sent += 1
     total = (len(triggered_screener) + len(triggered_setup)
