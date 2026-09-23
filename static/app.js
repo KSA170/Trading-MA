@@ -2313,6 +2313,24 @@ function streakModeLabel(m) {
     : m === 'close_green' ? 'higher closes + green'
     : 'higher highs';
 }
+// Step-1 context vetoes, rendered the same way for stoch and technical
+// rules. Only the side that actually applies to this rule's direction is
+// shown — a put-side rule has no use for the call-side floor.
+function summarizeRegimeFilters(p, bearish) {
+  const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
+  const out = [];
+  if (p.apply_rsi_regime) {
+    out.push(bearish
+      ? `skip if RSI > ${n(p.rsi_max_for_puts)}`
+      : `skip if RSI < ${n(p.rsi_min_for_calls)} and falling`);
+  }
+  if (p.apply_gap_filter) {
+    out.push(`skip on unfilled gap ${bearish ? 'up' : 'down'}`
+             + ` ≥ ${n(p.gap_veto_pct)}%`);
+  }
+  return out;
+}
+
 function summarizeRuleParams(p, ruleType) {
   const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
   if (ruleType === 'technical') {
@@ -2350,6 +2368,7 @@ function summarizeRuleParams(p, ruleType) {
       out.push(`vol ≥ ${n(p.vol_expansion_min_ratio)}× prior`
                + ` ${n(p.vol_expansion_lookback)} bars`);
     }
+    out.push(...summarizeRegimeFilters(p, bear));
     return out;
   }
   if (ruleType === 'stoch') {
@@ -2373,6 +2392,8 @@ function summarizeRuleParams(p, ruleType) {
       out.push(`vol ≥ ${n(p.vol_expansion_min_ratio)}× prior`
                + ` ${n(p.vol_expansion_lookback == null ? 5 : p.vol_expansion_lookback)} bars`);
     }
+    out.push(...summarizeRegimeFilters(
+      p, p.trigger === 'curl_down' || p.trigger === 'entered_overbought'));
     return out;
   }
   if (ruleType === 'setup') {
@@ -2794,6 +2815,15 @@ const stochModalInputs = {
   opt_dte_max: $('#cm_stoch_opt_dte_max'),
   vol_expansion_min_ratio: $('#cm_stoch_volexp_ratio'),
   vol_expansion_lookback: $('#cm_stoch_volexp_lookback'),
+  regime_rsi_length: $('#cm_stoch_regime_rsi_len'),
+  rsi_max_for_puts: $('#cm_stoch_rsi_max_puts'),
+  rsi_min_for_calls: $('#cm_stoch_rsi_min_calls'),
+  gap_veto_pct: $('#cm_stoch_gap_veto_pct'),
+};
+// Stoch-side Step-1 filter toggles (the rest of that form is numeric).
+const stochModalToggles = {
+  apply_rsi_regime: $('#cm_stoch_apply_regime'),
+  apply_gap_filter: $('#cm_stoch_apply_gap'),
 };
 
 // Technical-rule criteria fields. Keys match technicals.DEFAULT_PARAMS.
@@ -2817,6 +2847,10 @@ const techModalInputs = {
   avg_volume_min: $('#cm_tech_vol_min'),
   vol_expansion_lookback: $('#cm_tech_volexp_lookback'),
   vol_expansion_min_ratio: $('#cm_tech_volexp_ratio'),
+  regime_rsi_length: $('#cm_tech_regime_rsi_len'),
+  rsi_max_for_puts: $('#cm_tech_rsi_max_puts'),
+  rsi_min_for_calls: $('#cm_tech_rsi_min_calls'),
+  gap_veto_pct: $('#cm_tech_gap_veto_pct'),
 };
 const techModalToggles = {
   apply_rsi_level: $('#cm_tech_apply_rsi'),
@@ -2826,6 +2860,8 @@ const techModalToggles = {
   apply_streak: $('#cm_tech_apply_streak'),
   apply_avg_volume: $('#cm_tech_apply_vol'),
   apply_vol_expansion: $('#cm_tech_apply_volexp'),
+  apply_rsi_regime: $('#cm_tech_apply_regime'),
+  apply_gap_filter: $('#cm_tech_apply_gap'),
 };
 // Numeric keys — everything else in techModalInputs is a select.
 const _TECH_NUM_KEYS = new Set([
@@ -2833,6 +2869,7 @@ const _TECH_NUM_KEYS = new Set([
   'macd_fast', 'macd_slow', 'macd_signal', 'macd_min_gap_pct',
   'streak_bars', 'avg_volume_lookback', 'avg_volume_min',
   'vol_expansion_lookback', 'vol_expansion_min_ratio',
+  'regime_rsi_length', 'rsi_max_for_puts', 'rsi_min_for_calls', 'gap_veto_pct',
 ]);
 
 // Pristine dialog state, captured once before any user interaction, so a
@@ -2846,7 +2883,7 @@ function _snapshotModalState(inputs, toggles) {
   return out;
 }
 const _techModalDefaults = _snapshotModalState(techModalInputs, techModalToggles);
-const _stochModalDefaults = _snapshotModalState(stochModalInputs, null);
+const _stochModalDefaults = _snapshotModalState(stochModalInputs, stochModalToggles);
 
 function applyTechParamsToModal(p) {
   p = p || {};
@@ -2885,6 +2922,13 @@ function applyStochParamsToModal(p) {
     if (!el) continue;
     if (p[k] !== undefined && p[k] !== null) el.value = String(p[k]);
   }
+  for (const [k, el] of Object.entries(stochModalToggles)) {
+    if (!el) continue;
+    if (p[k] !== undefined && p[k] !== null) {
+      const v = p[k];
+      el.checked = !(v === false || v === 0 || v === '0' || v === 'false');
+    }
+  }
 }
 
 function buildStochParamsFromModal() {
@@ -2908,6 +2952,14 @@ function buildStochParamsFromModal() {
     opt_dte_max: num(stochModalInputs.opt_dte_max, 6),
     vol_expansion_min_ratio: num(stochModalInputs.vol_expansion_min_ratio, 0),
     vol_expansion_lookback: num(stochModalInputs.vol_expansion_lookback, 5),
+    regime_rsi_length: num(stochModalInputs.regime_rsi_length, 14),
+    rsi_max_for_puts: num(stochModalInputs.rsi_max_for_puts, 60),
+    rsi_min_for_calls: num(stochModalInputs.rsi_min_for_calls, 40),
+    gap_veto_pct: num(stochModalInputs.gap_veto_pct, 0.5),
+    apply_rsi_regime: !!(stochModalToggles.apply_rsi_regime
+                         && stochModalToggles.apply_rsi_regime.checked),
+    apply_gap_filter: !!(stochModalToggles.apply_gap_filter
+                         && stochModalToggles.apply_gap_filter.checked),
   };
 }
 
@@ -2980,6 +3032,8 @@ function syncModalDisabled() {
     apply_streak: 'cm_tech_streak',
     apply_avg_volume: 'cm_tech_vol',
     apply_vol_expansion: 'cm_tech_volexp',
+    apply_rsi_regime: 'cm_tech_regime',
+    apply_gap_filter: 'cm_tech_gap',
   };
   for (const [toggleKey, groupKey] of Object.entries(techMap)) {
     const t = techModalToggles[toggleKey];

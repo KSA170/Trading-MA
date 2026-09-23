@@ -863,6 +863,33 @@
               <input id="cm_stoch_volexp_lookback" type="number" min="1" max="100" value="5" />
             </div>
           </div>
+
+          <h4 class="criteria-modal-section-h">Step 1 — context filters</h4>
+          <p class="muted criteria-modal-help">Pure vetoes: they can only suppress a signal the oscillator already produced, never create one. A rule with these on fires a strict subset of what it fired before. Both are off by default, and both fail open — anything that can't be measured passes rather than silently muting the rule. Suppressed signals are written to the run log with the reason, so "why did I get no alert" always has an answer.</p>
+          <div class="criteria-setup-grid">
+            <div class="filter" title="Blocks a PUT-side alert when RSI is above the ceiling (a live uptrend), and a CALL-side alert when RSI is below the floor AND still falling. The call side is deliberately not a mirror: a curl-up off capitulation lows has a low RSI by construction — that's the setup, not a warning.">
+              <label class="inline-checkbox"><input type="checkbox" id="cm_stoch_apply_regime" /> RSI regime filter</label>
+            </div>
+            <div class="filter" title="RSI length used by the regime filter only — independent of the stochastic settings above.">
+              <label>Regime RSI length</label>
+              <input id="cm_stoch_regime_rsi_len" type="number" min="2" max="50" value="14" />
+            </div>
+            <div class="filter" title="Put-side alerts are blocked when RSI is above this. 60 is the default: on 2026-09-17 a put signal fired with RSI 72.5 and QQQ ran another 3.6% against it.">
+              <label>Max RSI for puts</label>
+              <input id="cm_stoch_rsi_max_puts" type="number" min="0" max="100" step="1" value="60" />
+            </div>
+            <div class="filter" title="Call-side alerts are blocked when RSI is below this AND has not yet turned up. A low but RISING RSI passes — that's the oversold-bounce setup.">
+              <label>Min RSI for calls</label>
+              <input id="cm_stoch_rsi_min_calls" type="number" min="0" max="100" step="1" value="40" />
+            </div>
+            <div class="filter" title="Blocks a PUT-side alert when an unfilled gap UP of at least this size sits against it, and a CALL-side alert when an unfilled gap DOWN does. A filled gap never vetoes, whichever way it went.">
+              <label class="inline-checkbox"><input type="checkbox" id="cm_stoch_apply_gap" /> Unfilled-gap filter</label>
+            </div>
+            <div class="filter" title="Minimum gap size, as a percent of the prior close, for the veto to apply. 0.5% is the default: the 9/15 winners traded on a -0.06% filled gap, the 9/17 loser on a +1.60% gap that never filled.">
+              <label>Gap veto (%)</label>
+              <input id="cm_stoch_gap_veto_pct" type="number" min="0" max="100" step="0.25" value="0.5" />
+            </div>
+          </div>
         </div>
 
         <div id="cm-criteria-technical" data-criteria-section="technical" hidden>
@@ -955,6 +982,18 @@
             <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_volexp" /> Volume expansion</label>
             <div class="filter" title="How many bars immediately before the signal bar form the baseline average."><label>baseline (bars)</label><input id="cm_tech_volexp_lookback" type="number" min="1" max="100" value="5" /></div>
             <div class="filter" title="Signal-bar volume ÷ baseline average must be at least this."><label>min ratio (×)</label><input id="cm_tech_volexp_ratio" type="number" min="0" max="100" step="0.1" value="1.5" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_tech_regime" title="Blocks a BEARISH alert when RSI is above the ceiling (a live uptrend), and a BULLISH alert when RSI is below the floor AND still falling. The bullish side is deliberately not a mirror: a bounce off capitulation lows has a low RSI by construction — that's the setup, not a warning. A veto, not a condition: it can only suppress a signal the rule already produced.">
+            <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_regime" /> RSI regime filter <span class="muted">(veto)</span></label>
+            <div class="filter"><label>RSI length</label><input id="cm_tech_regime_rsi_len" type="number" min="2" max="50" value="14" /></div>
+            <div class="filter" title="Bearish alerts blocked above this RSI."><label>max RSI (bearish)</label><input id="cm_tech_rsi_max_puts" type="number" min="0" max="100" step="1" value="60" /></div>
+            <div class="filter" title="Bullish alerts blocked below this RSI while it is still falling."><label>min RSI (bullish)</label><input id="cm_tech_rsi_min_calls" type="number" min="0" max="100" step="1" value="40" /></div>
+          </div>
+
+          <div class="filter-group" data-group="cm_tech_gap" title="Blocks a BEARISH alert when an unfilled gap UP of at least this size sits against it, and a BULLISH alert when an unfilled gap DOWN does. A filled gap never vetoes, whichever way it went.">
+            <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_gap" /> Unfilled-gap filter <span class="muted">(veto)</span></label>
+            <div class="filter"><label>min gap (%)</label><input id="cm_tech_gap_veto_pct" type="number" min="0" max="100" step="0.25" value="0.5" /></div>
           </div>
         </div>
 

@@ -192,15 +192,22 @@ STOCH_DEFAULT_PARAMS: dict = {
     "vol_expansion_min_ratio": 0.0,
     "vol_expansion_lookback": 5,
 }
+
+# Technical rules: RSI / MACD / price-streak conditions AND-ed together on
+# any interval. Params + condition math live in technicals.py.
+import technicals
+
+# Step-1 context filters, shared with the technical rule type. They can
+# only SUPPRESS a signal the oscillator already produced, never create
+# one, so a rule with them on is strictly quieter than the same rule
+# without. Both default off — an existing tuned rule keeps its behaviour
+# until its owner ticks the box.
+STOCH_DEFAULT_PARAMS.update(technicals.REGIME_PARAM_DEFAULTS)
 _STOCH_PARAM_KEYS = frozenset(STOCH_DEFAULT_PARAMS.keys())
 _STOCH_INTERVALS = ("1m", "5m", "15m", "30m", "1h", "1d")
 _STOCH_TRIGGERS = ("curl_up", "entered_oversold",
                    "curl_down", "entered_overbought")
 _STOCH_BEARISH_TRIGGERS = ("curl_down", "entered_overbought")
-
-# Technical rules: RSI / MACD / price-streak conditions AND-ed together on
-# any interval. Params + condition math live in technicals.py.
-import technicals
 
 TECHNICAL_DEFAULT_PARAMS: dict = dict(technicals.DEFAULT_PARAMS)
 _TECHNICAL_PARAM_KEYS = frozenset(TECHNICAL_DEFAULT_PARAMS.keys())
@@ -377,11 +384,15 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _tnum("avg_volume_min", 500000.0, 0.0, 1e12)
         _tnum("vol_expansion_lookback", 5, 1, 100, int)
         _tnum("vol_expansion_min_ratio", 1.5, 0.0, 100.0)
+        _tnum("regime_rsi_length", 14, 2, 50, int)
+        _tnum("rsi_max_for_puts", 60.0, 0.0, 100.0)
+        _tnum("rsi_min_for_calls", 40.0, 0.0, 100.0)
+        _tnum("gap_veto_pct", 0.5, 0.0, 100.0)
         if params["macd_fast"] >= params["macd_slow"]:
             params["macd_fast"], params["macd_slow"] = 12, 26
         for key in ("apply_rsi_level", "apply_rsi_vs_sma", "apply_macd",
                     "apply_streak", "apply_avg_volume", "apply_vol_expansion",
-                    "macd_hist_rising"):
+                    "apply_rsi_regime", "apply_gap_filter", "macd_hist_rising"):
             params[key] = bool(params.get(key))
         return params
     if rule_type == "stoch":
@@ -413,6 +424,12 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _num("opt_dte_max", 6, 1, 90, int)
         _num("vol_expansion_min_ratio", 0.0, 0.0, 100.0)
         _num("vol_expansion_lookback", 5, 1, 100, int)
+        _num("regime_rsi_length", 14, 2, 50, int)
+        _num("rsi_max_for_puts", 60.0, 0.0, 100.0)
+        _num("rsi_min_for_calls", 40.0, 0.0, 100.0)
+        _num("gap_veto_pct", 0.5, 0.0, 100.0)
+        for key in ("apply_rsi_regime", "apply_gap_filter"):
+            params[key] = bool(params.get(key))
         if params["opt_dte_min"] > params["opt_dte_max"]:
             params["opt_dte_min"], params["opt_dte_max"] = \
                 params["opt_dte_max"], params["opt_dte_min"]
@@ -1309,6 +1326,46 @@ def _stoch_rearmed(slow: list, bars: list[dict], last_bar: str,
     return (min(since) <= rearm_level) if bearish else (max(since) >= rearm_level)
 
 
+def _step1_context(bars: list[dict], bearish: bool,
+                   p: dict) -> tuple[str | None, str | None]:
+    """Run the Step-1 context filters over `bars`.
+
+    Returns (veto_reason, context_line): veto_reason is a string when the
+    signal should be suppressed and None when it passes; context_line is
+    the passing reading to show in the alert body.
+
+    Both filters are opt-in and both are pure vetoes — a rule with them
+    on fires a strict subset of what it fired before. They are also
+    fail-open: anything that can't be measured (RSI not warm, fewer than
+    two sessions of bars) passes rather than silently muting the rule.
+    """
+    reasons: list[str] = []
+    context: list[str] = []
+    if p.get("apply_rsi_regime"):
+        try:
+            closes = [float(b["c"]) for b in bars]
+            blocked, detail = technicals.rsi_regime_block(
+                closes, len(closes) - 1,
+                length=int(p.get("regime_rsi_length", 14)), bearish=bearish,
+                put_max=float(p.get("rsi_max_for_puts", 60.0)),
+                call_min=float(p.get("rsi_min_for_calls", 40.0)))
+            if detail:
+                (reasons if blocked else context).append(detail)
+        except (KeyError, TypeError, ValueError) as exc:
+            log.warning("rsi regime filter skipped: %s", exc)
+    if p.get("apply_gap_filter"):
+        try:
+            import levels as levels_mod
+            blocked, detail = levels_mod.gap_veto(
+                levels_mod.session_levels(bars), bearish,
+                float(p.get("gap_veto_pct", 0.5)))
+            if blocked and detail:
+                reasons.append(detail)
+        except Exception as exc:                 # pragma: no cover
+            log.warning("gap filter skipped: %s", exc)
+    return (" · ".join(reasons) or None), (" · ".join(context) or None)
+
+
 def _attach_levels(sig: dict, bars: list[dict], price: float,
                    bearish: bool) -> None:
     """Add prior-session structure to a signal, in place.
@@ -1460,6 +1517,14 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
     if not fired:
         return "quiet", None
 
+    # Step-1 context filters run BEFORE the signal becomes an alert: a
+    # rollover that fights a live trend or an open gap never reaches the
+    # phone. Returns a 'vetoed' status rather than 'quiet' so the run log
+    # can say which filter stopped it.
+    veto, regime_ctx = _step1_context(bars, bearish, p)
+    if veto:
+        return "vetoed", {"ticker": ticker, "reason": veto}
+
     # Volume-expansion confirmation. Measured on every trigger so the
     # alert can report participation; it only VETOES when the rule sets a
     # min ratio above 0. A bar whose volume can't be measured (missing
@@ -1483,6 +1548,7 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
         "vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
         "vol_min_ratio": min_ratio or None,
         "vol_lookback": vol_lb,
+        "regime": regime_ctx,
     }
     _attach_levels(sig, bars, price, bearish)
     # Bounce map from the reverse solver (steady drift over `smooth`
@@ -1591,6 +1657,9 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     vol_row = _volume_line(sig)
     if vol_row:
         lines.append(vol_row)
+    if sig.get("regime"):
+        lines.append(T.row("🧭", "Regime", T.esc(str(sig["regime"]))
+                           + " — context filters passed"))
 
     # Prior-session structure. The oscillator says WHEN; these levels say
     # WHERE — on the replayed winners the actual profit target was the
@@ -1705,6 +1774,12 @@ def _evaluate_technical_rule(ticker: str, p: dict, now: datetime,
     if last_bar and bar_label <= str(last_bar):
         return "deduped", None
 
+    eval_bars = res.get("eval_bars") or bars
+    bearish_dir = str(p.get("direction", "bullish")).lower() == "bearish"
+    veto, regime_ctx = _step1_context(eval_bars, bearish_dir, p)
+    if veto:
+        return "vetoed", {"ticker": ticker, "reason": veto}
+
     sig = {
         "ticker": ticker, "interval": interval, "source": source,
         "direction": p.get("direction", "bullish"),
@@ -1714,12 +1789,12 @@ def _evaluate_technical_rule(ticker: str, p: dict, now: datetime,
         "vol_now": res.get("vol_now"), "vol_base": res.get("vol_base"),
         "vol_ratio": res.get("vol_ratio"),
         "vol_lookback": int(p.get("vol_expansion_lookback", 5)),
+        "regime": regime_ctx,
     }
     # Levels come off the same (possibly closed-only-trimmed) series the
     # conditions ran on, so the alert can't quote a level from a bar the
     # rule deliberately ignored.
-    _attach_levels(sig, res.get("eval_bars") or bars, float(res["price"]),
-                   str(p.get("direction", "bullish")).lower() == "bearish")
+    _attach_levels(sig, eval_bars, float(res["price"]), bearish_dir)
     return "fired", sig
 
 
@@ -1738,6 +1813,9 @@ def _format_technical_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     vol_row = _volume_line(sig)
     if vol_row:
         lines.append(vol_row)
+    if sig.get("regime"):
+        lines.append(T.row("🧭", "Regime", T.esc(str(sig["regime"]))
+                           + " — context filters passed"))
     lines.append("")
     lines.append("✅ <b>Conditions met</b>")
     for d in sig.get("details") or []:
@@ -1997,7 +2075,7 @@ def run(only_stoch: bool = False) -> int:
             # blocks re-fires until Slow %K crosses the rule's re-arm
             # level after the previous alert's bar (stoch_rule_state).
             fired_state = _stoch_state_for_rule(rule["id"])
-            ev = de = nd = er = mt = 0
+            ev = de = nd = er = mt = vt = 0
             is_tech = rule.get("rule_type") == "technical"
             for ticker in scope:
                 try:
@@ -2018,16 +2096,26 @@ def run(only_stoch: bool = False) -> int:
                     nd += 1
                     continue
                 ev += 1
+                if status == "vetoed":
+                    # A real signal the Step-1 context filters suppressed.
+                    # Logged per ticker on purpose: "why did I not get an
+                    # alert" is the question these filters create, and the
+                    # answer has to be in the run log.
+                    vt += 1
+                    log.info('rule %d "%s" %s: signal suppressed — %s',
+                             rule["id"], rule["name"], ticker,
+                             (sig or {}).get("reason", "context filter"))
+                    continue
                 if status == "fired":
                     mt += 1
                     triggered_stoch.append((rule, sig))
             log.info(
                 'rule %d "%s" (' + ("technical" if is_tech else "stoch")
                 + ' %s%s): scope=%d evaluated=%d '
-                'matched=%d deduped=%d no_data=%d errors=%d',
+                'matched=%d vetoed=%d deduped=%d no_data=%d errors=%d',
                 rule["id"], rule["name"], rule["scope_type"],
                 (":" + rule["scope_value"]) if rule["scope_value"] else "",
-                len(scope), ev, mt, de, nd, er,
+                len(scope), ev, mt, vt, de, nd, er,
             )
             stats_list.append({
                 "rule_id": rule["id"], "scope": len(scope), "evaluated": ev,

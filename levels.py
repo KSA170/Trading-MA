@@ -210,6 +210,36 @@ def primary_target(candidates: list[dict]) -> dict | None:
     return candidates[0]
 
 
+def gap_veto(levels: dict | None, bearish: bool,
+             min_pct: float = 0.5) -> tuple[bool, str | None]:
+    """Gap veto — is this signal fighting a gap the market hasn't given
+    back? Returns (blocked, detail).
+
+    A put fights an unfilled gap UP; a call fights an unfilled gap DOWN.
+    Once a gap is filled it carries no directional information and never
+    vetoes, whichever way it went.
+
+    This is the cleanest single discriminator in the 9/15 vs 9/17 trades.
+    Both 9/15 entries — one put, one call — took place on a -0.06% gap
+    that was already filled: a range day, where fading extremes works.
+    The 9/17 put was taken into a +1.60% gap up that was still open at
+    10:12 and never filled; QQQ ran from 715.85 to 741.45. A gap that
+    size still open mid-morning is a regime change, not an extreme.
+    """
+    if not levels or levels.get("gap_pct") is None or levels.get("gap_filled"):
+        return False, None
+    g = float(levels["gap_pct"])
+    against = (g >= min_pct) if bearish else (g <= -min_pct)
+    if not against:
+        return False, None
+    pc = levels.get("prior_close")
+    return True, (
+        f"unfilled gap {'up' if g > 0 else 'down'} {g:+.2f}%"
+        + (f" from {pc:.2f}" if pc is not None else "")
+        + " — " + ("a put fades a live breakout" if bearish
+                   else "a call fights a live breakdown"))
+
+
 def describe_gap(levels: dict | None) -> str | None:
     """One-line gap summary for an alert body, or None when there's no
     gap worth mentioning."""
