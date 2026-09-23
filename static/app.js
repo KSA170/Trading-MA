@@ -2356,7 +2356,11 @@ function summarizeRuleParams(p, ruleType) {
     if (p.step2_exit_band) step2.push('back out of band');
     out.push('Step 2: ' + step2.join(' · '));
     const rest = [];
-    if (p.step3_volume) rest.push(`vol ≥ ${n(p.vol_min_ratio)}× prior ${n(p.vol_lookback)}`);
+    if (p.step3_volume) {
+      const w = Number(p.vol_window == null ? 2 : p.vol_window);
+      rest.push(`vol ≥ ${n(p.vol_min_ratio)}× prior ${n(p.vol_lookback)}`
+                + (w > 1 ? ` (within ${n(w)} bars)` : ''));
+    }
     if (p.step4_rr) rest.push(`R:R ≥ ${n(p.min_rr)}`);
     if (rest.length) out.push(rest.join(' · '));
     return out;
@@ -2942,6 +2946,7 @@ const clModalInputs = {
   step2_turn_min: $('#cm_cl_step2_turn_min'),
   vol_lookback: $('#cm_cl_vol_lookback'),
   vol_min_ratio: $('#cm_cl_vol_min_ratio'),
+  vol_window: $('#cm_cl_vol_window'),
   min_rr: $('#cm_cl_min_rr'),
   stop_buffer_pct: $('#cm_cl_stop_buffer_pct'),
 };

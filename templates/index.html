@@ -1275,6 +1275,7 @@
               <label class="group-toggle"><input type="checkbox" id="cm_cl_step3_volume" checked /> Volume expanded on the signal bar</label>
               <div class="filter"><label>baseline (bars)</label><input id="cm_cl_vol_lookback" type="number" min="1" max="100" value="5" /></div>
               <div class="filter"><label>min ratio (×)</label><input id="cm_cl_vol_min_ratio" type="number" min="0" max="100" step="0.1" value="1.5" /></div>
+              <div class="filter" title="How many bars, ending at the signal bar, may carry the expansion. 1 is the literal reading — the signal bar itself. 2 also accepts the bar before it, which is what the tape supports: the surge marks where a move starts and the oscillator confirms a bar or two later. Replaying 16-23 Sep, requiring it on the signal bar alone produced ZERO alerts."><label>within last N bars</label><input id="cm_cl_vol_window" type="number" min="1" max="20" value="2" /></div>
             </div>
             <div class="filter-group" data-group="cm_cl_rr" title="Item 4a. Target is the nearest prior-session level ahead (preferring an unfilled gap fill); stop sits just past the session extreme. Both anchors match the tab's worked examples.">
               <label class="group-toggle"><input type="checkbox" id="cm_cl_step4_rr" checked /> Reward clears the risk multiple</label>

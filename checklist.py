@@ -73,6 +73,18 @@ DEFAULT_PARAMS: dict = {
     "step3_volume": True,
     "vol_lookback": 5,
     "vol_min_ratio": 1.5,
+    # How many bars, ending at the signal bar, may carry the expansion.
+    # 1 is the literal reading of the tab ("the signal bar"); 2 also
+    # accepts the bar before it.
+    #
+    # Replaying 2026-09-16..09-23, requiring it on the signal bar alone
+    # produced 0 alerts from 816 side-evaluations — the gate could not
+    # open. Loosening the RATIO did not help (1.2x still gave 0); only
+    # widening the WINDOW did. That is the honest reading of the tape:
+    # the surge marks the bar a move starts on, and the oscillator
+    # confirms a bar or two later, so demanding both on the same five
+    # minutes asks for a coincidence rather than a condition.
+    "vol_window": 2,
 
     # --- Step 4: plan ---------------------------------------------------
     "step4_rr": True,
@@ -278,13 +290,43 @@ def check_signal(fast, slow, pct_d, bearish, p):
 
 
 def check_volume(bars, p):
+    """Tab item 3: did the move carry participation, or is it drift?
+
+    Each candidate bar is scored against the MEDIAN volume of the five
+    bars before IT — a ratio, so it means the same thing on any ticker
+    and any interval, and a median so one outlier (the 9:30 print above
+    all) cannot drag the baseline and make a real expansion read as a
+    contraction.
+
+    `vol_window` bars ending at the signal bar are searched, and the
+    first one clearing the ratio satisfies the item. The detail always
+    names WHICH bar carried it, so a reader can find it on the chart.
+    """
     lb = max(1, int(p.get("vol_lookback", 5)))
-    now, base, ratio = TH.volume_expansion(bars, len(bars) - 1, lb)
-    if ratio is None:
-        return True, "volume not measurable — not blocking"
+    win = max(1, int(p.get("vol_window", 2)))
     need = float(p.get("vol_min_ratio", 1.5))
-    return ratio >= need, (f"{ratio:.2f}x the prior {lb}-bar median "
-                           f"({now:,.0f} vs {base:,.0f}), need {need:.2f}x")
+    idx = len(bars) - 1
+    best = None
+    for back in range(win):
+        i = idx - back
+        if i < 0:
+            break
+        now, base, ratio = TH.volume_expansion(bars, i, lb)
+        if ratio is None:
+            continue
+        where = ("on the signal bar" if back == 0
+                 else f"{back} bar{'s' if back > 1 else ''} earlier")
+        if ratio >= need:
+            return True, (f"{ratio:.2f}x the prior {lb}-bar median {where} "
+                          f"({now:,.0f} vs {base:,.0f}), need {need:.2f}x")
+        if best is None or ratio > best[0]:
+            best = (ratio, where)
+    if best is None:
+        return True, "volume not measurable — not blocking"
+    if win == 1:
+        return False, f"{best[0]:.2f}x on the signal bar, need {need:.2f}x"
+    return False, (f"best {best[0]:.2f}x in the last {win} bars ({best[1]}), "
+                   f"need {need:.2f}x")
 
 
 def check_rr(price, lv, bearish, p):
@@ -342,7 +384,12 @@ def evaluate_side(bars, fast, slow, pct_d, bearish: bool, p: dict) -> dict:
 
     if p.get("step3_volume"):
         ok, d = check_volume(bars, p)
-        items.append(("Volume expanded on the signal bar", ok, d))
+        # The label has to track the window, or a widened rule reports a
+        # check it did not actually perform.
+        items.append((
+            "Volume expanded on the signal bar"
+            if int(p.get("vol_window", 2)) <= 1
+            else "Volume expanded on or just before the signal bar", ok, d))
 
     plan = None
     if p.get("step4_rr"):
