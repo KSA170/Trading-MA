@@ -133,7 +133,21 @@ def check_failed_extreme(bars, bearish):
     the 9/17 mistake in miniature — there is nothing to fade yet."""
     sess = _session_bars(bars)
     if len(sess) < 2:
-        return True, "first bar of the session — nothing to fade yet"
+        # Two very different situations produce a one-bar session.
+        #
+        # Intraday, this is the OPENING bar: nothing has failed yet, which
+        # is a genuine "no" rather than missing data, so it must block. It
+        # previously passed here, and on 2026-09-23 that handed a free tick
+        # to a 09:30 put — the one bar of the day where, by construction,
+        # price cannot yet have failed at anything.
+        #
+        # On a daily or higher interval one bar IS a session, so the item
+        # has no meaning and passing is correct.
+        groups = levels_mod._group_sessions(bars)
+        intraday = any(len(g[1]) > 1 for g in groups[:-1])
+        if intraday:
+            return False, "opening bar — nothing has failed yet"
+        return True, "one bar per session — item does not apply"
     highs = [_f(b.get("h")) for b in sess]
     lows = [_f(b.get("l")) for b in sess]
     if bearish:
