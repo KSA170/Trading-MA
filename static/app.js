@@ -4856,6 +4856,160 @@ async function loadOptionsHistory(opts) {
   });
 })();
 
+// --- entry checklist -------------------------------------------------------
+// A pre-trade gate, not a document: Step 1 must be fully ticked before the
+// status bar clears. The side switch rewrites every mirrored line from its
+// data-put / data-call pair rather than duplicating the DOM, so the two
+// variants can never drift apart.
+//
+// State goes through uiPrefs (localStorage + /api/ui-prefs), so a half-filled
+// checklist survives a reload and follows the user between devices — the
+// point of having this in the app rather than in a standalone page.
+(() => {
+  const panel = document.querySelector('[data-tool="checklist"]');
+  if (!panel) return;
+  const PREF = 'entry_checklist';
+  const boxes = Array.from(panel.querySelectorAll('input[type="checkbox"]'));
+  const gate = Array.from(panel.querySelectorAll('.ck-gate input[type="checkbox"]'));
+  const fields = ['ck-entry', 'ck-stop', 'ck-target'].map((id) => document.getElementById(id));
+  const [fEntry, fStop, fTarget] = fields;
+  const elVerdict = document.getElementById('ck-verdict');
+  let side = 'put';
+
+  const SIDE_NOTE = {
+    put: 'Betting the underlying goes down. Every check below is set for the short side.',
+    call: 'Betting the underlying goes up. Every check below is mirrored for the long side.',
+  };
+  const WORKED = {
+    put: 'Worked example — 17 Sep: entry 715.85, stop 717.00, target 710.60 → risk 1.15, reward 5.25, 4.6 : 1. The numbers were fine; Step 1 is what failed.',
+    call: 'Worked example — 15 Sep: entry 705.54, stop 703.90, target 709.16 (prior close) → risk 1.64, reward 3.62, 2.2 : 1.',
+  };
+
+  function applySide() {
+    panel.setAttribute('data-side', side);
+    const isPut = side === 'put';
+    for (const [id, on] of [['ck-side-put', isPut], ['ck-side-call', !isPut]]) {
+      const b = document.getElementById(id);
+      if (b) { b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); }
+    }
+    document.getElementById('ck-side-note').textContent = SIDE_NOTE[side];
+    document.getElementById('ck-worked').textContent = WORKED[side];
+    // Only elements that actually differ carry both attributes; the rest
+    // (event risk, sizing, expiry) read the same either way.
+    panel.querySelectorAll('[data-put]').forEach((el) => {
+      const txt = isPut ? el.dataset.put : el.dataset.call;
+      if (txt) el.textContent = txt;
+    });
+    fStop.placeholder = isPut ? '717.00' : '703.90';
+    fTarget.placeholder = isPut ? '710.60' : '709.16';
+    calc();
+  }
+
+  const num = (el) => {
+    const v = parseFloat(String(el.value).replace(/[^0-9.\-]/g, ''));
+    return Number.isFinite(v) ? v : null;
+  };
+
+  function calc() {
+    const e = num(fEntry), s = num(fStop), t = num(fTarget);
+    const isPut = side === 'put';
+    const setRO = (id, v) => { document.getElementById(id).textContent = v; };
+    setRO('ck-risk', '—'); setRO('ck-reward', '—'); setRO('ck-rr', '—');
+    elVerdict.className = 'ck-verdict muted';
+
+    const say = (msg, cls) => {
+      elVerdict.textContent = msg;
+      elVerdict.className = 'ck-verdict' + (cls ? ' ' + cls : ' muted');
+    };
+    const PROMPT = 'Enter all three prices to check the trade is worth taking.';
+    if (e === null || (s === null && t === null)) return say(PROMPT);
+
+    // Catch a stop or target on the wrong side of entry before doing any
+    // arithmetic — that mistake is easy to make in a hurry and silently
+    // produces a flattering ratio.
+    if (s !== null) {
+      if (isPut ? s <= e : s >= e) {
+        return say(isPut
+          ? 'Stop must sit ABOVE your entry on a put — that is where the idea is wrong.'
+          : 'Stop must sit BELOW your entry on a call — that is where the idea is wrong.', 'bad');
+      }
+      setRO('ck-risk', Math.abs(e - s).toFixed(2));
+    }
+    if (t !== null) {
+      if (isPut ? t >= e : t <= e) {
+        return say(isPut
+          ? 'Target must sit BELOW your entry on a put.'
+          : 'Target must sit ABOVE your entry on a call.', 'bad');
+      }
+      setRO('ck-reward', Math.abs(t - e).toFixed(2));
+    }
+    if (s === null || t === null) return say(PROMPT);
+
+    const risk = Math.abs(e - s), reward = Math.abs(t - e);
+    if (risk < 0.005) return say('Stop is on top of your entry — give the trade room to breathe.', 'bad');
+    setRO('ck-rr', (reward / risk).toFixed(2) + ' : 1');
+    const rp = (risk / e * 100).toFixed(2), wp = (reward / e * 100).toFixed(2);
+    const rr = reward / risk;
+    if (rr >= 1.5) say(`Worth taking — risking ${rp}% to make ${wp}%.`, 'ok');
+    else if (rr >= 1) say(`Thin. Risking ${rp}% to make ${wp}% — move the target or tighten the stop.`, 'mid');
+    else say(`Skip it. You are risking more (${rp}%) than you stand to make (${wp}%).`, 'bad');
+  }
+
+  function status() {
+    const gateDone = gate.filter((b) => b.checked).length;
+    const allDone = boxes.filter((b) => b.checked).length;
+    const title = document.getElementById('ck-status-title');
+    const sub = document.getElementById('ck-status-sub');
+    document.getElementById('ck-track-fill').style.width =
+      (allDone / boxes.length * 100) + '%';
+    title.className = 'ck-status-t';
+    if (gateDone < gate.length) {
+      title.textContent = 'Step 1 incomplete — do not enter';
+      sub.textContent = `${gateDone} of ${gate.length} context checks confirmed`;
+    } else if (allDone < boxes.length) {
+      title.textContent = 'Context clear — keep going';
+      title.classList.add('going');
+      sub.textContent = `${allDone} of ${boxes.length} checks confirmed · ${boxes.length - allDone} left`;
+    } else {
+      title.textContent = 'All checks confirmed';
+      title.classList.add('done');
+      sub.textContent = 'Place the entry and the stop together.';
+    }
+  }
+
+  function save() {
+    const checks = {};
+    boxes.forEach((b) => { if (b.checked) checks[b.id] = true; });
+    uiPrefs.set(PREF, {
+      side,
+      checks,
+      plan: { entry: fEntry.value, stop: fStop.value, target: fTarget.value },
+    });
+  }
+
+  boxes.forEach((b) => b.addEventListener('change', () => { status(); save(); }));
+  fields.forEach((f) => f.addEventListener('input', () => { calc(); save(); }));
+  document.getElementById('ck-side-put').addEventListener('click', () => { side = 'put'; applySide(); save(); });
+  document.getElementById('ck-side-call').addEventListener('click', () => { side = 'call'; applySide(); save(); });
+  document.getElementById('ck-reset').addEventListener('click', () => {
+    boxes.forEach((b) => { b.checked = false; });
+    fields.forEach((f) => { f.value = ''; });
+    status(); calc(); save();
+    panel.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  });
+
+  const saved = uiPrefs.get(PREF, null) || {};
+  if (saved.side === 'call') side = 'call';
+  if (saved.checks) boxes.forEach((b) => { if (saved.checks[b.id]) b.checked = true; });
+  if (saved.plan) {
+    fEntry.value = saved.plan.entry || '';
+    fStop.value = saved.plan.stop || '';
+    fTarget.value = saved.plan.target || '';
+  }
+  applySide();
+  status();
+})();
+
 // --- workspace + sub-tab navigation ---------------------------------------
 // Two levels: a workspace (Stocks | Options) and, within it, a tool sub-tab.
 // The Stocks tools all live in the #tab-stock panel and are shown one at a
@@ -4866,7 +5020,8 @@ async function loadOptionsHistory(opts) {
 // and the endpoints they call — are untouched.
 const WS = {
   stocks:    { btn: 'tab-btn-stock',     strip: 'subtabs-stocks',
-               subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts', 'calculators'] },
+               subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts',
+                      'calculators', 'checklist'] },
   options:   { btn: 'tab-btn-options',   strip: 'subtabs-options',
                subs: ['screener'] },
   // No sub-tab strip — a single view, so `strip` resolves to
