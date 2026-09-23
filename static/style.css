@@ -1698,7 +1698,8 @@ button.hidden { display: none; }
 #tab-stock[data-active-tool="momentum"]  [data-tool]:not([data-tool="momentum"]),
 #tab-stock[data-active-tool="setups"]    [data-tool]:not([data-tool="setups"]),
 #tab-stock[data-active-tool="alerts"]    [data-tool]:not([data-tool="alerts"]),
-#tab-stock[data-active-tool="calculators"] [data-tool]:not([data-tool="calculators"]) {
+#tab-stock[data-active-tool="calculators"] [data-tool]:not([data-tool="calculators"]),
+#tab-stock[data-active-tool="checklist"] [data-tool]:not([data-tool="checklist"]) {
   display: none !important;
 }
 
@@ -2685,6 +2686,141 @@ button.hidden { display: none; }
 
 /* --- Calculators panel ---------------------------------------------------- */
 .calculators-panel { padding: 14px 16px; }
+
+/* --- Entry checklist --------------------------------------------------
+   Pre-trade gate worked top to bottom. The active side (puts / calls)
+   drives --ck-side, which re-tints the gate and every tick, and swaps
+   the wording of each mirrored line via data-put / data-call. */
+.checklist-panel { padding: 14px 16px 0; --ck-side: var(--red); }
+.checklist-panel[data-side="call"] { --ck-side: var(--green); }
+.ck-head { max-width: 760px; }
+.ck-side { display: inline-flex; gap: 4px; padding: 3px; margin-bottom: 8px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+.ck-side-btn {
+  font: inherit; font-weight: 600; cursor: pointer; padding: 7px 14px;
+  border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--muted);
+}
+.ck-side-btn:hover { color: var(--text); }
+.ck-side-btn.active {
+  background: var(--panel-2); color: var(--ck-side); border-color: var(--border);
+}
+.ck-side-note {
+  margin: 0 0 4px; color: var(--muted);
+  border-left: 3px solid var(--ck-side); padding-left: 9px;
+}
+
+.ck-steps { margin-top: 14px; }
+.ck-step {
+  border: 1px solid var(--border); border-radius: 8px;
+  margin-bottom: 12px; overflow: hidden; background: var(--panel-2);
+}
+.ck-step-h {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  padding: 10px 14px; background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.ck-n {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px; letter-spacing: .08em; color: var(--muted);
+}
+.ck-t { font-weight: 600; }
+.ck-hint { font-size: 12px; }
+.ck-gate .ck-step-h { border-bottom-color: var(--ck-side); }
+.ck-gate .ck-n { color: var(--ck-side); }
+
+.ck-item {
+  display: flex; gap: 11px; align-items: flex-start; cursor: pointer;
+  padding: 10px 14px; border-top: 1px solid var(--border);
+}
+.ck-step > .ck-item:first-of-type { border-top: 0; }
+.ck-item:hover { background: var(--panel); }
+.ck-item input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none; flex: none; margin: 1px 0 0;
+  width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); cursor: pointer; position: relative;
+}
+.ck-item input[type="checkbox"]:checked {
+  background: var(--ck-side); border-color: var(--ck-side);
+}
+.ck-item input[type="checkbox"]:checked::after {
+  content: ""; position: absolute; left: 5.5px; top: 1.5px;
+  width: 4px; height: 9px; border: solid var(--bg); border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.ck-item input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.ck-label { display: block; }
+.ck-item input:checked ~ span .ck-label { color: var(--muted); }
+.ck-why {
+  display: block; margin-top: 3px; font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.5;
+}
+
+.ck-plan { padding: 12px 14px; border-top: 1px solid var(--border); }
+.ck-fields { display: flex; flex-wrap: wrap; gap: 10px; }
+.ck-field { flex: 1 1 130px; min-width: 0; }
+.ck-field label {
+  display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 4px;
+}
+.ck-field input {
+  width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px; font-variant-numeric: tabular-nums; padding: 7px 9px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text);
+}
+.ck-field input:focus-visible { outline: none; border-color: var(--accent); }
+.ck-readout {
+  margin-top: 10px; padding: 10px 12px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; gap: 6px 20px; align-items: baseline;
+}
+.ck-ro { display: inline-flex; gap: 6px; align-items: baseline; }
+.ck-ro em {
+  font-style: normal; font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.ck-ro b {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px; font-variant-numeric: tabular-nums;
+}
+.ck-verdict { width: 100%; font-size: 13px; }
+.ck-verdict.ok { color: var(--green); }
+.ck-verdict.mid { color: var(--yellow); }
+.ck-verdict.bad { color: var(--red); }
+.ck-worked {
+  margin: 9px 0 0; font-size: 12px; line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.ck-bar {
+  position: sticky; bottom: 0; z-index: 3;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin: 0 -16px; padding: 11px 16px;
+  background: var(--panel); border-top: 1px solid var(--border);
+}
+.ck-status { flex: 1 1 220px; min-width: 0; }
+.ck-status-t { font-weight: 600; color: var(--ck-side); }
+.ck-status-t.done { color: var(--green); }
+.ck-status-t.going { color: var(--text); }
+.ck-status-s { font-size: 12px; margin-top: 1px; }
+.ck-track {
+  height: 4px; border-radius: 2px; background: var(--bg);
+  margin-top: 7px; overflow: hidden;
+}
+.ck-track i {
+  display: block; height: 100%; width: 0; border-radius: 2px;
+  background: var(--ck-side); transition: width .18s ease;
+}
+@media (prefers-reduced-motion: reduce) { .ck-track i { transition: none; } }
+
+@media print {
+  .ck-side, .ck-bar, .topbar, .app-tabs, .subtabs { display: none !important; }
+  .ck-step { break-inside: avoid; }
+  .checklist-panel { padding: 0; }
+}
 .calc-title { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
 .calc-desc { margin: 0 0 12px; max-width: 640px; }
 .calc-form {
