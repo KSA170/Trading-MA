@@ -622,6 +622,7 @@
             <option value="setup">Setup score</option>
             <option value="stoch">Stochastic swing</option>
             <option value="technical">Technical (RSI / MACD / streak)</option>
+            <option value="checklist">Entry checklist (puts + calls)</option>
           </select>
           <input id="rule-name" type="text" placeholder="Rule name — e.g. Biotech momentum" autocomplete="off" />
           <select id="rule-scope-type" title="What set of stocks this rule scans">
@@ -746,8 +747,8 @@
                   data-put="The 9:30 bar was not a huge surge upward"
                   data-call="The 9:30 bar was not a huge surge downward"></span>
             <span class="ck-why"
-                  data-put="9/17 opened on 3.2M shares, 3.41× normal, driving up. That is institutions, not noise."
-                  data-call="A violent opening drive against you usually continues. Let it settle first."></span></span></label>
+                  data-put="Judge it against other 9:30 bars, not the bars before it — every open is huge. On 9/17 the open was only 1.01× a typical open; the real tells that day were the unfilled gap and RSI 72.5."
+                  data-call="Judge it against other 9:30 bars, not the bars before it. A violent opening drive against you usually continues — let it settle first."></span></span></label>
           <label class="ck-item"><input type="checkbox" id="ck-1e" />
             <span><span class="ck-label">No scheduled event in the next hour (CPI, FOMC, jobs, major earnings)</span>
             <span class="ck-why">Oscillators are meaningless across a data release.</span></span></label>
@@ -758,12 +759,20 @@
           <div class="ck-step-h">
             <span class="ck-n">STEP 2</span>
             <span class="ck-t">Signal — is the turn real?</span>
-            <span class="muted ck-hint">Slow %K and %D, 5-minute chart.</span>
+            <span class="muted ck-hint">TradingView Stochastic, 14 / 3 / 3.</span>
           </div>
+          <p class="ck-note">
+            <b>%K</b> and <b>%D</b> below mean the two lines your chart actually
+            plots. On a 14/3/3 Stochastic the <b>%K</b> line is already smoothed
+            — it is what this app calls Slow&nbsp;%K — and <b>%D</b> is a 3-bar
+            average of it. The unsmoothed <b>Fast&nbsp;%K</b> is a third line
+            TradingView does not draw at these settings; it is optional here,
+            and the last check says how to show it.
+          </p>
           <label class="ck-item"><input type="checkbox" id="ck-2a" />
             <span><span class="ck-label"
-                  data-put="%K reached above 80 within the last 4 bars"
-                  data-call="%K dropped below 20 within the last 4 bars"></span></span></label>
+                  data-put="The %K line reached above 80 within the last 4 bars"
+                  data-call="The %K line dropped below 20 within the last 4 bars"></span></span></label>
           <label class="ck-item"><input type="checkbox" id="ck-2b" />
             <span><span class="ck-label"
                   data-put="%K has turned down at least 3–5 points from its peak"
@@ -773,12 +782,14 @@
                   data-call="The 9/15 call: %K bottomed at 3.3 and was at 17.4 on entry. A real turn."></span></span></label>
           <label class="ck-item"><input type="checkbox" id="ck-2c" />
             <span><span class="ck-label"
-                  data-put="Fast %K is below Slow %K"
-                  data-call="Fast %K is above Slow %K"></span></span></label>
+                  data-put="%K has crossed below %D — the confirmation"
+                  data-call="%K has crossed above %D — the confirmation"></span>
+            <span class="ck-why">The slower of the two available cross tests, and the one to trust: it waits for the turn to carry through the average instead of firing on a single bar.</span></span></label>
           <label class="ck-item"><input type="checkbox" id="ck-2d" />
             <span><span class="ck-label"
-                  data-put="%K has crossed below %D"
-                  data-call="%K has crossed above %D"></span></span></label>
+                  data-put="Optional — Fast %K is below the %K line"
+                  data-call="Optional — Fast %K is above the %K line"></span>
+            <span class="ck-why">To see Fast %K, add a second Stochastic set to 14 / 1 / 3: its %K line is Fast %K, and its %D line lands exactly on your 14/3/3 %K line. This is the cross the alert engine uses, and it fires earlier than the %K/%D cross above — they disagree on about 1 bar in 8.</span></span></label>
           <label class="ck-item"><input type="checkbox" id="ck-2e" />
             <span><span class="ck-label"
                   data-put="Best confirmation: %K has dropped back under 80"
@@ -1041,6 +1052,20 @@
               <label>Vol baseline (bars)</label>
               <input id="cm_stoch_volexp_lookback" type="number" min="1" max="100" value="5" />
             </div>
+            <div class="filter" title="Also require the signal line to agree: Slow %K above %D for call-side triggers, below for put-side. The trigger itself compares Fast %K against Slow %K — the earlier of the two cross tests, and one TradingView doesn't plot at 14/3/3 (its %K line IS Slow %K). Turning this on makes the rule fire later, less often, and in step with what your chart shows.">
+              <label class="inline-checkbox"><input type="checkbox" id="cm_stoch_apply_kd" /> Require %K/%D confirmation</label>
+            </div>
+            <div class="filter" title="%D is a simple moving average of Slow %K over this many bars — TradingView's third Stochastic input. 3 matches a standard 14/3/3 chart.">
+              <label>%D length</label>
+              <input id="cm_stoch_kd_d_len" type="number" min="2" max="50" value="3" />
+            </div>
+            <div class="filter" title="'Already on the right side' accepts any bar where %K sits the correct side of %D — the usual choice, since the curl and the crossing rarely land on the same bar. 'Crossed on this bar' is far stricter: the crossing must happen on the trigger bar itself.">
+              <label>%K/%D test</label>
+              <select id="cm_stoch_kd_mode">
+                <option value="state" selected>Already on the right side</option>
+                <option value="cross">Crossed on this bar</option>
+              </select>
+            </div>
           </div>
 
           <h4 class="criteria-modal-section-h">Step 1 — context filters</h4>
@@ -1173,6 +1198,89 @@
           <div class="filter-group" data-group="cm_tech_gap" title="Blocks a BEARISH alert when an unfilled gap UP of at least this size sits against it, and a BULLISH alert when an unfilled gap DOWN does. A filled gap never vetoes, whichever way it went.">
             <label class="group-toggle"><input type="checkbox" id="cm_tech_apply_gap" /> Unfilled-gap filter <span class="muted">(veto)</span></label>
             <div class="filter"><label>min gap (%)</label><input id="cm_tech_gap_veto_pct" type="number" min="0" max="100" step="0.25" value="0.5" /></div>
+          </div>
+        </div>
+
+        <div id="cm-criteria-checklist" data-criteria-section="checklist" hidden>
+          <h3 class="criteria-modal-section-h">Entry checklist criteria</h3>
+          <p class="muted criteria-modal-help">Runs the machine-checkable part of the <b>Checklist</b> tab's gate over a ticker list. Every item below is one numbered item on that tab, and the alert renders them back as a ticked list so you can see exactly what was evaluated. Unlike a stochastic rule this checks <b>both sides on every bar</b> and tells you which one set up — put or call is an outcome, not a setting. Items the engine can't judge (a scheduled release, position size, post-entry discipline) ride along in the alert as your job. Alerts at most once per bar per ticker; near-misses are written to the run log with the item that blocked them.</p>
+          <div class="criteria-setup-grid">
+            <div class="filter">
+              <label>Interval</label>
+              <select id="cm_cl_interval">
+                <option value="1m">1 minute</option>
+                <option value="5m" selected>5 minutes</option>
+                <option value="15m">15 minutes</option>
+                <option value="30m">30 minutes</option>
+                <option value="1h">1 hour</option>
+                <option value="1d">1 day</option>
+              </select>
+            </div>
+            <div class="filter" title="Which sides to watch. 'Both' is the point of this rule type — one rule on a ticker list covers puts and calls, and the alert says which set up.">
+              <label>Sides</label>
+              <select id="cm_cl_sides">
+                <option value="both" selected>Both — puts and calls</option>
+                <option value="call">Calls only</option>
+                <option value="put">Puts only</option>
+              </select>
+            </div>
+          </div>
+
+          <h4 class="criteria-modal-section-h">Step 1 — context</h4>
+          <div class="criteria-grid">
+            <div class="filter-group" data-group="cm_cl_gap" title="Item 1a. A put is blocked by an unfilled gap up, a call by an unfilled gap down. The cleanest single discriminator in the 15-21 Sep trades: both winners traded on a -0.06% filled gap, the loser into a +1.60% gap that never filled.">
+              <label class="group-toggle"><input type="checkbox" id="cm_cl_step1_gap" checked /> No unfilled gap against the trade</label>
+              <div class="filter"><label>min gap (%)</label><input id="cm_cl_gap_veto_pct" type="number" min="0" max="100" step="0.25" value="0.5" /></div>
+            </div>
+            <div class="filter-group" data-group="cm_cl_rsi" title="Item 1b. Puts blocked above the ceiling; calls blocked below the floor ONLY while RSI is still falling — a bounce off capitulation lows has a low RSI by construction. The 9/15 call entered at RSI 31.1 rising and won.">
+              <label class="group-toggle"><input type="checkbox" id="cm_cl_step1_rsi" checked /> RSI regime allows the side</label>
+              <div class="filter"><label>RSI length</label><input id="cm_cl_rsi_length" type="number" min="2" max="50" value="14" /></div>
+              <div class="filter"><label>max RSI (puts)</label><input id="cm_cl_rsi_max_for_puts" type="number" min="0" max="100" step="1" value="60" /></div>
+              <div class="filter"><label>min RSI (calls)</label><input id="cm_cl_rsi_min_for_calls" type="number" min="0" max="100" step="1" value="40" /></div>
+            </div>
+            <div class="filter-group" data-group="cm_cl_ext" title="Item 1c. The session extreme in the trade's favour must not be the bar you are standing on — there is nothing to fade while the high is still being made.">
+              <label class="group-toggle"><input type="checkbox" id="cm_cl_step1_failed_extreme" checked /> Price has failed at the session extreme</label>
+            </div>
+            <div class="filter-group" data-group="cm_cl_open" title="Item 1d. Measured against the FIRST BAR OF PRIOR SESSIONS, not the bars before it — every 9:30 print is enormous, so the only meaningful question is whether this one was enormous even for an open. A weak guard: on 9/17 the open was 1.01x a typical open, and the gap and RSI items are what actually block that trade.">
+              <label class="group-toggle"><input type="checkbox" id="cm_cl_step1_open_bar" checked /> 9:30 bar was not a drive against the trade</label>
+              <div class="filter"><label>max × a normal open</label><input id="cm_cl_open_bar_max_ratio" type="number" min="1" max="100" step="0.25" value="1.5" /></div>
+            </div>
+          </div>
+
+          <h4 class="criteria-modal-section-h">Step 2 — signal</h4>
+          <div class="criteria-setup-grid">
+            <div class="filter"><label>%K length</label><input id="cm_cl_k_len" type="number" min="2" max="50" value="14" /></div>
+            <div class="filter" title="%K smoothing — the middle number on a TradingView 14/3/3 Stochastic."><label>%K smoothing</label><input id="cm_cl_smooth" type="number" min="1" max="10" value="3" /></div>
+            <div class="filter" title="%D is a moving average of %K over this many bars — TradingView's third input."><label>%D length</label><input id="cm_cl_d_len" type="number" min="2" max="50" value="3" /></div>
+            <div class="filter"><label>Oversold ≤</label><input id="cm_cl_oversold" type="number" min="0" max="50" step="1" value="20" /></div>
+            <div class="filter"><label>Overbought ≥</label><input id="cm_cl_overbought" type="number" min="50" max="100" step="1" value="80" /></div>
+            <div class="filter" title="Item 2a: the band must have been visited within this many bars."><label>Lookback (bars)</label><input id="cm_cl_lookback_bars" type="number" min="1" max="20" value="4" /></div>
+            <div class="filter" title="Item 2b. The tab says 'at least 3-5 points'. The 9/17 signal was a 1.3-point wiggle at %K 91 that reversed on the next bar — this is the number that rejects it."><label>Min %K turn (points)</label><input id="cm_cl_step2_turn_min" type="number" min="0" max="50" step="0.5" value="3" /></div>
+          </div>
+          <div class="criteria-grid">
+            <div class="filter-group" data-group="cm_cl_fastk" title="Item 2c. The earlier of the two cross tests, and the one your chart does not plot at 14/3/3.">
+              <label class="group-toggle"><input type="checkbox" id="cm_cl_step2_fast_k" checked /> Fast %K agrees</label>
+            </div>
+            <div class="filter-group" data-group="cm_cl_kd" title="Item 2d. The slower cross, and the one visible on your chart: %K the correct side of %D.">
+              <label class="group-toggle"><input type="checkbox" id="cm_cl_step2_kd" checked /> %K is the right side of %D</label>
+            </div>
+            <div class="filter-group" data-group="cm_cl_band" title="Item 2e, the tab's 'best confirmation'. Costs a little entry price and removes most false turns.">
+              <label class="group-toggle"><input type="checkbox" id="cm_cl_step2_exit_band" /> %K is back out of the band</label>
+            </div>
+          </div>
+
+          <h4 class="criteria-modal-section-h">Steps 3 &amp; 4 — volume and plan</h4>
+          <div class="criteria-grid">
+            <div class="filter-group" data-group="cm_cl_vol" title="Item 3. Signal-bar volume against the median of the bars just before it — a ratio, so it needs no per-interval tuning, and the median keeps the 9:30 print from poisoning a short baseline.">
+              <label class="group-toggle"><input type="checkbox" id="cm_cl_step3_volume" checked /> Volume expanded on the signal bar</label>
+              <div class="filter"><label>baseline (bars)</label><input id="cm_cl_vol_lookback" type="number" min="1" max="100" value="5" /></div>
+              <div class="filter"><label>min ratio (×)</label><input id="cm_cl_vol_min_ratio" type="number" min="0" max="100" step="0.1" value="1.5" /></div>
+            </div>
+            <div class="filter-group" data-group="cm_cl_rr" title="Item 4a. Target is the nearest prior-session level ahead (preferring an unfilled gap fill); stop sits just past the session extreme. Both anchors match the tab's worked examples.">
+              <label class="group-toggle"><input type="checkbox" id="cm_cl_step4_rr" checked /> Reward clears the risk multiple</label>
+              <div class="filter"><label>min R : R</label><input id="cm_cl_min_rr" type="number" min="0" max="100" step="0.25" value="1.5" /></div>
+              <div class="filter" title="The stop sits this % beyond the session extreme, so a normal flush doesn't tag it on the low tick of a winner."><label>stop buffer (%)</label><input id="cm_cl_stop_buffer_pct" type="number" min="0" max="2" step="0.05" value="0.15" /></div>
+            </div>
           </div>
         </div>
 

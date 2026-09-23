@@ -757,6 +757,7 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 .rule-row .rule-type-setup { color: var(--accent); border-color: var(--accent); }
 .rule-row .rule-type-stoch { color: var(--accent-2); border-color: var(--accent-2); }
 .rule-row .rule-type-technical { color: var(--green); border-color: var(--green); }
+.rule-row .rule-type-checklist { color: var(--yellow); border-color: var(--yellow); }
 .rule-row .rule-spacer { flex: 1 1 auto; }
 .rule-row button { font-size: 12px; padding: 3px 8px; }
 .rule-row .rule-delete {
@@ -2757,6 +2758,16 @@ button.hidden { display: none; }
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   line-height: 1.5;
 }
+
+/* Explains which plotted line each check refers to — the chart and this
+   app name the stochastic lines differently, and a mislabelled check is
+   a check the user cannot actually perform. */
+.ck-note {
+  margin: 0; padding: 9px 14px; font-size: 12.5px; line-height: 1.55;
+  color: var(--muted); background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.ck-note b { color: var(--text); font-weight: 600; }
 
 .ck-plan { padding: 12px 14px; border-top: 1px solid var(--border); }
 .ck-fields { display: flex; flex-wrap: wrap; gap: 10px; }
