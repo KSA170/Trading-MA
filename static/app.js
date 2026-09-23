@@ -2392,6 +2392,11 @@ function summarizeRuleParams(p, ruleType) {
       out.push(`vol ≥ ${n(p.vol_expansion_min_ratio)}× prior`
                + ` ${n(p.vol_expansion_lookback == null ? 5 : p.vol_expansion_lookback)} bars`);
     }
+    if (p.apply_kd_cross) {
+      const bearish = p.trigger === 'curl_down' || p.trigger === 'entered_overbought';
+      out.push(`%K ${p.kd_mode === 'cross' ? 'crosses' : ''} ${bearish ? 'below' : 'above'}`
+               + ` %D(${n(p.kd_d_len == null ? 3 : p.kd_d_len)})`.replace('  ', ' '));
+    }
     out.push(...summarizeRegimeFilters(
       p, p.trigger === 'curl_down' || p.trigger === 'entered_overbought'));
     return out;
@@ -2819,11 +2824,14 @@ const stochModalInputs = {
   rsi_max_for_puts: $('#cm_stoch_rsi_max_puts'),
   rsi_min_for_calls: $('#cm_stoch_rsi_min_calls'),
   gap_veto_pct: $('#cm_stoch_gap_veto_pct'),
+  kd_d_len: $('#cm_stoch_kd_d_len'),
+  kd_mode: $('#cm_stoch_kd_mode'),
 };
 // Stoch-side Step-1 filter toggles (the rest of that form is numeric).
 const stochModalToggles = {
   apply_rsi_regime: $('#cm_stoch_apply_regime'),
   apply_gap_filter: $('#cm_stoch_apply_gap'),
+  apply_kd_cross: $('#cm_stoch_apply_kd'),
 };
 
 // Technical-rule criteria fields. Keys match technicals.DEFAULT_PARAMS.
@@ -2956,10 +2964,14 @@ function buildStochParamsFromModal() {
     rsi_max_for_puts: num(stochModalInputs.rsi_max_for_puts, 60),
     rsi_min_for_calls: num(stochModalInputs.rsi_min_for_calls, 40),
     gap_veto_pct: num(stochModalInputs.gap_veto_pct, 0.5),
+    kd_d_len: num(stochModalInputs.kd_d_len, 3),
+    kd_mode: (stochModalInputs.kd_mode && stochModalInputs.kd_mode.value) || 'state',
     apply_rsi_regime: !!(stochModalToggles.apply_rsi_regime
                          && stochModalToggles.apply_rsi_regime.checked),
     apply_gap_filter: !!(stochModalToggles.apply_gap_filter
                          && stochModalToggles.apply_gap_filter.checked),
+    apply_kd_cross: !!(stochModalToggles.apply_kd_cross
+                       && stochModalToggles.apply_kd_cross.checked),
   };
 }
 

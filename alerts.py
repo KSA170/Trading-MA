@@ -191,6 +191,21 @@ STOCH_DEFAULT_PARAMS: dict = {
     # absolute floor would have vetoed both winners.
     "vol_expansion_min_ratio": 0.0,
     "vol_expansion_lookback": 5,
+    # %K/%D confirmation. The trigger above compares Fast %K against
+    # Slow %K — the earlier of the two available cross tests, and one a
+    # TradingView Stochastic at 14/3/3 does not plot (its %K line IS our
+    # Slow %K; Fast %K is the unsmoothed series it discards). Turning
+    # this on additionally requires the SIGNAL line to agree: Slow %K
+    # above %D for the call side, below for the put side.
+    #
+    # It is the slower test — it waits for the turn to carry through the
+    # average — so the rule fires later and less often, and the alert
+    # then matches what the chart shows. Off by default; existing rules
+    # keep the Fast-%K-only behaviour.
+    "apply_kd_cross": False,
+    "kd_d_len": 3,             # %D = SMA(Slow %K, this). TradingView's 3rd input.
+    "kd_mode": "state",        # state = %K already on the right side
+                               # cross = %K crossed %D on this very bar
 }
 
 # Technical rules: RSI / MACD / price-streak conditions AND-ed together on
@@ -428,7 +443,13 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _num("rsi_max_for_puts", 60.0, 0.0, 100.0)
         _num("rsi_min_for_calls", 40.0, 0.0, 100.0)
         _num("gap_veto_pct", 0.5, 0.0, 100.0)
-        for key in ("apply_rsi_regime", "apply_gap_filter"):
+        # Minimum 2, not 1: at length 1 the SMA is the identity, %D would
+        # equal %K exactly, and the strict comparison could never be true
+        # — the rule would go permanently silent with no visible cause.
+        _num("kd_d_len", 3, 2, 50, int)
+        if params.get("kd_mode") not in technicals.MODES:
+            params["kd_mode"] = "state"
+        for key in ("apply_rsi_regime", "apply_gap_filter", "apply_kd_cross"):
             params[key] = bool(params.get(key))
         if params["opt_dte_min"] > params["opt_dte_max"]:
             params["opt_dte_min"], params["opt_dte_max"] = \
@@ -1517,6 +1538,32 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
     if not fired:
         return "quiet", None
 
+    # %K/%D confirmation. Always computed so the alert can print %D next
+    # to Slow %K — being able to read the alert off the chart is the
+    # whole point of carrying the signal line — but it only blocks when
+    # the rule asks for it. Fails open: too few bars to form %D passes
+    # rather than muting the rule.
+    d_len = max(1, int(p.get("kd_d_len", 3)))
+    pct_d = technicals.sma_of(slow, d_len)
+    d_now, d_prev = pct_d[-1], (pct_d[-2] if len(pct_d) >= 2 else None)
+    if p.get("apply_kd_cross") and d_now is not None:
+        kd_mode = str(p.get("kd_mode", "state"))
+        side_ok = (slow[-1] < d_now) if bearish else (slow[-1] > d_now)
+        if kd_mode == "cross":
+            # The cross must land on THIS bar: the prior bar has to have
+            # been on the other side (an unknown prior bar is not a cross).
+            prior_other = (d_prev is not None and
+                           ((slow[-2] >= d_prev) if bearish else (slow[-2] <= d_prev)))
+            confirmed = side_ok and prior_other
+        else:
+            confirmed = side_ok
+        if not confirmed:
+            rel = "below" if bearish else "above"
+            verb = f"has not crossed {rel}" if kd_mode == "cross" else f"is not {rel}"
+            return "vetoed", {"ticker": ticker, "reason": (
+                f"%K {slow[-1]:.1f} {verb} %D {d_now:.1f} — the signal line "
+                f"has not confirmed the turn")}
+
     # Step-1 context filters run BEFORE the signal becomes an alert: a
     # rollover that fights a live trend or an open gap never reaches the
     # phone. Returns a 'vetoed' status rather than 'quiet' so the run log
@@ -1544,6 +1591,8 @@ def _evaluate_stoch_rule(ticker: str, p: dict, now: datetime,
         "direction": "bearish" if bearish else "bullish",
         "fast_k": round(fast[-1], 1), "slow_k": round(slow[-1], 1),
         "slow_k_prev": round(slow[-2], 1),
+        "pct_d": round(d_now, 1) if d_now is not None else None,
+        "kd_required": bool(p.get("apply_kd_cross")),
         "vol_now": vol_now, "vol_base": vol_base,
         "vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
         "vol_min_ratio": min_ratio or None,
@@ -1651,9 +1700,17 @@ def _format_stoch_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     lines.append("")
     lines.append(T.row("💰", "Entry", T.b(T.money(sig.get("price")))
                        + f" · {T.esc(sig.get('interval') or '')} bars"))
-    lines.append(T.row("🌀", "Slow %K",
-                       T.b(f"{sig['slow_k_prev']} → {sig['slow_k']}")
-                       + f" · fast {sig['fast_k']} · {trig_txt}"))
+    # Named to match what a TradingView Stochastic plots: its %K line is
+    # our Slow %K, its %D is the signal line, and Fast %K is the
+    # unsmoothed series it doesn't draw. Printing all three means the
+    # alert can be read straight off the chart.
+    stoch_txt = T.b(f"{sig['slow_k_prev']} → {sig['slow_k']}")
+    if sig.get("pct_d") is not None:
+        stoch_txt += f" · %D {sig['pct_d']}"
+        if sig.get("kd_required"):
+            stoch_txt += " ✓"
+    stoch_txt += f" · Fast %K {sig['fast_k']} · {trig_txt}"
+    lines.append(T.row("🌀", "%K", stoch_txt))
     vol_row = _volume_line(sig)
     if vol_row:
         lines.append(vol_row)

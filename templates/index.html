@@ -1051,6 +1051,20 @@
               <label>Vol baseline (bars)</label>
               <input id="cm_stoch_volexp_lookback" type="number" min="1" max="100" value="5" />
             </div>
+            <div class="filter" title="Also require the signal line to agree: Slow %K above %D for call-side triggers, below for put-side. The trigger itself compares Fast %K against Slow %K — the earlier of the two cross tests, and one TradingView doesn't plot at 14/3/3 (its %K line IS Slow %K). Turning this on makes the rule fire later, less often, and in step with what your chart shows.">
+              <label class="inline-checkbox"><input type="checkbox" id="cm_stoch_apply_kd" /> Require %K/%D confirmation</label>
+            </div>
+            <div class="filter" title="%D is a simple moving average of Slow %K over this many bars — TradingView's third Stochastic input. 3 matches a standard 14/3/3 chart.">
+              <label>%D length</label>
+              <input id="cm_stoch_kd_d_len" type="number" min="2" max="50" value="3" />
+            </div>
+            <div class="filter" title="'Already on the right side' accepts any bar where %K sits the correct side of %D — the usual choice, since the curl and the crossing rarely land on the same bar. 'Crossed on this bar' is far stricter: the crossing must happen on the trigger bar itself.">
+              <label>%K/%D test</label>
+              <select id="cm_stoch_kd_mode">
+                <option value="state" selected>Already on the right side</option>
+                <option value="cross">Crossed on this bar</option>
+              </select>
+            </div>
           </div>
 
           <h4 class="criteria-modal-section-h">Step 1 — context filters</h4>
