@@ -410,6 +410,7 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _cnum("step2_turn_min", 3.0, 0.0, 50.0)
         _cnum("vol_lookback", 5, 1, 100, int)
         _cnum("vol_min_ratio", 1.5, 0.0, 100.0)
+        _cnum("vol_window", 2, 1, 20, int)
         _cnum("min_rr", 1.5, 0.0, 100.0)
         _cnum("stop_buffer_pct", 0.15, 0.0, 2.0)
         for key in ("step1_gap", "step1_rsi", "step1_failed_extreme",
