@@ -147,13 +147,23 @@ _LEVEL_FIELDS = (
 
 
 def target_candidates(levels: dict | None, price: float, bearish: bool,
-                      *, max_pct: float = MAX_TARGET_PCT) -> list[dict]:
+                      *, max_pct: float = MAX_TARGET_PCT,
+                      min_pct: float = 0.0) -> list[dict]:
     """Prior-session levels lying AHEAD of `price` in the trade's
     direction, nearest first.
 
     Bullish trades look up (levels above price), bearish trades look
     down. Levels beyond `max_pct` are dropped — an intraday swing is not
-    aiming 8% away.
+    aiming 8% away — and levels NEARER than `min_pct` are dropped too,
+    for the mirror-image reason: once price reaches a level, that level
+    stops being a target and starts being where price already is.
+
+    min_pct defaults to 0 so existing callers are unchanged; the caller
+    that gates on reward passes its own floor. On 2026-09-24 13:10 QQQ
+    sat at 741.79 with the prior close at 741.17 — 0.08% away, which is
+    one median 5m bar. Targeting it scored the trade 0.31:1 and failed
+    the reward test, while the prior low 0.48% below scored 1.82:1. The
+    trade was not bad; the target was.
 
     Each entry: {key, label, price, pct, gap_fill}. gap_fill marks the
     prior close when the trade direction is the direction that closes an
@@ -185,7 +195,7 @@ def target_candidates(levels: dict | None, price: float, bearish: bool,
         if not ahead:
             continue
         pct = (v - price) / price * 100.0
-        if abs(pct) > max_pct:
+        if abs(pct) > max_pct or abs(pct) < min_pct:
             continue
         out.append({
             "key": key,

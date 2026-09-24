@@ -1284,6 +1284,7 @@
               <label class="group-toggle"><input type="checkbox" id="cm_cl_step4_rr" checked /> Reward clears the risk multiple</label>
               <div class="filter"><label>min R : R</label><input id="cm_cl_min_rr" type="number" min="0" max="100" step="0.25" value="1.5" /></div>
               <div class="filter" title="The stop sits this % beyond the session extreme, so a normal flush doesn't tag it on the low tick of a winner."><label>stop buffer (%)</label><input id="cm_cl_stop_buffer_pct" type="number" min="0" max="2" step="0.05" value="0.15" /></div>
+              <div class="filter" title="A prior-session level nearer than this is skipped and the next one used. Once price reaches a level it stops being a target and becomes where price already is. 0.15% is roughly two median QQQ 5m bars (median bar 0.082%, p90 0.180%), so anything inside it sits within one bar's noise."><label>min target distance (%)</label><input id="cm_cl_target_min_pct" type="number" min="0" max="5" step="0.05" value="0.15" /></div>
             </div>
           </div>
         </div>

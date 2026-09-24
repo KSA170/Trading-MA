@@ -95,6 +95,14 @@ DEFAULT_PARAMS: dict = {
     "step4_rr": True,
     "min_rr": 1.5,
     "stop_buffer_pct": 0.15,
+    # A prior-session level nearer than this stops being a target and
+    # becomes where price already is. 0.15% is about two median QQQ 5m
+    # bars (the median bar spans 0.082% of price, p90 is 0.180%), so a
+    # target inside it sits within a single bar's noise. Measured on
+    # 2026-09-24: price 741.79, prior close 741.17 — 0.08% away — scored
+    # the trade 0.31:1 and failed the reward test, while the prior low
+    # 0.48% below scored 1.82:1.
+    "target_min_pct": 0.15,
 }
 
 SIDES = ("both", "call", "put")
@@ -119,6 +127,14 @@ def _f(v):
 # --- individual checks ----------------------------------------------------
 # Each returns (ok, detail). detail always describes the reading, whether
 # it passed or not, so a near-miss is legible in the run log.
+
+
+def _targets(lv, price, bearish, p):
+    """Target candidates under this rule's own minimum-distance floor.
+    Both the reward gate and the reported plan go through here so they
+    can never disagree about which level is being aimed at."""
+    return levels_mod.target_candidates(
+        lv, price, bearish, min_pct=float(p.get("target_min_pct", 0.15)))
 
 
 def check_gap(bars, lv, bearish, p):
@@ -338,10 +354,11 @@ def check_rr(price, lv, bearish, p):
     """Tab item 4a: reward at least min_rr x risk, using prior-session
     structure for the target and the session extreme for the stop — the
     same two anchors the tab's worked examples use."""
-    cands = levels_mod.target_candidates(lv, price, bearish)
+    cands = _targets(lv, price, bearish, p)
     target = levels_mod.primary_target(cands)
     if not target:
-        return False, "no prior-session level ahead to target"
+        return False, ("no prior-session level far enough ahead to target "
+                       f"(need {float(p.get('target_min_pct', 0.15)):.2f}% clear)")
     buf = float(p.get("stop_buffer_pct", 0.15)) / 100.0
     if not lv:
         return False, "no session levels"
@@ -403,7 +420,7 @@ def evaluate_side(bars, fast, slow, pct_d, bearish: bool, p: dict) -> dict:
 
     # The plan numbers ride along whether or not the R:R item is enabled —
     # an alert without a target and a stop is not actionable.
-    cands = levels_mod.target_candidates(lv, price, bearish)
+    cands = _targets(lv, price, bearish, p)
     target = levels_mod.primary_target(cands)
     ext = (lv or {}).get("session_high" if bearish else "session_low")
     if target and ext is not None:
