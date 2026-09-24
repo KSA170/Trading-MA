@@ -2362,7 +2362,8 @@ function summarizeRuleParams(p, ruleType) {
       rest.push(`vol ≥ ${n(p.vol_min_ratio)}× prior ${n(p.vol_lookback)}`
                 + (w > 1 ? ` (within ${n(w)} bars)` : ''));
     }
-    if (p.step4_rr) rest.push(`R:R ≥ ${n(p.min_rr)}`);
+    if (p.step4_rr) rest.push(`R:R ≥ ${n(p.min_rr)}`
+                              + ` (target ≥ ${n(p.target_min_pct == null ? 0.15 : p.target_min_pct)}% away)`);
     if (rest.length) out.push(rest.join(' · '));
     return out;
   }
@@ -2950,6 +2951,7 @@ const clModalInputs = {
   vol_window: $('#cm_cl_vol_window'),
   min_rr: $('#cm_cl_min_rr'),
   stop_buffer_pct: $('#cm_cl_stop_buffer_pct'),
+  target_min_pct: $('#cm_cl_target_min_pct'),
 };
 const clModalToggles = {
   closed_only: $('#cm_cl_closed_only'),
