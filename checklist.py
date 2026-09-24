@@ -40,6 +40,11 @@ MANUAL_ITEMS = (
 DEFAULT_PARAMS: dict = {
     "interval": "5m",
     "sides": "both",                 # both | call | put
+    # Evaluate only bars that have closed. ON by default: alerts.py explains
+    # the measurement, but the short version is that reading the forming bar
+    # produced 5 false starts in 12 alerts over 7 sessions, and a sent alert
+    # cannot be recalled. Turn it off to trade the bar as it forms.
+    "closed_only": True,
 
     # --- Step 1: context ------------------------------------------------
     "step1_gap": True,
