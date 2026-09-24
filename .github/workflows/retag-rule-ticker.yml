@@ -1,0 +1,96 @@
+name: Retag rule ticker
+
+# One-off maintenance: swap one ticker symbol inside an alert rule's
+# hand-typed ticker list. Added to fix rule 35, whose scope carried a bare
+# ONEX that 404s on Yahoo every run (the TSX listing is ONEX.TO, which
+# rule 34 already had right).
+#
+# Deliberately narrow: it edits exactly one symbol in exactly one rule,
+# refuses if that rule is not a ticker-scoped rule, and refuses if the
+# symbol it was told to replace is not actually there — so a re-run after
+# the fix is a no-op rather than a second mutation. Run it with dry_run
+# first to see the before/after without writing.
+on:
+  workflow_dispatch:
+    inputs:
+      rule_id:
+        description: 'Alert rule id to edit'
+        required: true
+        default: '35'
+      from_ticker:
+        description: 'Symbol to replace (exact, case-insensitive)'
+        required: true
+        default: 'ONEX'
+      to_ticker:
+        description: 'Replacement symbol'
+        required: true
+        default: 'ONEX.TO'
+      dry_run:
+        description: 'Show the change without writing it'
+        type: boolean
+        default: true
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Retag
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RULE_ID: ${{ inputs.rule_id }}
+          FROM_T: ${{ inputs.from_ticker }}
+          TO_T: ${{ inputs.to_ticker }}
+          DRY: ${{ inputs.dry_run }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          import alerts
+
+          rid = int(os.environ["RULE_ID"])
+          frm = os.environ["FROM_T"].strip().upper()
+          to = os.environ["TO_T"].strip().upper()
+          dry = os.environ.get("DRY", "true").lower() == "true"
+
+          rule = next((r for r in alerts.list_rules() if r["id"] == rid), None)
+          if not rule:
+              sys.exit(f"rule {rid} not found")
+          print(f'rule {rid}: "{rule["name"]}"  type={rule["rule_type"]}  '
+                f'scope={rule["scope_type"]}')
+          if rule["scope_type"] != "tickers":
+              sys.exit(f"rule {rid} is scoped by {rule['scope_type']}, "
+                       "not a hand-typed ticker list — nothing to retag")
+
+          before = rule["scope_value"] or ""
+          parts = [t.strip().upper() for t in before.split(",") if t.strip()]
+          print(f"before: {before}")
+          if frm not in parts:
+              # Idempotent: a second run after the fix lands here and stops.
+              print(f"'{frm}' is not in this rule's list — nothing to do")
+              if to in parts:
+                  print(f"('{to}' is already present, so this looks already fixed)")
+              sys.exit(0)
+
+          swapped = [to if t == frm else t for t in parts]
+          after = alerts.normalize_ticker_scope(",".join(swapped))
+          if not after:
+              sys.exit("normalized to an empty list — refusing to write")
+          print(f"after : {after}")
+          if dry:
+              print("\nDRY RUN — nothing written. Re-run with dry_run=false to apply.")
+              sys.exit(0)
+
+          if not alerts.update_rule(rid, scope_value=after):
+              sys.exit("update_rule returned False — nothing written")
+          again = next((r for r in alerts.list_rules() if r["id"] == rid), None)
+          print(f"\nre-read: {again['scope_value']}")
+          if again["scope_value"] != after:
+              sys.exit("write did not stick")
+          print("OK — rule updated")
+          PY
