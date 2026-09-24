@@ -2341,7 +2341,8 @@ function summarizeRuleParams(p, ruleType) {
   if (ruleType === 'checklist') {
     const sides = p.sides === 'call' ? 'calls only'
                 : p.sides === 'put' ? 'puts only' : 'puts + calls';
-    const out = [`${p.interval || '5m'} bars · ${sides}`];
+    const out = [`${p.interval || '5m'} bars · ${sides}`
+                 + (p.closed_only === false ? ' · live bar' : ' · closed bars')];
     // Only the items actually enforced, so the row says what the gate is.
     const step1 = [];
     if (p.step1_gap) step1.push(`no unfilled gap ≥ ${n(p.gap_veto_pct)}%`);
@@ -2951,6 +2952,7 @@ const clModalInputs = {
   stop_buffer_pct: $('#cm_cl_stop_buffer_pct'),
 };
 const clModalToggles = {
+  closed_only: $('#cm_cl_closed_only'),
   step1_gap: $('#cm_cl_step1_gap'),
   step1_rsi: $('#cm_cl_step1_rsi'),
   step1_failed_extreme: $('#cm_cl_step1_failed_extreme'),

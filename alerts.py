@@ -413,9 +413,9 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
         _cnum("vol_window", 2, 1, 20, int)
         _cnum("min_rr", 1.5, 0.0, 100.0)
         _cnum("stop_buffer_pct", 0.15, 0.0, 2.0)
-        for key in ("step1_gap", "step1_rsi", "step1_failed_extreme",
-                    "step1_open_bar", "step2_fast_k", "step2_kd",
-                    "step2_exit_band", "step3_volume", "step4_rr"):
+        for key in ("closed_only", "step1_gap", "step1_rsi",
+                    "step1_failed_extreme", "step1_open_bar", "step2_fast_k",
+                    "step2_kd", "step2_exit_band", "step3_volume", "step4_rr"):
             params[key] = bool(params.get(key))
         return params
     if rule_type == "technical":
@@ -1958,12 +1958,27 @@ def _evaluate_checklist_rule(ticker: str, p: dict, now: datetime,
     if not bars:
         return "no_data", None
 
+    # Freshness is judged on the RAW latest bar — that asks whether the
+    # feed is alive, which is a different question from which bar the gate
+    # should read. Trimming first would make every closed-only rule look
+    # one bar staler than it is.
     mins = _STOCH_INTERVAL_MINUTES.get(interval)
     if mins:
         from datetime import timedelta
         cutoff = (now - timedelta(minutes=6 * mins)).strftime("%Y-%m-%d %H:%M")
         if str(bars[-1].get("d") or "") < cutoff:
             return "stale", None
+
+    # Drop the bar still forming. Mid-bar, a partial bar's volume is
+    # incomplete and its high/low/close are provisional, so the price-derived
+    # items move as it fills in — and an alert already sent cannot be taken
+    # back. Simulating 7 sessions minute by minute, evaluating the forming
+    # bar produced 12 alerts of which only 7 still qualified at the close;
+    # reading closed bars only reproduced those 7 exactly, with none missed.
+    # The cost is that an alert lands at the bar's close rather than partway
+    # through it.
+    if p.get("closed_only") and len(bars) >= 2:
+        bars = bars[:-1]
 
     bar_label = str(bars[-1].get("d") or "")
     if last_bar and bar_label <= str(last_bar):

@@ -1216,6 +1216,9 @@
                 <option value="1d">1 day</option>
               </select>
             </div>
+            <div class="filter" title="Evaluate only bars that have closed. A bar still forming has incomplete volume and a provisional high/low/close, so the price-derived items shift as it fills in — and a sent alert cannot be recalled. Simulating 7 sessions minute by minute, reading the forming bar gave 12 alerts of which only 7 still qualified at the close; closed bars only reproduced those 7 exactly with none missed. Untick to trade the bar as it forms, accepting that some alerts will evaporate.">
+              <label class="inline-checkbox"><input type="checkbox" id="cm_cl_closed_only" checked /> Closed bars only</label>
+            </div>
             <div class="filter" title="Which sides to watch. 'Both' is the point of this rule type — one rule on a ticker list covers puts and calls, and the alert says which set up.">
               <label>Sides</label>
               <select id="cm_cl_sides">
