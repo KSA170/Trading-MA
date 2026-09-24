@@ -1219,6 +1219,10 @@
             <div class="filter" title="Evaluate only bars that have closed. A bar still forming has incomplete volume and a provisional high/low/close, so the price-derived items shift as it fills in — and a sent alert cannot be recalled. Simulating 7 sessions minute by minute, reading the forming bar gave 12 alerts of which only 7 still qualified at the close; closed bars only reproduced those 7 exactly with none missed. Untick to trade the bar as it forms, accepting that some alerts will evaporate.">
               <label class="inline-checkbox"><input type="checkbox" id="cm_cl_closed_only" checked /> Closed bars only</label>
             </div>
+            <div class="filter" title="Latest bar time (ET) that may still produce an alert. An alert lands about a minute after its bar closes, so a signal on the 15:55 bar arrives around 16:01 — after the close, with nothing to act on. 15:45 blocks the last three 5m bars. Clear the field to disable the cutoff. Daily and higher intervals ignore it, having no clock to compare against.">
+              <label>No entry after (ET)</label>
+              <input id="cm_cl_no_entry_after" type="text" placeholder="15:45" value="15:45" autocomplete="off" />
+            </div>
             <div class="filter" title="Which sides to watch. 'Both' is the point of this rule type — one rule on a ticker list covers puts and calls, and the alert says which set up.">
               <label>Sides</label>
               <select id="cm_cl_sides">

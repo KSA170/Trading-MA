@@ -2342,7 +2342,8 @@ function summarizeRuleParams(p, ruleType) {
     const sides = p.sides === 'call' ? 'calls only'
                 : p.sides === 'put' ? 'puts only' : 'puts + calls';
     const out = [`${p.interval || '5m'} bars · ${sides}`
-                 + (p.closed_only === false ? ' · live bar' : ' · closed bars')];
+                 + (p.closed_only === false ? ' · live bar' : ' · closed bars')
+                 + (p.no_entry_after ? ` · no entry after ${p.no_entry_after}` : '')];
     // Only the items actually enforced, so the row says what the gate is.
     const step1 = [];
     if (p.step1_gap) step1.push(`no unfilled gap ≥ ${n(p.gap_veto_pct)}%`);
@@ -2934,6 +2935,7 @@ const _stochModalDefaults = _snapshotModalState(stochModalInputs, stochModalTogg
 const clModalInputs = {
   interval: $('#cm_cl_interval'),
   sides: $('#cm_cl_sides'),
+  no_entry_after: $('#cm_cl_no_entry_after'),
   gap_veto_pct: $('#cm_cl_gap_veto_pct'),
   rsi_length: $('#cm_cl_rsi_length'),
   rsi_max_for_puts: $('#cm_cl_rsi_max_for_puts'),
@@ -2966,7 +2968,7 @@ const clModalToggles = {
   step4_rr: $('#cm_cl_step4_rr'),
 };
 // Everything in clModalInputs except these two selects is numeric.
-const _CL_TEXT_KEYS = new Set(['interval', 'sides']);
+const _CL_TEXT_KEYS = new Set(['interval', 'sides', 'no_entry_after']);
 // Declared after the maps above: this snapshot READS them, so hoisting
 // it next to the other defaults puts it in their temporal dead zone.
 const _clModalDefaults = _snapshotModalState(clModalInputs, clModalToggles);

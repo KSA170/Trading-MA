@@ -235,7 +235,11 @@ _TECH_CLOSED_ONLY_INTERVALS = ("1d", "1wk", "1mo")
 # every bar and report which one set up, because the checklist mirrors and
 # the side is an outcome rather than a setting. Params + item math live in
 # checklist.py.
+import re as _re
 import checklist as checklist_mod
+
+# Bar clocks are ET "HH:MM"; a cutoff must be comparable to one.
+_re_hhmm = _re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 
 CHECKLIST_DEFAULT_PARAMS: dict = dict(checklist_mod.DEFAULT_PARAMS)
 _CHECKLIST_PARAM_KEYS = frozenset(CHECKLIST_DEFAULT_PARAMS.keys())
@@ -388,6 +392,12 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
             params["interval"] = "5m"
         if params.get("sides") not in checklist_mod.SIDES:
             params["sides"] = "both"
+        # "HH:MM" or blank. Anything else would be compared as a string
+        # against a bar's clock and silently mute or ignore the cutoff.
+        _cut = str(params.get("no_entry_after") or "").strip()
+        if _cut and not _re_hhmm.fullmatch(_cut):
+            _cut = "15:45"
+        params["no_entry_after"] = _cut
 
         def _cnum(key, dflt, lo, hi, cast=float):
             try:
@@ -1982,6 +1992,22 @@ def _evaluate_checklist_rule(ticker: str, p: dict, now: datetime,
         bars = bars[:-1]
 
     bar_label = str(bars[-1].get("d") or "")
+
+    # Late-session cutoff. An alert lands about a minute after its bar
+    # closes, so a signal on the 15:55 bar arrives around 16:01 — after
+    # the bell, with nothing to act on. The bars just before it are barely
+    # better: 15:50 leaves four minutes, and the checklist's own exit rule
+    # gives a trade sixty.
+    #
+    # Only intraday labels carry a time ("YYYY-MM-DD HH:MM"); a daily or
+    # higher interval has no clock to compare against, so it never fires
+    # this. Blank disables the cutoff entirely.
+    cutoff_hhmm = str(p.get("no_entry_after") or "").strip()
+    if cutoff_hhmm and " " in bar_label and bar_label[11:16] >= cutoff_hhmm:
+        return "vetoed", {"ticker": ticker, "reason": (
+            f"bar {bar_label[11:16]} is at or past the {cutoff_hhmm} entry "
+            f"cutoff — too little session left to run the trade")}
+
     if last_bar and bar_label <= str(last_bar):
         return "deduped", None
 

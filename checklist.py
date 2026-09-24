@@ -40,6 +40,12 @@ MANUAL_ITEMS = (
 DEFAULT_PARAMS: dict = {
     "interval": "5m",
     "sides": "both",                 # both | call | put
+    # Latest bar time (ET, "HH:MM") that may still produce an alert; blank
+    # disables it. 15:45 blocks the last three 5m bars of a session. The
+    # hard defect is the 15:55 bar, whose alert lands around 16:01 — after
+    # the close — but 15:50 leaves four tradeable minutes and 15:45 leaves
+    # nine, against a checklist whose own exit rule gives a trade sixty.
+    "no_entry_after": "15:45",
     # Evaluate only bars that have closed. ON by default: alerts.py explains
     # the measurement, but the short version is that reading the forming bar
     # produced 5 false starts in 12 alerts over 7 sessions, and a sent alert
