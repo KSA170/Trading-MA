@@ -82,7 +82,22 @@ DEFAULT_PARAMS: dict = {
 
     # --- Step 3: volume -------------------------------------------------
     "step3_volume": True,
-    "vol_lookback": 5,
+    # 20 bars, confined to the current session. A 5-bar baseline cannot
+    # survive a capitulation: on QQQ 2026-09-28 the 10:40 and 10:45 bars
+    # ran 2.21x and 2.29x, which lifted the median from 415k to 641k, and
+    # the bounce bars that followed then scored 0.81x-1.02x. The reversal
+    # was being measured against the panic that produced it, which is the
+    # one setup this item exists to confirm. A median cannot ignore two
+    # spikes in a window of five; at twenty it can.
+    #
+    # Session-confined because a 20-bar intraday window otherwise reaches
+    # back over the overnight gap — at 10:55 on 09-28 it began at 15:45 the
+    # previous Friday. Measured over 8 ETFs x 10 sessions, confining it was
+    # worth roughly a fifth of total return and is what clears that 10:55
+    # bar (1.45x crossing sessions, which still fails, against a pass when
+    # confined).
+    "vol_lookback": 20,
+    "vol_same_session": True,
     "vol_min_ratio": 1.5,
     # How many bars, ending at the signal bar, may carry the expansion.
     # 1 is the literal reading of the tab ("the signal bar"); 2 also
@@ -333,16 +348,18 @@ def check_volume(bars, p):
     first one clearing the ratio satisfies the item. The detail always
     names WHICH bar carried it, so a reader can find it on the chart.
     """
-    lb = max(1, int(p.get("vol_lookback", 5)))
+    lb = max(1, int(p.get("vol_lookback", 20)))
     win = max(1, int(p.get("vol_window", 2)))
     need = float(p.get("vol_min_ratio", 1.5))
+    same_sess = bool(p.get("vol_same_session", True))
     idx = len(bars) - 1
     best = None
     for back in range(win):
         i = idx - back
         if i < 0:
             break
-        now, base, ratio = TH.volume_expansion(bars, i, lb)
+        now, base, ratio = TH.volume_expansion(bars, i, lb,
+                                               same_session=same_sess)
         if ratio is None:
             continue
         where = ("on the signal bar" if back == 0
