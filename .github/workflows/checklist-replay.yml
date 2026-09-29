@@ -1,0 +1,151 @@
+name: Checklist replay
+
+# Replays the checklist rule over a historical window using the rule's OWN
+# stored parameters, and can send the resulting alert to Telegram so the
+# whole path can be seen end to end.
+#
+# Two things it deliberately does NOT do:
+#   * it never writes to alert_sent or stoch_rule_state, so a replay cannot
+#     silence a real alert later by claiming a bar was already seen, and
+#     cannot pollute outcome tracking;
+#   * it never sends without send=true, so the default run is a dry
+#     inspection that prints what would have gone out.
+#
+# Every message it does send is stamped as a replay, because an alert that
+# looks live but describes a bar from last week is a way to lose money.
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: 'Comma-separated, e.g. QQQ or QQQ,SPY'
+        required: true
+        default: 'QQQ'
+      day:
+        description: 'Session date, YYYY-MM-DD'
+        required: true
+        default: '2026-09-28'
+      from_time:
+        description: 'First bar to evaluate, ET HH:MM'
+        required: true
+        default: '10:30'
+      to_time:
+        description: 'Last bar to evaluate, ET HH:MM'
+        required: true
+        default: '11:30'
+      rule_id:
+        description: 'Checklist rule to borrow settings from (blank = first one found)'
+        required: false
+        default: ''
+      send:
+        description: 'Actually send to Telegram'
+        type: boolean
+        default: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Replay
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TICKERS: ${{ inputs.tickers }}
+          DAY: ${{ inputs.day }}
+          FROM_T: ${{ inputs.from_time }}
+          TO_T: ${{ inputs.to_time }}
+          RULE_ID: ${{ inputs.rule_id }}
+          SEND: ${{ inputs.send }}
+        run: |
+          python - <<'PY'
+          import os, sys, re
+          from datetime import datetime, timedelta
+          import yfinance as yf
+          import alerts, calculators
+
+          tickers = [t.strip().upper() for t in os.environ["TICKERS"].split(",") if t.strip()]
+          day = os.environ["DAY"].strip()
+          t_from = os.environ["FROM_T"].strip()
+          t_to = os.environ["TO_T"].strip()
+          send = os.environ.get("SEND", "false").lower() == "true"
+          rid = os.environ.get("RULE_ID", "").strip()
+
+          rules = [r for r in alerts.list_rules() if r["rule_type"] == "checklist"]
+          if rid:
+              rules = [r for r in rules if str(r["id"]) == rid]
+          if not rules:
+              sys.exit("no checklist rule found" + (f" with id {rid}" if rid else ""))
+          rule = rules[0]
+          p = alerts._clean_params(rule["params"], "checklist")
+          print(f'rule {rule["id"]} "{rule["name"]}"  scope={rule["scope_value"]}')
+          for k in ("interval", "sides", "vol_lookback", "vol_min_ratio",
+                    "vol_window", "step1_gap", "step1_rsi", "min_rr",
+                    "closed_only", "no_entry_after"):
+              print(f"    {k} = {p.get(k)}")
+          print(f"\nreplaying {day} {t_from}..{t_to} for {', '.join(tickers)}"
+                f"   send={send}\n")
+
+          # Enough history for the indicators and the prior session's levels.
+          start = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=12)).date()
+          end = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).date()
+          fired_any = False
+
+          for tk in tickers:
+              df = yf.download(tk, start=str(start), end=str(end), interval=p["interval"],
+                               progress=False, threads=False, auto_adjust=False)
+              if getattr(df.columns, "nlevels", 1) > 1:
+                  df.columns = df.columns.droplevel(1)
+              bars = calculators._df_to_bars(df, p["interval"])
+              if not bars:
+                  print(f"{tk}: no bars"); continue
+              idx = [k for k, b in enumerate(bars)
+                     if b["d"][:10] == day and t_from <= b["d"][11:16] <= t_to]
+              if not idx:
+                  print(f"{tk}: no bars in that window"); continue
+              last_bar = None
+              for i in idx:
+                  # closed_only reads bars[-2], so feed one bar past the target.
+                  window = bars[:i + 2] if p.get("closed_only") else bars[:i + 1]
+                  if len(window) > len(bars):
+                      continue
+                  calculators._cache.clear()
+                  calculators.fetch_bars = (
+                      lambda t, iv, __w=window, **kw: (list(__w), "replay"))
+                  when = datetime.strptime(bars[i]["d"], "%Y-%m-%d %H:%M") + timedelta(minutes=6)
+                  st, sig = alerts._evaluate_checklist_rule(tk, p, when, last_bar=last_bar)
+                  lbl = bars[i]["d"][11:16]
+                  if st == "fired":
+                      fired_any = True
+                      last_bar = sig["bar_time"]
+                      print(f"  {tk} {lbl}  FIRED  {sig['side'].upper()} @ {sig['price']:.2f}")
+                      body = alerts._format_checklist_alert(rule["name"], sig, when)
+                      banner = (
+                          "\U0001F9EA <b>REPLAY — historical test, NOT a live signal</b>\n"
+                          f"<i>bar {sig['bar_time']} ET, replayed "
+                          f"{datetime.utcnow():%Y-%m-%d %H:%M} UTC</i>\n\n")
+                      if send:
+                          ok = alerts.send_telegram(banner + body)
+                          print(f"         telegram: {'sent' if ok else 'FAILED'}")
+                      else:
+                          print("         (dry run — not sent)")
+                          print(re.sub(r"</?[bi]>", "",
+                                       "\n".join("         " + l
+                                                 for l in body.splitlines())))
+                  elif st == "quiet" and sig:
+                      print(f"  {tk} {lbl}  no  ({sig.get('near_side')}): "
+                            + ", ".join(sig.get("failed") or [])[:110])
+                  else:
+                      print(f"  {tk} {lbl}  {st}")
+
+          print("\nNOTE: nothing was written to alert_sent or stoch_rule_state, so this "
+                "replay cannot affect live dedupe or outcome tracking.")
+          if not fired_any:
+              print("No bar in that window passed the gate.")
+          PY
