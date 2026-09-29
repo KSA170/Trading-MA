@@ -225,6 +225,7 @@ def cond_streak(bars: list[dict], idx: int, *, bars_n: int, streak_mode: str,
       close       — each close above the prior close (bearish: below)
       green       — each bar closes above its own open (bearish: red)
       close_green — both close-vs-prior-close AND body colour
+      high_green  — both high-vs-prior-high AND body colour
     """
     if bars_n < 1 or idx + 1 < bars_n + 1:
         return False, None
@@ -254,6 +255,10 @@ def cond_streak(bars: list[dict], idx: int, *, bars_n: int, streak_mode: str,
     elif streak_mode == "close_green":
         ok = _seq_ok(closes) and _body_ok()
         label = (f"{bars_n}-bar {'lower' if bearish else 'higher'}-close + "
+                 f"{'red' if bearish else 'green'} streak")
+    elif streak_mode == "high_green":
+        ok = _seq_ok(lows if bearish else highs) and _body_ok()
+        label = (f"{bars_n}-bar {'lower-low' if bearish else 'higher-high'} + "
                  f"{'red' if bearish else 'green'} streak")
     else:  # "high" (bearish: lows)
         ok = _seq_ok(lows if bearish else highs)
@@ -432,7 +437,7 @@ DEFAULT_PARAMS: dict = {
 
     "apply_streak": False,
     "streak_bars": 3,
-    "streak_mode": "close",          # high | close | green | close_green
+    "streak_mode": "close",          # high | close | green | close_green | high_green
 
     # Absolute liquidity floor, OFF by default. It is measured in
     # PER-BAR volume on the rule's own interval, which makes a single
@@ -477,7 +482,7 @@ REGIME_PARAM_DEFAULTS: dict = {
 }
 
 MODES = ("state", "cross")
-STREAK_MODES = ("high", "close", "green", "close_green")
+STREAK_MODES = ("high", "close", "green", "close_green", "high_green")
 DIRECTIONS = ("bullish", "bearish")
 
 

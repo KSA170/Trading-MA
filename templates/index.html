@@ -128,11 +128,13 @@
           </div>
           <div class="filter">
             <label>Mode</label>
+            <!-- data-chip is the short form the ACTIVE filter chip shows. -->
             <select id="streak_mode">
-              <option value="high">Higher highs (high &gt; prior high)</option>
-              <option value="close">Higher closes (close &gt; prior close)</option>
-              <option value="green">Green bodies (close &gt; open)</option>
-              <option value="close_green">Higher closes &amp; green bodies (both)</option>
+              <option value="high" data-chip="higher highs">Higher highs (high &gt; prior high)</option>
+              <option value="close" data-chip="higher closes">Higher closes (close &gt; prior close)</option>
+              <option value="green" data-chip="green bodies">Green bodies (close &gt; open)</option>
+              <option value="close_green" data-chip="higher closes + green">Higher closes &amp; green bodies (both)</option>
+              <option value="high_green" data-chip="higher highs + green">Higher highs &amp; green bodies (both)</option>
             </select>
           </div>
         </div>
@@ -1172,6 +1174,7 @@
                 <option value="high">higher high / lower low</option>
                 <option value="green">green / red candles</option>
                 <option value="close_green">close + candle colour</option>
+                <option value="high_green">high/low + candle colour</option>
               </select>
             </div>
           </div>
@@ -1320,6 +1323,7 @@
                 <option value="close">Higher closes (close &gt; prior close)</option>
                 <option value="green">Green bodies (close &gt; open)</option>
                 <option value="close_green">Higher closes &amp; green bodies (both)</option>
+                <option value="high_green">Higher highs &amp; green bodies (both)</option>
               </select>
             </div>
           </div>

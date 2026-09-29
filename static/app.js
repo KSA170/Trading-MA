@@ -1274,6 +1274,7 @@ function columnLabel(def) {
     const suffix = mode === 'close' ? 'HC'
       : mode === 'green' ? 'green'
       : mode === 'close_green' ? 'HC+G'
+      : mode === 'high_green' ? 'HH+G'
       : 'HH';
     return (Number.isFinite(n) && n > 0) ? `${n}d ${suffix}` : suffix;
   }
@@ -2316,6 +2317,7 @@ function streakModeLabel(m) {
   return m === 'close' ? 'higher closes'
     : m === 'green' ? 'green bodies'
     : m === 'close_green' ? 'higher closes + green'
+    : m === 'high_green' ? 'higher highs + green'
     : 'higher highs';
 }
 // Step-1 context vetoes, rendered the same way for stoch and technical
@@ -2393,6 +2395,7 @@ function summarizeRuleParams(p, ruleType) {
                         high: bear ? 'lower-low' : 'higher-high',
                         green: bear ? 'red' : 'green',
                         close_green: bear ? 'lower-close + red' : 'higher-close + green',
+                        high_green: bear ? 'lower-low + red' : 'higher-high + green',
                       }[p.streak_mode] || p.streak_mode;
       out.push(`${n(p.streak_bars)}-bar ${modeTxt} streak`);
     }
@@ -6022,12 +6025,29 @@ loadDates();
     const l = group.querySelector('.group-label');
     return l ? norm(l.textContent) : '';
   }
+  // A chip's detail is the group's numeric values (range groups have a
+  // min/max pair) plus the label of any <select> in the group — without
+  // the select, a chip like "Price streak 3" hides the one setting that
+  // decides what the streak means. Long option text would swamp the chip,
+  // so an option can carry a short `data-chip` form.
   function groupValues(group) {
-    const vals = [];
+    const nums = [];
     group.querySelectorAll('input[type="number"], input[type="text"]').forEach((inp) => {
-      if (inp.value !== '' && !inp.disabled) vals.push(inp.value);
+      if (inp.value !== '' && !inp.disabled) nums.push(inp.value);
     });
-    return vals.slice(0, 2); // range-style groups have min/max; keep it terse
+    const opts = [];
+    group.querySelectorAll('select').forEach((sel) => {
+      if (sel.disabled) return;
+      const opt = sel.selectedOptions && sel.selectedOptions[0];
+      if (!opt) return;
+      const txt = norm(opt.dataset.chip || opt.textContent);
+      if (txt) opts.push(txt);
+    });
+    const parts = [];
+    // range-style groups have min/max; keep it terse
+    if (nums.length) parts.push(nums.slice(0, 2).join('–'));
+    parts.push(...opts.slice(0, 2));
+    return parts;
   }
 
   function refresh() {
@@ -6066,7 +6086,7 @@ loadDates();
       const b = document.createElement('b');
       b.textContent = label;
       chip.appendChild(b);
-      if (vals.length) chip.appendChild(document.createTextNode(' ' + vals.join('–')));
+      if (vals.length) chip.appendChild(document.createTextNode(' ' + vals.join(' · ')));
       const x = document.createElement('button');
       x.type = 'button';
       x.className = 'chip-x';
