@@ -291,7 +291,8 @@ def _median(vals: list[float]) -> float:
     return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
 
 
-def volume_expansion(bars: list[dict], idx: int, lookback: int = 5):
+def volume_expansion(bars: list[dict], idx: int, lookback: int = 5, *,
+                     same_session: bool = False):
     """(bar_volume, baseline, ratio) at `idx`, where the baseline is the
     MEDIAN volume of the `lookback` bars IMMEDIATELY BEFORE it. Any of
     the three is None when the data doesn't support the measure.
@@ -324,9 +325,22 @@ def volume_expansion(bars: list[dict], idx: int, lookback: int = 5):
             return None
 
     now = _v(bars[idx])
-    base_vals = [v for v in (_v(b) for b in bars[idx - lookback:idx])
-                 if v is not None]
-    if now is None or len(base_vals) < lookback:
+    window = bars[idx - lookback:idx]
+    need = lookback
+    if same_session:
+        # A long intraday baseline otherwise reaches back across the
+        # overnight gap into the previous session, whose closing bars carry
+        # a different volume regime. Confining it costs completeness early
+        # in a session, so the minimum shrinks to 3 rather than blocking
+        # until the window fills.
+        lbl = str(bars[idx].get("d") or "") if isinstance(bars[idx], dict) else ""
+        if " " in lbl:
+            day = lbl[:10]
+            window = [b for b in window
+                      if str((b or {}).get("d") or "")[:10] == day]
+            need = min(lookback, 3)
+    base_vals = [v for v in (_v(b) for b in window) if v is not None]
+    if now is None or len(base_vals) < need:
         return now, None, None
     base = _median(base_vals)
     if base <= 0:

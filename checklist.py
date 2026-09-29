@@ -82,7 +82,22 @@ DEFAULT_PARAMS: dict = {
 
     # --- Step 3: volume -------------------------------------------------
     "step3_volume": True,
-    "vol_lookback": 5,
+    # 20 bars, confined to the current session. A 5-bar baseline cannot
+    # survive a capitulation: on QQQ 2026-09-28 the 10:40 and 10:45 bars
+    # ran 2.21x and 2.29x, which lifted the median from 415k to 641k, and
+    # the bounce bars that followed then scored 0.81x-1.02x. The reversal
+    # was being measured against the panic that produced it, which is the
+    # one setup this item exists to confirm. A median cannot ignore two
+    # spikes in a window of five; at twenty it can.
+    #
+    # Session-confined because a 20-bar intraday window otherwise reaches
+    # back over the overnight gap — at 10:55 on 09-28 it began at 15:45 the
+    # previous Friday. Measured over 8 ETFs x 10 sessions, confining it was
+    # worth roughly a fifth of total return and is what clears that 10:55
+    # bar (1.45x crossing sessions, which still fails, against a pass when
+    # confined).
+    "vol_lookback": 20,
+    "vol_same_session": True,
     "vol_min_ratio": 1.5,
     # How many bars, ending at the signal bar, may carry the expansion.
     # 1 is the literal reading of the tab ("the signal bar"); 2 also
@@ -101,6 +116,10 @@ DEFAULT_PARAMS: dict = {
     "step4_rr": True,
     "min_rr": 1.5,
     "stop_buffer_pct": 0.15,
+    # Which extreme the stop sits beyond: session | signal_bar | recent.
+    # Default unchanged pending measurement — see _stop_anchor.
+    "stop_ref": "session",
+    "stop_recent_bars": 3,
     # A prior-session level nearer than this stops being a target and
     # becomes where price already is. 0.15% is about two median QQQ 5m
     # bars (the median bar spans 0.082% of price, p90 is 0.180%), so a
@@ -329,16 +348,18 @@ def check_volume(bars, p):
     first one clearing the ratio satisfies the item. The detail always
     names WHICH bar carried it, so a reader can find it on the chart.
     """
-    lb = max(1, int(p.get("vol_lookback", 5)))
+    lb = max(1, int(p.get("vol_lookback", 20)))
     win = max(1, int(p.get("vol_window", 2)))
     need = float(p.get("vol_min_ratio", 1.5))
+    same_sess = bool(p.get("vol_same_session", True))
     idx = len(bars) - 1
     best = None
     for back in range(win):
         i = idx - back
         if i < 0:
             break
-        now, base, ratio = TH.volume_expansion(bars, i, lb)
+        now, base, ratio = TH.volume_expansion(bars, i, lb,
+                                               same_session=same_sess)
         if ratio is None:
             continue
         where = ("on the signal bar" if back == 0
@@ -356,7 +377,35 @@ def check_volume(bars, p):
                    f"need {need:.2f}x")
 
 
-def check_rr(price, lv, bearish, p):
+def _stop_anchor(bars, lv, bearish, p):
+    """The extreme a stop is placed just beyond.
+
+    'session' is the whole session's high/low — the original rule, and the
+    most conservative. On a confirmation entry it can sit far from price:
+    QQQ 2026-09-24 13:15 entered at 740.74 with the session high 742.65
+    two bars back, so the stop was 3.02 away while actual adverse movement
+    was 0.34, and the trade scored 0.84:1 and was rejected.
+
+    'signal_bar' uses only the bar that produced the signal, 'recent' the
+    last `stop_recent_bars`. Both are tighter and so rate more setups as
+    tradeable, at the cost of being stopped out by noise that the session
+    extreme would have absorbed. Which is better is an empirical question,
+    not an obvious one, so the default stays 'session'.
+    """
+    ref = str(p.get("stop_ref", "session"))
+    key = "h" if bearish else "l"
+    if ref == "signal_bar" and bars:
+        return _f(bars[-1].get(key))
+    if ref == "recent" and bars:
+        n = max(1, int(p.get("stop_recent_bars", 3)))
+        vals = [v for v in (_f(b.get(key)) for b in bars[-n:]) if v is not None]
+        if vals:
+            return max(vals) if bearish else min(vals)
+        return None
+    return (lv or {}).get("session_high" if bearish else "session_low")
+
+
+def check_rr(price, lv, bearish, p, bars=None):
     """Tab item 4a: reward at least min_rr x risk, using prior-session
     structure for the target and the session extreme for the stop — the
     same two anchors the tab's worked examples use."""
@@ -368,9 +417,9 @@ def check_rr(price, lv, bearish, p):
     buf = float(p.get("stop_buffer_pct", 0.15)) / 100.0
     if not lv:
         return False, "no session levels"
-    ext = lv.get("session_high") if bearish else lv.get("session_low")
+    ext = _stop_anchor(bars, lv, bearish, p)
     if ext is None:
-        return False, "no session extreme to place a stop against"
+        return False, "no extreme to place a stop against"
     stop = ext * ((1 + buf) if bearish else (1 - buf))
     risk = abs(price - stop)
     reward = abs(target["price"] - price)
@@ -421,14 +470,14 @@ def evaluate_side(bars, fast, slow, pct_d, bearish: bool, p: dict) -> dict:
 
     plan = None
     if p.get("step4_rr"):
-        ok, d = check_rr(price, lv, bearish, p)
+        ok, d = check_rr(price, lv, bearish, p, bars=bars)
         items.append(("Reward clears the risk multiple", ok, d))
 
     # The plan numbers ride along whether or not the R:R item is enabled —
     # an alert without a target and a stop is not actionable.
     cands = _targets(lv, price, bearish, p)
     target = levels_mod.primary_target(cands)
-    ext = (lv or {}).get("session_high" if bearish else "session_low")
+    ext = _stop_anchor(bars, lv, bearish, p)
     if target and ext is not None:
         buf = float(p.get("stop_buffer_pct", 0.15)) / 100.0
         stop = ext * ((1 + buf) if bearish else (1 - buf))
