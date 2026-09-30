@@ -114,6 +114,15 @@ def main() -> int:
             f"DP {(p.get('dp_score') or 0):.0f} · CF {(p.get('confirm_score') or 0):.0f}</i>"
         )
     body = header + "\n".join(body_lines)
+    # PICKER_TELEGRAM=off mutes only this digest. The ranking above still
+    # runs and nightly_picks / feature_log are still written, so the
+    # Watchlist panel and the intraday stage keep working — the panel's
+    # own "Intraday alerts" button is a separate switch and does not
+    # cover this message.
+    if not _env_bool("PICKER_TELEGRAM", True):
+        log.info("PICKER_TELEGRAM is off — %d picks written for %s, "
+                 "digest not sent", n, as_of)
+        return 0
     try:
         ok = alerts.send_telegram(body)
         if ok:

@@ -44,6 +44,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
 def main() -> int:
     import snapshots
     import options
@@ -100,6 +107,14 @@ def main() -> int:
         result.get("scanned", 0),
         len(result.get("digest", [])),
     )
+
+    # OPTIONS_TELEGRAM=off mutes only this digest. The scan above still
+    # runs and options_recommendations is still written (persist=True),
+    # so the Options tab keeps showing tonight's results.
+    if not _env_bool("OPTIONS_TELEGRAM", True):
+        log.info("OPTIONS_TELEGRAM is off — %d recommendations written, "
+                 "digest not sent", result.get("scanned", 0))
+        return 0
 
     body = options_scanner.format_digest_for_telegram(result)
     try:

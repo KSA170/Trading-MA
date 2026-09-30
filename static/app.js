@@ -3540,9 +3540,15 @@ async function loadIntradayAlerts() {
 // Update an "Alerts: ON/OFF" toggle button — shared by the picks panel
 // and the momentum scanner panel. Uses the existing `button.warn` red
 // style for the OFF state so it's hard to miss when alerts are paused.
-function applyAlertsToggleBtn(btn, enabled) {
+// `label` names what the switch actually covers — the helper is shared by
+// the picks panel and the momentum scanner, which gate different alerts.
+// The picks one says "Intraday" because it covers only the VWAP-reclaim
+// alerts on tonight's picks; a bare "Alerts: OFF" there read as though the
+// nightly watchlist digest was off too, and that is sent by the picker cron
+// and not gated here at all.
+function applyAlertsToggleBtn(btn, enabled, label = 'Alerts') {
   if (!btn) return;
-  btn.textContent = enabled ? 'Alerts: ON' : 'Alerts: OFF';
+  btn.textContent = `${label}: ${enabled ? 'ON' : 'OFF'}`;
   btn.classList.toggle('warn', !enabled);
 }
 
@@ -3560,6 +3566,7 @@ async function loadPicks() {
       applyAlertsToggleBtn(
         els.picksAlertsToggleBtn,
         data.config.intraday_alerts_enabled !== false,
+        'Intraday alerts',
       );
     }
   } catch (_) { /* silent */ }
@@ -3580,7 +3587,7 @@ async function togglePicksIntradayAlerts() {
       setStatus('Toggle failed: ' + (data.error || ('HTTP ' + res.status)));
       return;
     }
-    applyAlertsToggleBtn(els.picksAlertsToggleBtn, !!data.enabled);
+    applyAlertsToggleBtn(els.picksAlertsToggleBtn, !!data.enabled, 'Intraday alerts');
   } catch (err) {
     setStatus('Toggle failed: ' + (err && err.message ? err.message : 'network error'));
   } finally {
