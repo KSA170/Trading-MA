@@ -234,7 +234,7 @@ def _parse_params() -> dict:
         "high_lookback": _int("high_lookback", 2),
         "streak_mode": (request.args.get("streak_mode", "high") or "high").strip().lower()
                        if (request.args.get("streak_mode", "high") or "high").strip().lower()
-                       in ("high", "close", "green", "close_green") else "high",
+                       in ("high", "close", "green", "close_green", "high_green") else "high",
         "rsi_min": _flt("rsi_min", 45),
         "rsi_max": _flt("rsi_max", 65),
         "rsi_dev_min_pct": _flt("rsi_dev_min_pct", 0),

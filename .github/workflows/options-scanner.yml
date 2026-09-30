@@ -50,4 +50,9 @@ jobs:
           OPTIONS_TOP_N: ${{ inputs.top_n }}
           OPTIONS_DTE_MIN: ${{ inputs.dte_min }}
           OPTIONS_DTE_MAX: ${{ inputs.dte_max }}
+          # Telegram digest muted on request. The scan still runs and
+          # options_recommendations is still written, so the Options tab
+          # keeps showing tonight's results — only the nightly message is
+          # suppressed. Set back to 'on' to resume it.
+          OPTIONS_TELEGRAM: 'off'
         run: python options_cron.py

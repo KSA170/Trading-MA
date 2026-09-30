@@ -312,6 +312,20 @@ _PRICE_CACHE_MAX = 2000           # tight cap; disk is the persistence layer
 _PRICE_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _PRICE_CACHE_LOCK = threading.Lock()
 
+# The file TTL above is wall-clock, which is the wrong unit for a daily
+# bar cache: a pickle written before a session opens is still "warm"
+# hours after that session has closed, and an in-place rewrite (see
+# _rewrite_keeping_mtime) used to bump the mtime and extend the window
+# further. Callers that care about the *content* being current — the
+# hover chart — pass `fresh_through=<date>` to _cached_history, which
+# refetches when the cached frame stops short of that date. The cooldown
+# bounds that to one Yahoo call per ticker per interval so a frame Yahoo
+# genuinely can't advance doesn't refetch on every hover.
+_PRICE_REFRESH_COOLDOWN_SEC = 10 * 60
+_PRICE_REFRESH_TRIED: dict[str, float] = {}
+_LATEST_SESSION_TTL_SEC = 5 * 60
+_LATEST_SESSION_CACHE: tuple[float, str | None] = (0.0, None)
+
 # Only these columns are ever read by the screener / chart payload.
 _KEEP_COLS = ("Open", "High", "Low", "Close", "Volume")
 
@@ -319,6 +333,77 @@ _KEEP_COLS = ("Open", "High", "Low", "Close", "Volume")
 def _price_file(ticker: str) -> Path:
     safe = ticker.replace("/", "_").replace("\\", "_")
     return _PRICE_DIR / f"{safe}.pkl"
+
+
+def _rewrite_keeping_mtime(df: pd.DataFrame, pf: Path) -> None:
+    """Rewrite a cache pickle in place without refreshing its mtime.
+
+    The mtime *is* the cache's age. These rewrites (indicator enrichment,
+    shares backfill) add no bars, so bumping it would hand stale price
+    data a fresh 20-hour lease — enough to strand a frame a full session
+    behind the screener."""
+    try:
+        st = pf.stat() if pf.exists() else None
+    except Exception:
+        st = None
+    try:
+        df.to_pickle(pf)
+    except Exception:
+        return
+    if st is not None:
+        try:
+            os.utime(pf, (st.st_atime, st.st_mtime))
+        except Exception:
+            pass
+
+
+def _note_refresh_attempt(ticker: str, now: float, wanted: bool) -> None:
+    """Record that we just went to Yahoo for a caller that asked for a
+    content-fresh frame, so the next such request inside the cooldown
+    serves the cache instead of refetching. Yahoo can legitimately have
+    nothing newer (a holiday, a halted name); without this the chart
+    would refetch on every hover."""
+    if not wanted:
+        return
+    with _PRICE_CACHE_LOCK:
+        _PRICE_REFRESH_TRIED[ticker] = now
+        if len(_PRICE_REFRESH_TRIED) > 4000:
+            cutoff = now - _PRICE_REFRESH_COOLDOWN_SEC
+            for old in [k for k, v in list(_PRICE_REFRESH_TRIED.items()) if v < cutoff]:
+                _PRICE_REFRESH_TRIED.pop(old, None)
+
+
+def _frame_ends_before(df: "pd.DataFrame | None", date: str | None) -> bool:
+    """True when `df`'s last daily bar predates `date` (YYYY-MM-DD)."""
+    if not date or df is None or df.empty:
+        return False
+    try:
+        return df.index[-1].strftime("%Y-%m-%d") < date
+    except Exception:
+        return False
+
+
+def latest_known_session() -> str | None:
+    """Newest trading date the app is certain exists, from the snapshot
+    store. Returns None when snapshots are unavailable, in which case
+    freshness falls back to the plain file TTL. Reading it from the
+    snapshot (rather than "the last weekday") keeps it holiday-proof:
+    the date is one the screener itself can serve."""
+    global _LATEST_SESSION_CACHE
+    ts, val = _LATEST_SESSION_CACHE
+    now = time.time()
+    if ts and now - ts < _LATEST_SESSION_TTL_SEC:
+        return val
+    date = None
+    try:
+        if snapshots.enabled():
+            dates = snapshots.available_dates(1)
+            if dates:
+                date = str(dates[0])
+    except Exception:
+        date = None
+    _LATEST_SESSION_CACHE = (now, date)
+    return date
 
 
 def cache_status(tickers: list[str]) -> dict:
@@ -583,27 +668,49 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _cached_history(ticker: str, period: str = "6mo", need_shares: bool = False) -> pd.DataFrame | None:
+def _cached_history(ticker: str, period: str = "6mo", need_shares: bool = False,
+                    fresh_through: str | None = None) -> pd.DataFrame | None:
+    """Daily frame for `ticker`, from memory, then disk, then Yahoo.
+
+    `fresh_through` ("YYYY-MM-DD") adds a content check on top of the two
+    time-based caches: a cached frame whose last bar predates that date is
+    treated as a miss and refetched. Bounded by _PRICE_REFRESH_COOLDOWN_SEC
+    per ticker, so pass it only on single-ticker, user-initiated paths —
+    never on a universe sweep."""
     now = time.time()
+    # Decided once, so the memory and disk checks below can't disagree
+    # (the disk check must not be short-circuited by the memory check's
+    # own refetch attempt).
+    cooldown_ok = bool(fresh_through) and (
+        now - _PRICE_REFRESH_TRIED.get(ticker, 0.0) >= _PRICE_REFRESH_COOLDOWN_SEC)
+
+    def _behind(frame) -> bool:
+        return cooldown_ok and _frame_ends_before(frame, fresh_through)
+
     # 1. In-memory hot cache.
     cached = _PRICE_CACHE.get(ticker)
-    if cached and now - cached[0] < _PRICE_TTL_SEC:
+    if cached and now - cached[0] < _PRICE_TTL_SEC and not _behind(cached[1]):
         df = cached[1]
         if need_shares and df.attrs.get("shares") is None:
             shares = _fetch_shares(ticker)
             if shares:
                 df.attrs["shares"] = shares
-                pf = _price_file(ticker)
-                try:
-                    df.to_pickle(pf)
-                except Exception:
-                    pass
+                _rewrite_keeping_mtime(df, _price_file(ticker))
         return df
     # 2. Disk cache — the once-per-day store.
     pf = _price_file(ticker)
     try:
         if pf.exists() and (now - pf.stat().st_mtime) < _PRICE_FILE_TTL_SEC:
             df = pd.read_pickle(pf)
+        else:
+            df = None
+    except Exception as exc:
+        df = None
+        log.warning("price cache read failed for %s: %s", ticker, exc)
+    # A frame that stops short of `fresh_through` counts as a miss even
+    # though the file is inside its TTL — fall through to the fetch.
+    if df is not None and not _behind(df):
+        try:
             rewrite = False
             # Old cache files (pre-enrichment) lack the indicator columns.
             # Enrich in place and rewrite so we don't have to refetch.
@@ -620,23 +727,24 @@ def _cached_history(ticker: str, period: str = "6mo", need_shares: bool = False)
                     df.attrs["shares"] = shares
                     rewrite = True
             if rewrite:
-                try:
-                    df.to_pickle(pf)
-                except Exception:
-                    pass
+                _rewrite_keeping_mtime(df, pf)
             _remember(ticker, now, df)
             return df
-    except Exception as exc:
-        log.warning("price cache read failed for %s: %s", ticker, exc)
-    # 3. Fresh fetch.
+        except Exception as exc:
+            log.warning("price cache enrich failed for %s: %s", ticker, exc)
+    # 3. Fresh fetch. If we got here only because the cached frame was
+    # behind `fresh_through`, keep it as a fallback — a Yahoo failure
+    # should leave the chart a bar short, not empty.
+    fallback = df if (df is not None and not df.empty) else None
+    _note_refresh_attempt(ticker, now, bool(fresh_through))
     try:
         yt = yf.Ticker(ticker)
         df = yt.history(period=period, interval="1d", auto_adjust=False)
     except Exception as exc:
         log.warning("history fetch failed for %s: %s", ticker, exc)
-        return None
+        return fallback
     if df is None or df.empty:
-        return None
+        return fallback
     df = df.dropna(subset=["Close", "Volume"])
     keep = [c for c in _KEEP_COLS if c in df.columns]
     df = df[keep].astype("float32")
@@ -1450,8 +1558,10 @@ def evaluate_ticker(
     #   "green"       — each bar closes above its own open (green candle)
     #   "close_green" — both of the above: each bar closes above the prior
     #                   bar's close AND above its own open.
-    # high / close / close_green all compare N+1 bars (N day-over-day diffs);
-    # green / close_green also use the N bars' opens.
+    #   "high_green"  — each bar's high above the prior bar's high AND the
+    #                   bar closes above its own open.
+    # Every mode except "green" compares N+1 bars (N day-over-day diffs);
+    # green / close_green / high_green also use the N streak bars' opens.
     if streak_mode == "green":
         g_start = eval_idx - high_lookback + 1
         if eval_idx + 1 < 0:
@@ -1465,23 +1575,26 @@ def evaluate_ticker(
         streak_ok = bool((close_win.values > open_win.values).all())
         eval_streak_val = float(close_win.iloc[-1])
         streak_start_val = float(close_win.iloc[0])
-    elif streak_mode == "close_green":
-        # N+1 closes for the higher-close check, plus the matching N opens
-        # for the body-green check.
+    elif streak_mode in ("close_green", "high_green"):
+        # N+1 highs/closes for the rising check, plus the matching N opens
+        # and closes for the body-green check.
+        seq = df["High"] if streak_mode == "high_green" else closes
         s_start = eval_idx - high_lookback
         if eval_idx + 1 < 0:
-            close_win = closes.iloc[s_start:eval_idx + 1]
+            seq_win = seq.iloc[s_start:eval_idx + 1]
+            close_win = closes.iloc[s_start + 1:eval_idx + 1]
             open_win = df["Open"].iloc[s_start + 1:eval_idx + 1]
         else:
-            close_win = closes.iloc[s_start:]
+            seq_win = seq.iloc[s_start:]
+            close_win = closes.iloc[s_start + 1:]
             open_win = df["Open"].iloc[s_start + 1:]
-        if len(close_win) < high_lookback + 1 or len(open_win) < high_lookback:
+        if len(seq_win) < high_lookback + 1 or len(open_win) < high_lookback:
             return None
-        rising = bool(close_win.diff().iloc[1:].gt(0).all())
-        green = bool((close_win.iloc[1:].values > open_win.values).all())
+        rising = bool(seq_win.diff().iloc[1:].gt(0).all())
+        green = bool((close_win.values > open_win.values).all())
         streak_ok = rising and green
-        eval_streak_val = float(close_win.iloc[-1])
-        streak_start_val = float(close_win.iloc[0])
+        eval_streak_val = float(seq_win.iloc[-1])
+        streak_start_val = float(seq_win.iloc[0])
     else:
         series = df["High"] if streak_mode == "high" else closes
         s_start = eval_idx - high_lookback
@@ -1938,20 +2051,22 @@ def _evaluate_from_snapshot(
             return None
         eval_streak_val = float(window[-1]["c"])
         streak_start_val = float(window[0]["c"])
-    elif streak_mode == "close_green":
+    elif streak_mode in ("close_green", "high_green"):
         window = bars[-(high_lookback + 1):]
         if len(window) < high_lookback + 1:
             return None
+        key = "h" if streak_mode == "high_green" else "c"
         try:
-            closes = [float(b["c"]) for b in window]
+            vals = [float(b[key]) for b in window]
+            closes = [float(b["c"]) for b in window[1:]]
             opens = [float(b["o"]) for b in window[1:]]
         except (KeyError, TypeError, ValueError):
             return None
-        rising = all(closes[i] > closes[i - 1] for i in range(1, len(closes)))
-        green = all(c > o for c, o in zip(closes[1:], opens))
+        rising = all(vals[i] > vals[i - 1] for i in range(1, len(vals)))
+        green = all(c > o for c, o in zip(closes, opens))
         streak_ok = rising and green
-        eval_streak_val = closes[-1]
-        streak_start_val = closes[0]
+        eval_streak_val = vals[-1]
+        streak_start_val = vals[0]
     else:
         key = "h" if streak_mode == "high" else "c"
         window = bars[-(high_lookback + 1):]
@@ -2529,8 +2644,16 @@ def reference_dates(n: int = 21) -> list[dict]:
 def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
     """Daily OHLCV + SMA(10/20/30/40) + RSI(14)/9d-SMA-of-RSI for the
     hover chart. Indicators are read from the enriched cache columns
-    (see `_enrich`) so they match what the screener computed."""
-    df = _cached_history(ticker, period=period)
+    (see `_enrich`) so they match what the screener computed.
+
+    The screener serves results from the Postgres snapshot, while this
+    reads the local price pickle. When the pickle is inside its wall-clock
+    TTL but predates the snapshot's latest session, the chart ends a bar
+    short of the row it's describing — so ask for a frame that reaches the
+    latest session the app knows about and refetch if the cache is behind.
+    One ticker, user-initiated, cooldown-bounded."""
+    df = _cached_history(ticker, period=period,
+                         fresh_through=latest_known_session())
     if df is None or df.empty:
         return None
 
@@ -2741,7 +2864,7 @@ def diagnose_ticker(
         apply_pct_change, pct_change_ok, [pct_change_min, None],
         {"prior_close": round(prior_close, 4) if prior_close == prior_close else None})
 
-    # 2. Streak (mode: high / close / green / close_green)
+    # 2. Streak (mode: high / close / green / close_green / high_green)
     if streak_mode == "green":
         g_start = eval_idx - high_lookback + 1
         if eval_idx + 1 < 0:
@@ -2759,26 +2882,31 @@ def diagnose_ticker(
             {"opens": [round(float(o), 4) for o in open_win.tolist()],
              "closes": [round(float(c), 4) for c in close_win.tolist()],
              "green": green_flags})
-    elif streak_mode == "close_green":
+    elif streak_mode in ("close_green", "high_green"):
+        by_high = streak_mode == "high_green"
+        seq = df["High"] if by_high else closes
         s_start = eval_idx - high_lookback
         if eval_idx + 1 < 0:
-            close_win = closes.iloc[s_start:eval_idx + 1]
+            seq_win = seq.iloc[s_start:eval_idx + 1]
+            close_win = closes.iloc[s_start + 1:eval_idx + 1]
             open_win = df["Open"].iloc[s_start + 1:eval_idx + 1]
         else:
-            close_win = closes.iloc[s_start:]
+            seq_win = seq.iloc[s_start:]
+            close_win = closes.iloc[s_start + 1:]
             open_win = df["Open"].iloc[s_start + 1:]
-        diffs = close_win.diff().iloc[1:].tolist() if len(close_win) >= 2 else []
+        diffs = seq_win.diff().iloc[1:].tolist() if len(seq_win) >= 2 else []
         clean_diffs = [d for d in diffs if d is not None and not (isinstance(d, float) and (d != d))]
-        streak_closes = close_win.iloc[1:]  # the N "streak" bars
-        green_flags = [bool(c > o) for c, o in zip(streak_closes.tolist(), open_win.tolist())]
-        ok_close = len(close_win) >= high_lookback + 1 and all(d > 0 for d in clean_diffs)
+        green_flags = [bool(c > o) for c, o in zip(close_win.tolist(), open_win.tolist())]
+        ok_seq = len(seq_win) >= high_lookback + 1 and all(d > 0 for d in clean_diffs)
         ok_green = len(open_win) >= high_lookback and all(green_flags)
-        streak_ok = ok_close and ok_green
+        streak_ok = ok_seq and ok_green
         add("streak",
-            f"Higher-close + green-body streak ({high_lookback} days)",
-            round(float(close_win.iloc[-1]), 4) if len(close_win) else None,
+            f"{'Higher-high' if by_high else 'Higher-close'} + green-body streak "
+            f"({high_lookback} days)",
+            round(float(seq_win.iloc[-1]), 4) if len(seq_win) else None,
             apply_high, streak_ok, None,
-            {"closes": [round(float(c), 4) for c in close_win.tolist()],
+            {("highs" if by_high else "closes"):
+                [round(float(v), 4) for v in seq_win.tolist()],
              "diffs": [round(float(d), 4) for d in clean_diffs],
              "opens": [round(float(o), 4) for o in open_win.tolist()],
              "green": green_flags})
