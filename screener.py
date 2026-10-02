@@ -2642,9 +2642,11 @@ def reference_dates(n: int = 21) -> list[dict]:
 # --- chart payload ---------------------------------------------------------
 
 def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
-    """Daily OHLCV + SMA(10/20/30/40) + RSI(14)/9d-SMA-of-RSI for the
-    hover chart. Indicators are read from the enriched cache columns
-    (see `_enrich`) so they match what the screener computed.
+    """Daily OHLCV + SMA(10/20/30/40) + RSI(14)/9d-SMA-of-RSI +
+    MACD(12,26,9) for the hover chart. Indicators are read from the
+    enriched cache columns (see `_enrich`) so they match what the screener
+    computed — the MACD the chart draws is the same series the MACD filters
+    gate on, not a second calculation.
 
     The screener serves results from the Postgres snapshot, while this
     reads the local price pickle. When the pickle is inside its wall-clock
@@ -2657,9 +2659,10 @@ def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
     if df is None or df.empty:
         return None
 
-    # Belt-and-suspenders: if the cache predates the SMA10/20/30/40 fields
-    # for any reason, enrich on demand so the chart still has lines to draw.
-    if "sma10" not in df.columns:
+    # Belt-and-suspenders: if the cache predates the SMA10/20/30/40 or MACD
+    # fields for any reason, enrich on demand so the chart still has lines
+    # to draw.
+    if "sma10" not in df.columns or "macd_hist" not in df.columns:
         df = _enrich(df.copy())
 
     rows = []
@@ -2677,6 +2680,9 @@ def chart_payload(ticker: str, period: str = "6mo") -> dict | None:
             "sma40": _safe(r.get("sma40")),
             "rsi": _safe(r.get("rsi14")),
             "rsi_sma9": _safe(r.get("rsi_sma9")),
+            "macd": _safe(r.get("macd")),
+            "macd_signal": _safe(r.get("macd_signal")),
+            "macd_hist": _safe(r.get("macd_hist")),
         })
     return {
         "ticker": display_symbol(ticker),
