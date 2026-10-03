@@ -1226,6 +1226,13 @@
               <label>No entry after (ET)</label>
               <input id="cm_cl_no_entry_after" type="text" placeholder="15:45" value="15:45" autocomplete="off" />
             </div>
+            <div class="filter" title="How the rule decides to fire.&#10;&#10;GATE (original): every enabled item below must pass, or nothing is sent. Precise, but a single item short of its threshold produces silence — on 2 Oct a real QQQ turn was declined on volume 1.09x against a 1.50x requirement and the only signal was no signal.&#10;&#10;CROSS: a %K/%D crossover out of the band with RSI direction confirming is the trigger. Only the reward:risk item and a formable target/stop still block; RSI level, volume, gap, failed-extreme and the 9:30 bar are measured and PRINTED on the alert instead. Expect roughly 3-4 alerts per ticker per day against under 1 for gate mode, and read them as prompts to look rather than as signals — measured over 8 ETFs x 60 sessions the cross taken blindly was not profitable.">
+              <label>Trigger mode</label>
+              <select id="cm_cl_trigger_mode">
+                <option value="gate" selected>Gate — every item must pass</option>
+                <option value="cross">Cross — %K/%D cross fires, rest is context</option>
+              </select>
+            </div>
             <div class="filter" title="Which sides to watch. 'Both' is the point of this rule type — one rule on a ticker list covers puts and calls, and the alert says which set up.">
               <label>Sides</label>
               <select id="cm_cl_sides">

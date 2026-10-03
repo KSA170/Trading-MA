@@ -2343,9 +2343,21 @@ function summarizeRuleParams(p, ruleType) {
   if (ruleType === 'checklist') {
     const sides = p.sides === 'call' ? 'calls only'
                 : p.sides === 'put' ? 'puts only' : 'puts + calls';
+    const cross = p.trigger_mode === 'cross';
     const out = [`${p.interval || '5m'} bars · ${sides}`
                  + (p.closed_only === false ? ' · live bar' : ' · closed bars')
                  + (p.no_entry_after ? ` · no entry after ${p.no_entry_after}` : '')];
+    // In cross mode most items are measured but not enforced, so listing
+    // them as the gate would misdescribe the rule entirely.
+    if (cross) {
+      out.push(`Trigger: %K/%D cross out of the band (${n(p.k_len)}/${n(p.smooth)}/${n(p.d_len)}, `
+               + `${n(p.oversold)}/${n(p.overbought)}, within ${n(p.lookback_bars)} bars) `
+               + '· RSI direction confirms');
+      out.push('Blocks: a formable target + stop'
+               + (p.step4_rr ? ` · R:R ≥ ${n(p.min_rr)}:1` : ''));
+      out.push('Printed, not gated: RSI level · volume · gap · session extreme · 9:30 bar');
+      return out;
+    }
     // Only the items actually enforced, so the row says what the gate is.
     const step1 = [];
     if (p.step1_gap) step1.push(`no unfilled gap ≥ ${n(p.gap_veto_pct)}%`);
@@ -2937,6 +2949,7 @@ const _stochModalDefaults = _snapshotModalState(stochModalInputs, stochModalTogg
 // Checklist-rule criteria fields. Keys match checklist.DEFAULT_PARAMS.
 const clModalInputs = {
   interval: $('#cm_cl_interval'),
+  trigger_mode: $('#cm_cl_trigger_mode'),
   sides: $('#cm_cl_sides'),
   no_entry_after: $('#cm_cl_no_entry_after'),
   gap_veto_pct: $('#cm_cl_gap_veto_pct'),
@@ -2971,7 +2984,11 @@ const clModalToggles = {
   step4_rr: $('#cm_cl_step4_rr'),
 };
 // Everything in clModalInputs except these two selects is numeric.
-const _CL_TEXT_KEYS = new Set(['interval', 'sides', 'no_entry_after']);
+// Fields read back as strings. Anything not listed here goes through
+// parseFloat, which would turn a mode name into 0 and silently reset the
+// rule to the default on every save.
+const _CL_TEXT_KEYS = new Set(['interval', 'sides', 'no_entry_after',
+                               'trigger_mode']);
 // Declared after the maps above: this snapshot READS them, so hoisting
 // it next to the other defaults puts it in their temporal dead zone.
 const _clModalDefaults = _snapshotModalState(clModalInputs, clModalToggles);
