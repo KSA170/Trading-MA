@@ -392,6 +392,8 @@ def _clean_params(raw: dict | None, rule_type: str = "screener") -> dict:
             params["interval"] = "5m"
         if params.get("sides") not in checklist_mod.SIDES:
             params["sides"] = "both"
+        if params.get("trigger_mode") not in checklist_mod.TRIGGER_MODES:
+            params["trigger_mode"] = "gate"
         # "HH:MM" or blank. Anything else would be compared as a string
         # against a bar's clock and silently mute or ignore the cutoff.
         _cut = str(params.get("no_entry_after") or "").strip()
@@ -2028,6 +2030,8 @@ def _evaluate_checklist_rule(ticker: str, p: dict, now: datetime,
         "side": r["side"], "direction": "bearish" if bearish else "bullish",
         "price": r["price"], "bar_time": bar_label,
         "items": r["items"], "plan": r["plan"], "levels": r.get("levels"),
+        "context": r.get("context") or [],
+        "trigger_mode": str(p.get("trigger_mode", "gate")),
         "slow_k": r["slow_k"], "slow_k_prev": r["slow_k_prev"],
         "fast_k": r["fast_k"], "pct_d": r["pct_d"],
         "manual": list(checklist_mod.MANUAL_ITEMS),
@@ -2058,8 +2062,12 @@ def _format_checklist_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     import tg_format as T
     bearish = sig.get("side") == "put"
     kind = "PUT" if bearish else "CALL"
-    lines = T.header("CHECKLIST PASS", sig["ticker"], when=T.time_et(as_of),
-                     emoji="✅")
+    # In "cross" mode the alert is a prompt to look, not a cleared checklist
+    # — saying "PASS" would overstate what was actually enforced.
+    cross = sig.get("trigger_mode") == "cross"
+    lines = T.header("STOCH CROSS" if cross else "CHECKLIST PASS",
+                     sig["ticker"], when=T.time_et(as_of),
+                     emoji="🔔" if cross else "✅")
     lines.append(T.row("🏷", "Rule", T.b(rule_name) + f" · buy {kind}S"))
     lines.append("")
     lines.append(T.row("💰", "Price", T.b(T.money(sig.get("price")))
@@ -2071,12 +2079,27 @@ def _format_checklist_alert(rule_name: str, sig: dict, as_of: datetime) -> str:
     lines.append(T.row("🌀", "%K", stoch))
 
     lines.append("")
-    lines.append(f"✅ <b>Checklist passed — {len(sig.get('items') or [])} checks</b>")
+    lines.append(
+        f"🔔 <b>Trigger — {len(sig.get('items') or [])} checks</b>" if cross
+        else f"✅ <b>Checklist passed — {len(sig.get('items') or [])} checks</b>")
     for label, ok, detail in sig.get("items") or []:
         mark = "✓" if ok else "✗"
         lines.append(f"{mark} {T.esc(str(label))}")
         if detail:
             lines.append("   " + T.i(T.esc(str(detail))))
+
+    # "cross" mode measures these but does not gate on them, so the reader
+    # gets the numbers and makes the call. Deliberately no "recommended
+    # range" alongside: the outcome buckets for RSI and volume over 8 ETFs
+    # x 60 sessions were non-monotonic and flipped sign once three gold
+    # tickers were excluded, so a range here would be an artifact presented
+    # as advice.
+    ctx = sig.get("context") or []
+    if ctx:
+        lines.append("")
+        lines.append("📊 <b>Readings — measured, not gated</b>")
+        for label, detail in ctx:
+            lines.append(f"• {T.esc(str(label))}: " + T.i(T.esc(str(detail))))
 
     plan = sig.get("plan")
     if plan:

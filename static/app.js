@@ -292,6 +292,7 @@ const els = {
   hoverChartTitle: $('#hover-chart-title'),
   hoverChartStatus: $('#hover-chart-status'),
   hoverChartContainer: $('#hover-chart-container'),
+  hoverChartCloseBtn: $('#hover-chart-close'),
 };
 
 const selectedTickers = new Set();
@@ -1795,16 +1796,57 @@ function _jsonAttr(obj) {
 // per ticker for the session so a second hover is instant.
 
 const HOVER_DELAY_MS = 220;
-const HOVER_W = 900;
-const HOVER_H = 600;
 // Volume sits inside the price pane via an overlay scale; these margins
 // reserve the bottom 18% of pane 0 for the volume histogram.
 const VOL_SCALE_TOP_MARGIN = 0.82;
-const HOVER_PANE_RSI_H = 180;
+// Below this viewport width there is no room for an anchored popup (and
+// no mouse to anchor it to), so the chart opens as a bottom sheet.
+const HOVER_SHEET_MAX_W = 760;
 const _chartCache = new Map();
 let _hoverChart = null;
 let _hoverShowTimer = null;
 let _hoverTicker = null;
+// Pinned = opened by a click/tap rather than a hover: the popup becomes
+// interactive (crosshair, pinch-zoom) and stays until it is dismissed.
+// Hover mode is still transient and pointer-transparent, so sweeping the
+// mouse down a column behaves exactly as before.
+let _hoverPinned = false;
+// Measured pane heights, kept so positionPaneLabels() can place each
+// label over its own pane instead of assuming a fixed strip height.
+let _hoverPaneTops = [];
+// The element the popup was anchored to, so a resize can re-anchor it
+// instead of snapping to a corner.
+let _hoverAnchorEl = null;
+
+// The popup used to be a hard-coded 900x600, which overflowed any phone
+// and left big screens under-used. Size it from the viewport instead:
+// roughly two-thirds of a desktop window (capped so it stays a popup),
+// and a near-full-width sheet once the viewport is narrow.
+function hoverChartGeom() {
+  const vw = window.innerWidth || 1024;
+  const vh = window.innerHeight || 768;
+  const sheet = vw <= HOVER_SHEET_MAX_W;
+  if (sheet) {
+    return {
+      sheet: true,
+      w: Math.max(280, vw - 16),
+      h: Math.max(320, Math.min(Math.round(vh * 0.74), vh - 24)),
+    };
+  }
+  return {
+    sheet: false,
+    w: Math.max(520, Math.min(1100, Math.round(vw * 0.62))),
+    h: Math.max(420, Math.min(760, Math.round(vh * 0.78))),
+  };
+}
+
+function applyHoverChartGeom(geom) {
+  const g = geom || hoverChartGeom();
+  els.hoverChart.style.setProperty('--hover-w', g.w + 'px');
+  els.hoverChart.style.setProperty('--hover-h', g.h + 'px');
+  els.hoverChart.classList.toggle('sheet', g.sheet);
+  return g;
+}
 
 function disposeHoverChart() {
   if (_hoverChart && _hoverChart.remove) {
@@ -1814,38 +1856,59 @@ function disposeHoverChart() {
   if (els.hoverChartContainer) els.hoverChartContainer.innerHTML = '';
 }
 
-function hideHoverChart() {
+// `force` closes a pinned chart too; a plain mouseout must leave one open.
+function hideHoverChart(force) {
   if (_hoverShowTimer) {
     clearTimeout(_hoverShowTimer);
     _hoverShowTimer = null;
   }
+  if (_hoverPinned && !force) return;
+  _hoverPinned = false;
   _hoverTicker = null;
-  if (els.hoverChart) els.hoverChart.classList.add('hidden');
+  _hoverPaneTops = [];
+  _hoverAnchorEl = null;
+  if (els.hoverChart) {
+    els.hoverChart.classList.add('hidden');
+    els.hoverChart.classList.remove('pinned');
+  }
   disposeHoverChart();
 }
 
-function positionHoverChart(rect) {
+function positionHoverChart(rect, geom) {
+  const g = applyHoverChartGeom(geom);
+  if (g.sheet) {
+    // Centred bottom sheet — there is no useful anchor on a phone, and
+    // bottom-anchored keeps it clear of the address bar.
+    els.hoverChart.style.left = Math.round((window.innerWidth - g.w) / 2) + 'px';
+    els.hoverChart.style.top = Math.max(8, window.innerHeight - g.h - 8) + 'px';
+    return g;
+  }
   const margin = 12;
-  let left = rect.right + margin;
-  if (left + HOVER_W > window.innerWidth - margin) {
-    left = rect.left - HOVER_W - margin;
+  let left = rect ? rect.right + margin : margin;
+  if (left + g.w > window.innerWidth - margin) {
+    left = (rect ? rect.left : window.innerWidth) - g.w - margin;
   }
   if (left < margin) left = margin;
-  let top = rect.top;
-  if (top + HOVER_H > window.innerHeight - margin) {
-    top = window.innerHeight - HOVER_H - margin;
+  let top = rect ? rect.top : margin;
+  if (top + g.h > window.innerHeight - margin) {
+    top = window.innerHeight - g.h - margin;
   }
   if (top < margin) top = margin;
   els.hoverChart.style.left = left + 'px';
   els.hoverChart.style.top = top + 'px';
+  return g;
 }
 
-async function showHoverChart(ticker, anchorEl) {
+async function showHoverChart(ticker, anchorEl, opts) {
   if (!els.hoverChart || typeof LightweightCharts === 'undefined') return;
+  const pin = !!(opts && opts.pin);
   _hoverTicker = ticker;
+  _hoverPinned = pin;
+  _hoverAnchorEl = anchorEl || null;
+  els.hoverChart.classList.toggle('pinned', pin);
   els.hoverChartTitle.textContent = ticker;
   els.hoverChartStatus.textContent = 'loading…';
-  positionHoverChart(anchorEl.getBoundingClientRect());
+  positionHoverChart(anchorEl ? anchorEl.getBoundingClientRect() : null);
   els.hoverChart.classList.remove('hidden');
   disposeHoverChart();
   let payload = _chartCache.get(ticker);
@@ -1878,13 +1941,27 @@ function drawHoverChart(data) {
     els.hoverChartStatus.textContent = 'no data';
     return;
   }
+  // Axis furniture scales with the popup: on a phone a 56px price gutter
+  // and 12px labels eat the plot area, so both shrink with the width.
+  const narrow = (els.hoverChartContainer.clientWidth || 900) < 560;
+  const axisW = narrow ? 44 : 60;
   _hoverChart = LightweightCharts.createChart(els.hoverChartContainer, {
-    layout: { background: { color: '#161b22' }, textColor: '#c9d1d9' },
+    layout: {
+      background: { color: '#161b22' },
+      textColor: '#c9d1d9',
+      fontSize: narrow ? 10 : 12,
+      attributionLogo: false,
+      panes: { separatorColor: '#2a313c', separatorHoverColor: '#3a424e' },
+    },
     grid: { vertLines: { color: '#22272e' }, horzLines: { color: '#22272e' } },
-    rightPriceScale: { borderColor: '#2a313c', minimumWidth: 56 },
+    rightPriceScale: { borderColor: '#2a313c', minimumWidth: axisW },
     leftPriceScale: { visible: false },
     timeScale: { borderColor: '#2a313c', rightOffset: 2, barSpacing: 4 },
     crosshair: { mode: 1 },
+    // Pinch-zoom and drag only matter when the chart is pinned; a
+    // transient hover popup is pointer-transparent anyway.
+    handleScroll: _hoverPinned,
+    handleScale: _hoverPinned,
     autoSize: true,
   });
 
@@ -1951,45 +2028,134 @@ function drawHoverChart(data) {
   rsi.createPriceLine({ price: 70, color: '#f85149', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
   rsi.createPriceLine({ price: 30, color: '#3fb950', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 
-  // RSI pane gets a fixed compact height; the price pane absorbs the rest.
-  // Aligning right-side scale widths keeps the time axis straight across
-  // both panes. Pane labels are absolutely positioned over the chart
-  // container in CSS — their top offsets depend on the RSI height.
-  const apply = () => {
-    try {
-      const panes = _hoverChart.panes() || [];
-      panes.forEach((p) => {
-        try { p.priceScale('right').applyOptions({ minimumWidth: 56 }); } catch (_) {}
-      });
-      if (panes.length >= 2 && panes[1].setHeight) panes[1].setHeight(HOVER_PANE_RSI_H);
-    } catch (_) { /* ignore */ }
-    try { _hoverChart.timeScale().fitContent(); } catch (_) {}
-    positionPaneLabels();
-  };
-  apply();
-  requestAnimationFrame(apply);
-  setTimeout(apply, 80);
+  // Pane 2 — MACD(12,26,9). Histogram first so the two lines draw over it,
+  // coloured by sign the way a MACD panel is normally read. The values come
+  // from the same enriched columns the MACD screener filters use.
+  const macdRows = rows.filter((r) => r.macd != null);
+  const histRows = rows.filter((r) => r.macd_hist != null);
+  if (macdRows.length || histRows.length) {
+    // MACD is an absolute price difference, so its magnitude tracks the
+    // share price: ~0.02 on a $1.50 name, ~5 on a $500 one. Pick the
+    // decimals from the data instead of showing "0.00" for everything.
+    const peak = Math.max(
+      ...macdRows.map((r) => Math.abs(r.macd)),
+      ...histRows.map((r) => Math.abs(r.macd_hist)),
+      0,
+    );
+    const precision = peak < 1 ? 4 : peak < 10 ? 3 : 2;
+    const fmt = { type: 'price', precision, minMove: Math.pow(10, -precision) };
+    const hist = _hoverChart.addSeries(LightweightCharts.HistogramSeries, {
+      priceFormat: fmt, lastValueVisible: false, priceLineVisible: false,
+    }, 2);
+    hist.setData(histRows.map((r) => ({
+      time: r.time, value: r.macd_hist,
+      color: r.macd_hist >= 0 ? 'rgba(63,185,80,0.65)' : 'rgba(248,81,73,0.65)',
+    })));
+    const macdLine = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+      color: '#58a6ff', lineWidth: 2, priceLineVisible: false, priceFormat: fmt,
+    }, 2);
+    macdLine.setData(macdRows.map((r) => ({ time: r.time, value: r.macd })));
+    const sigRows = rows.filter((r) => r.macd_signal != null);
+    const sigLine = _hoverChart.addSeries(LightweightCharts.LineSeries, {
+      color: '#f0883e', lineWidth: 1, priceLineVisible: false,
+      lastValueVisible: false, priceFormat: fmt,
+    }, 2);
+    sigLine.setData(sigRows.map((r) => ({ time: r.time, value: r.macd_signal })));
+    // Zero line — the cross that the MACD filters gate on.
+    macdLine.createPriceLine({
+      price: 0, color: '#6e7681', lineStyle: 2, lineWidth: 1,
+      axisLabelVisible: false,
+    });
+  }
+
+  // Lightweight-charts settles its layout over a frame or two, so the pane
+  // split is applied again on the next frame and once more shortly after.
+  layoutHoverPanes(axisW);
+  requestAnimationFrame(() => layoutHoverPanes(axisW));
+  setTimeout(() => layoutHoverPanes(axisW), 80);
+}
+
+// The two indicator panes get a share of the height rather than a fixed
+// strip, so three panes still fit on a phone; the price pane absorbs
+// whatever is left. Aligning right-side scale widths keeps the time axis
+// straight across all panes. Called on draw and again on resize, which is
+// why it lives out here rather than inside drawHoverChart.
+function layoutHoverPanes(axisW) {
+  if (!_hoverChart || !els.hoverChartContainer) return;
+  const w = axisW || ((els.hoverChartContainer.clientWidth || 900) < 560 ? 44 : 60);
+  try {
+    const panes = _hoverChart.panes() || [];
+    panes.forEach((p) => {
+      try { p.priceScale('right').applyOptions({ minimumWidth: w }); } catch (_) {}
+    });
+    // Leave room for the time axis before splitting the rest.
+    const plotH = Math.max(160, (els.hoverChartContainer.clientHeight || 0) - 30);
+    // 22% each, but never more than 30% (which would starve the candles)
+    // and never under 56px (below that the pane has no usable range).
+    const indH = Math.max(56, Math.min(150, Math.round(plotH * 0.22),
+                                       Math.floor(plotH * 0.30)));
+    // Size the PRICE pane, not the indicator panes. setHeight spreads its
+    // delta equally over every *other* pane, so two calls compound: sizing
+    // RSI took pixels from MACD, then sizing MACD took them back out of RSI
+    // and floored it at the library's 30px minimum. One call on pane 0
+    // leaves the remainder split evenly between RSI and MACD, which is
+    // exactly the layout wanted.
+    const indCount = Math.max(1, panes.length - 1);
+    const priceH = Math.max(120, plotH - indH * indCount);
+    if (panes[0] && panes[0].setHeight) panes[0].setHeight(priceH);
+  } catch (_) { /* ignore */ }
+  try { _hoverChart.timeScale().fitContent(); } catch (_) {}
+  positionPaneLabels();
 }
 
 // Each pane gets a small label in its top-left corner. Lightweight-charts
 // has no native title support and wipes its container on dispose — so the
 // label spans live as siblings of #hover-chart-container (inside
 // #hover-chart) and are positioned relative to the popup wrapper. Pane 0
-// (Price + SMAs + Volume) sits at the top of the container; pane 1 (RSI)
-// is the bottom strip.
+// is Price + SMAs + Volume, pane 1 RSI, pane 2 MACD. Offsets are measured
+// from the panes themselves (getHeight) because the indicator strips are
+// now sized as a share of the popup and the popup is sized from the
+// viewport — nothing here can be a constant any more.
 function positionPaneLabels() {
   if (!els.hoverChartContainer) return;
   const containerH = els.hoverChartContainer.clientHeight;
   if (!containerH) return;
-  const top = els.hoverChartContainer.offsetTop;
-  const labels = [0, 1].map((i) => document.getElementById('hover-pane-label-' + i));
-  if (labels[0]) labels[0].style.top = (top + 6) + 'px';
-  if (labels[1]) labels[1].style.top = (top + containerH - HOVER_PANE_RSI_H + 4) + 'px';
+  const base = els.hoverChartContainer.offsetTop;
+  let heights = [];
+  try {
+    heights = (_hoverChart ? _hoverChart.panes() : []).map((p) => (
+      p && p.getHeight ? p.getHeight() : 0));
+  } catch (_) {
+    heights = [];
+  }
+  // Separators sit between panes; a couple of pixels either way is
+  // invisible on a 10px label, so they are folded into the offset.
+  const SEP = 1;
+  _hoverPaneTops = [];
+  let y = base;
+  for (let i = 0; i < 3; i++) {
+    const label = document.getElementById('hover-pane-label-' + i);
+    const h = heights[i] || 0;
+    if (!label) { y += h + SEP; continue; }
+    if (i > 0 && !h) {
+      // Pane absent (e.g. a name with no MACD history yet) — hide its label
+      // rather than stacking it on top of another pane's.
+      label.style.display = 'none';
+      continue;
+    }
+    label.style.display = '';
+    label.style.top = (y + 4) + 'px';
+    _hoverPaneTops.push(y);
+    y += h + SEP;
+  }
 }
 
 function onTickerEnter(ev) {
   const cell = ev.target.closest('[data-ticker]');
   if (!cell) return;
+  // A pinned chart owns the popup until it is dismissed; drifting the
+  // mouse over other tickers must not swap it out underneath the user.
+  if (_hoverPinned) return;
   const ticker = cell.dataset.ticker;
   if (!ticker || _hoverTicker === ticker) return;
   if (_hoverShowTimer) clearTimeout(_hoverShowTimer);
@@ -2006,12 +2172,57 @@ function onTickerLeave(ev) {
   hideHoverChart();
 }
 
+// Click/tap a ticker to pin the chart open and interactive. This is the
+// only way in on a touch screen — there is no hover there — and on a
+// desktop it is how you get a crosshair readout, since the hover popup is
+// deliberately pointer-transparent.
+function onTickerClick(ev) {
+  const cell = ev.target.closest('[data-ticker]');
+  if (!cell || !cell.dataset.ticker) return;
+  if (ev.target.closest('input, button, a, label')) return;
+  if (_hoverShowTimer) { clearTimeout(_hoverShowTimer); _hoverShowTimer = null; }
+  if (_hoverPinned && _hoverTicker === cell.dataset.ticker) {
+    hideHoverChart(true);   // second tap on the same ticker closes it
+    return;
+  }
+  _hoverPinned = false;     // let showHoverChart re-open it cleanly
+  showHoverChart(cell.dataset.ticker, cell, { pin: true });
+}
+
 if (els.body) {
   els.body.addEventListener('mouseover', onTickerEnter);
   els.body.addEventListener('mouseout', onTickerLeave);
+  els.body.addEventListener('click', onTickerClick);
   els.body.addEventListener('change', onRowCheckboxChange);
 }
-window.addEventListener('scroll', hideHoverChart, true);
+if (els.hoverChartCloseBtn) {
+  els.hoverChartCloseBtn.addEventListener('click', () => hideHoverChart(true));
+}
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && _hoverPinned) hideHoverChart(true);
+});
+// Tapping/clicking away closes a pinned chart. Capture phase so it runs
+// before a handler that might stop propagation; the ticker's own click is
+// excluded so opening one doesn't immediately close it.
+document.addEventListener('click', (ev) => {
+  if (!_hoverPinned) return;
+  if (els.hoverChart && els.hoverChart.contains(ev.target)) return;
+  if (ev.target.closest && ev.target.closest('[data-ticker]')) return;
+  hideHoverChart(true);
+}, true);
+// A pinned chart stays put while the page scrolls under it; a transient
+// hover popup is dismissed, as before.
+window.addEventListener('scroll', () => hideHoverChart(false), true);
+// Rotating a phone or resizing a window changes which layout applies, so
+// re-measure. autoSize handles the canvas; the wrapper and the pane split
+// are ours.
+window.addEventListener('resize', () => {
+  if (!els.hoverChart || els.hoverChart.classList.contains('hidden')) return;
+  const anchor = _hoverAnchorEl && _hoverAnchorEl.isConnected
+    ? _hoverAnchorEl.getBoundingClientRect() : null;
+  positionHoverChart(anchor);
+  layoutHoverPanes();
+});
 
 if (els.selectAll) els.selectAll.addEventListener('change', onSelectAllChange);
 if (els.emailBtn) els.emailBtn.addEventListener('click', emailSelected);
@@ -2343,9 +2554,21 @@ function summarizeRuleParams(p, ruleType) {
   if (ruleType === 'checklist') {
     const sides = p.sides === 'call' ? 'calls only'
                 : p.sides === 'put' ? 'puts only' : 'puts + calls';
+    const cross = p.trigger_mode === 'cross';
     const out = [`${p.interval || '5m'} bars · ${sides}`
                  + (p.closed_only === false ? ' · live bar' : ' · closed bars')
                  + (p.no_entry_after ? ` · no entry after ${p.no_entry_after}` : '')];
+    // In cross mode most items are measured but not enforced, so listing
+    // them as the gate would misdescribe the rule entirely.
+    if (cross) {
+      out.push(`Trigger: %K/%D cross out of the band (${n(p.k_len)}/${n(p.smooth)}/${n(p.d_len)}, `
+               + `${n(p.oversold)}/${n(p.overbought)}, within ${n(p.lookback_bars)} bars) `
+               + '· RSI direction confirms');
+      out.push('Blocks: a formable target + stop'
+               + (p.step4_rr ? ` · R:R ≥ ${n(p.min_rr)}:1` : ''));
+      out.push('Printed, not gated: RSI level · volume · gap · session extreme · 9:30 bar');
+      return out;
+    }
     // Only the items actually enforced, so the row says what the gate is.
     const step1 = [];
     if (p.step1_gap) step1.push(`no unfilled gap ≥ ${n(p.gap_veto_pct)}%`);
@@ -2937,6 +3160,7 @@ const _stochModalDefaults = _snapshotModalState(stochModalInputs, stochModalTogg
 // Checklist-rule criteria fields. Keys match checklist.DEFAULT_PARAMS.
 const clModalInputs = {
   interval: $('#cm_cl_interval'),
+  trigger_mode: $('#cm_cl_trigger_mode'),
   sides: $('#cm_cl_sides'),
   no_entry_after: $('#cm_cl_no_entry_after'),
   gap_veto_pct: $('#cm_cl_gap_veto_pct'),
@@ -2971,7 +3195,11 @@ const clModalToggles = {
   step4_rr: $('#cm_cl_step4_rr'),
 };
 // Everything in clModalInputs except these two selects is numeric.
-const _CL_TEXT_KEYS = new Set(['interval', 'sides', 'no_entry_after']);
+// Fields read back as strings. Anything not listed here goes through
+// parseFloat, which would turn a mode name into 0 and silently reset the
+// rule to the default on every save.
+const _CL_TEXT_KEYS = new Set(['interval', 'sides', 'no_entry_after',
+                               'trigger_mode']);
 // Declared after the maps above: this snapshot READS them, so hoisting
 // it next to the other defaults puts it in their temporal dead zone.
 const _clModalDefaults = _snapshotModalState(clModalInputs, clModalToggles);
