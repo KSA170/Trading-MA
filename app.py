@@ -304,6 +304,36 @@ _ASSET_REV = str(int(max(
 )))
 
 
+@app.after_request
+def _revalidate_html(resp):
+    """Make the browser revalidate the page document on every load.
+
+    _ASSET_REV versions app.js and style.css, but the document itself has
+    no version in its URL and Flask sets no cache policy for it, so a
+    browser is free to reuse a cached copy. The result is fresh JavaScript
+    running against stale markup: a field added to index.html in a deploy
+    is simply ABSENT, with nothing on the page to say why — which is
+    exactly how the checklist rule's "Trigger mode" dropdown went missing
+    after it shipped.
+
+    `no-cache` is revalidate-before-use, not don't-store. An ETag goes on
+    with it so the revalidation is cheap: the page is ~130 KB and renders
+    identically between deploys, so without one every load would re-send
+    the whole document instead of a 304. Only documents are touched —
+    static files keep their normal caching, which is what _ASSET_REV
+    exists to make safe.
+    """
+    try:
+        if resp.mimetype == "text/html" and not resp.direct_passthrough:
+            resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+            resp.add_etag()
+            return resp.make_conditional(request)
+    except Exception:
+        # Caching is an optimisation; never fail a page over it.
+        pass
+    return resp
+
+
 @app.route("/")
 def index():
     # Inject server-stored UI prefs into the page so the JS can read
