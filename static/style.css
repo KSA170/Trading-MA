@@ -591,21 +591,41 @@ tr.row-equal:hover td { background: rgba(63, 185, 80, 0.28); }
 td[data-ticker] { cursor: help; }
 td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
 
+/* Size comes from JS (hoverChartGeom) via --hover-w / --hover-h, measured
+   from the viewport: a fixed 900x600 overflowed every phone and left large
+   desktops under-used. The fallbacks only apply if the script hasn't run. */
 .hover-chart {
   position: fixed;
-  width: 900px;
-  height: 600px;
+  width: var(--hover-w, 900px);
+  height: var(--hover-h, 600px);
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
   z-index: 1000;
+  /* Transparent to the mouse while it is a transient hover popup, so
+     sweeping down a column of tickers doesn't catch on it. A pinned chart
+     is interactive — that is the whole point of pinning it. */
   pointer-events: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
+.hover-chart.pinned {
+  pointer-events: auto;
+  /* Stops a drag on the chart from scrolling the page behind it. */
+  touch-action: none;
+}
 .hover-chart.hidden { display: none; }
+
+/* Bottom sheet on a narrow viewport: there is no mouse to anchor to and
+   no room for a floating popup. */
+.hover-chart.sheet {
+  border-radius: 12px 12px 8px 8px;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.6);
+}
 
 .hover-chart-header {
   padding: 6px 12px;
@@ -613,13 +633,34 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
   font-size: 12px;
   font-weight: 600;
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   background: var(--panel-2);
 }
+.hover-chart-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
 .hover-chart-header #hover-chart-status {
   font-weight: 400;
   font-size: 11px;
+}
+/* Only a pinned chart can be dismissed, so only a pinned chart shows the
+   button — a hover popup closes itself when the pointer leaves. */
+.hover-chart-close { display: none; }
+.hover-chart.pinned .hover-chart-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+  border-radius: 6px;
 }
 
 .hover-chart-container {
@@ -647,7 +688,20 @@ td[data-ticker] strong { border-bottom: 1px dotted rgba(88, 166, 255, 0.5); }
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* Never let a long legend run past the plot and sit over the candles. */
+  max-width: calc(100% - 20px);
+  overflow: hidden;
+  white-space: nowrap;
 }
+.hover-pane-label .legend-item {
+  display: inline-flex;
+  align-items: center;
+}
+/* On a phone the full "SMA(10) SMA(20) SMA(30) SMA(40) Volume" row is wider
+   than the chart, so the names drop out and the colour chips carry the
+   legend on their own. */
+.hover-chart.sheet .hover-pane-label .legend-name { display: none; }
+.hover-chart.sheet .hover-pane-label { font-size: 9px; letter-spacing: 0.2px; }
 .hover-pane-label .legend-chip {
   display: inline-block;
   width: 10px;
