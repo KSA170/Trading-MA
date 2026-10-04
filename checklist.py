@@ -40,6 +40,26 @@ MANUAL_ITEMS = (
 DEFAULT_PARAMS: dict = {
     "interval": "5m",
     "sides": "both",                 # both | call | put
+    # How the rule decides to fire.
+    #
+    #   "gate"  — every enabled item must pass (the original behaviour, and
+    #             still the default so existing rules are untouched).
+    #   "cross" — a %K/%D CROSS out of the band, with RSI direction
+    #             confirming, is the trigger. Only the reward:risk item and
+    #             a formable plan still block; the RSI level, volume, gap,
+    #             failed-extreme and opening-bar readings are measured and
+    #             printed on the alert as context rather than silently
+    #             suppressing it.
+    #
+    # The argument for "cross": on 2026-10-02 QQQ the gate declined a real
+    # turn because volume came in at 1.09x against a 1.50x requirement, and
+    # the only thing the user saw was silence. Measured over 8 ETFs x 60
+    # sessions the cross fires ~3.7 times per ticker per day, and taken
+    # BLINDLY it is not profitable — it is an event worth looking at, not a
+    # signal worth taking unseen. That is why the readings are printed: the
+    # judgement moves to the reader instead of being made by a threshold
+    # that the same measurement could not justify.
+    "trigger_mode": "gate",          # gate | cross
     # Latest bar time (ET, "HH:MM") that may still produce an alert; blank
     # disables it. 15:45 blocks the last three 5m bars of a session. The
     # hard defect is the 15:55 bar, whose alert lands around 16:01 — after
@@ -131,6 +151,7 @@ DEFAULT_PARAMS: dict = {
 }
 
 SIDES = ("both", "call", "put")
+TRIGGER_MODES = ("gate", "cross")
 
 
 def _session_bars(bars: list[dict]) -> list[dict]:
@@ -335,6 +356,60 @@ def check_signal(fast, slow, pct_d, bearish, p):
     return all(o for _, o, _ in out), out
 
 
+def check_cross(fast, slow, pct_d, closes, bearish, p):
+    """The "cross" trigger: a %K/%D crossover out of the band, confirmed by
+    RSI direction. Returns (ok, items) in the same shape as check_signal.
+
+    This is a genuine CROSS — %K on one side of %D on the prior bar and the
+    other side now — not check_signal's "is %K below %D" state test. The
+    state test stays true for as long as %K remains under %D, which re-fires
+    on every bar of a rollover; a cross is one event, which is what an alert
+    should be.
+    """
+    out = []
+    ob = float(p.get("overbought", 80.0))
+    os_ = float(p.get("oversold", 20.0))
+    lb = max(1, int(p.get("lookback_bars", 4)))
+    band = ob if bearish else os_
+
+    # 1 — the band was visited recently (this is a fade of an extreme, not
+    # of any crossover that happens to come along).
+    recent = [v for v in slow[-(lb + 1):] if v is not None]
+    if not recent:
+        return False, [("Reached the band", False, "not enough history")]
+    reached = (max(recent) >= ob) if bearish else (min(recent) <= os_)
+    edge = max(recent) if bearish else min(recent)
+    out.append((f"%K reached {'above' if bearish else 'below'} {band:g} "
+                f"in the last {lb} bars", reached, f"extreme {edge:.1f}"))
+
+    # 2 — the cross itself.
+    d_now, d_prev = pct_d[-1], pct_d[-2] if len(pct_d) > 1 else None
+    if d_now is None or d_prev is None or slow[-2] is None:
+        out.append(("%K crossed %D", False, "%D not warm yet"))
+    else:
+        crossed = ((slow[-2] >= d_prev and slow[-1] < d_now) if bearish
+                   else (slow[-2] <= d_prev and slow[-1] > d_now))
+        out.append((f"%K crossed {'below' if bearish else 'above'} %D "
+                    f"on this bar", crossed,
+                    f"%K {slow[-2]:.1f}→{slow[-1]:.1f} vs "
+                    f"%D {d_prev:.1f}→{d_now:.1f}"))
+
+    # 3 — RSI pointing the same way. Direction only; the LEVEL is reported
+    # as context in this mode, not required.
+    r = TH.rsi_wilder(closes, int(p.get("rsi_length", 14)))
+    now = r[-1] if r else None
+    prev = r[-2] if len(r) > 1 else None
+    if now is None or prev is None:
+        out.append(("RSI direction confirms", True, "RSI not warm — not blocking"))
+    else:
+        ok = (now < prev) if bearish else (now > prev)
+        out.append((f"RSI is {'falling' if bearish else 'rising'}", ok,
+                    f"RSI({int(p.get('rsi_length', 14))}) "
+                    f"{prev:.1f} → {now:.1f} ({now - prev:+.1f})"))
+
+    return all(o for _, o, _ in out), out
+
+
 def check_volume(bars, p):
     """Tab item 3: did the move carry participation, or is it drift?
 
@@ -433,6 +508,90 @@ def check_rr(price, lv, bearish, p, bars=None):
 
 # --- the whole gate -------------------------------------------------------
 
+def _build_plan(bars, price, lv, bearish, p):
+    """Target / stop / reward:risk, shared by both trigger modes. Returns
+    None when no prior-session level sits far enough ahead to aim at."""
+    cands = _targets(lv, price, bearish, p)
+    target = levels_mod.primary_target(cands)
+    ext = _stop_anchor(bars, lv, bearish, p)
+    if not target or ext is None:
+        return None
+    buf = float(p.get("stop_buffer_pct", 0.15)) / 100.0
+    stop = ext * ((1 + buf) if bearish else (1 - buf))
+    risk = abs(price - stop)
+    return {
+        "target": round(target["price"], 2), "target_label": target["label"],
+        "gap_fill": bool(target.get("gap_fill")),
+        "stop": round(stop, 2),
+        "rr": round(abs(target["price"] - price) / risk, 2) if risk > 1e-6 else None,
+        "target_pct": round((target["price"] - price) / price * 100, 2),
+        "stop_pct": round((stop - price) / price * 100, 2),
+    }
+
+
+def _evaluate_cross(bars, closes, price, lv, fast, slow, pct_d, bearish, p):
+    """"cross" trigger mode.
+
+    BLOCKING: the %K/%D cross out of the band with RSI direction confirming,
+    a formable plan, and (when enabled) the reward:risk multiple. An alert
+    with no target and stop is not actionable, and one whose reward does not
+    cover its risk is not worth the reader's attention — those are the two
+    the measurement supports keeping.
+
+    CONTEXT: the RSI level, volume multiple, gap, failed-extreme and
+    opening-bar readings, measured exactly as in gate mode but reported
+    rather than enforced. No "recommended range" is attached to them: across
+    8 ETFs x 60 sessions the outcome buckets for both RSI and volume were
+    non-monotonic and reversed sign once the three gold tickers were taken
+    out, so any range printed here would be an artifact dressed up as
+    advice.
+    """
+    items: list[tuple[str, bool, str]] = []
+    context: list[tuple[str, str]] = []
+
+    ok, trig = check_cross(fast, slow, pct_d, closes, bearish, p)
+    items.extend(trig)
+
+    # --- readings, measured but not enforced -----------------------------
+    rsi_vals = TH.rsi_wilder(closes, int(p.get("rsi_length", 14)))
+    rsi_now = rsi_vals[-1] if rsi_vals else None
+    if rsi_now is not None:
+        context.append((f"RSI({int(p.get('rsi_length', 14))}) level",
+                        f"{rsi_now:.1f}"))
+    _vok, vdetail = check_volume(bars, p)
+    context.append(("Volume", vdetail))
+    _gok, gdetail = check_gap(bars, lv, bearish, p)
+    context.append((f"Gap {'up' if bearish else 'down'}", gdetail))
+    _eok, edetail = check_failed_extreme(bars, bearish)
+    context.append((f"Session {'high' if bearish else 'low'}", edetail))
+    _ook, odetail = check_open_bar(bars, bearish, p)
+    context.append(("9:30 bar", odetail))
+
+    plan = _build_plan(bars, price, lv, bearish, p)
+    if plan is None:
+        items.append(("A target and stop could be formed", False,
+                      "no prior-session level far enough ahead to aim at"))
+    elif p.get("step4_rr"):
+        need = float(p.get("min_rr", 1.5))
+        rr = plan.get("rr")
+        items.append(("Reward clears the risk multiple",
+                      rr is not None and rr >= need,
+                      f"{rr:.2f}:1 — target {plan['target']} "
+                      f"({plan['target_label']}), stop {plan['stop']}, "
+                      f"need {need:.2f}:1" if rr is not None
+                      else "risk is zero — cannot size the trade"))
+
+    failed = [lbl for lbl, o, _ in items if not o]
+    return {
+        "ok": not failed, "side": "put" if bearish else "call",
+        "items": items, "context": context, "failed": failed, "price": price,
+        "levels": lv, "plan": plan,
+        "slow_k": round(slow[-1], 1), "slow_k_prev": round(slow[-2], 1),
+        "fast_k": round(fast[-1], 1),
+        "pct_d": round(pct_d[-1], 1) if pct_d[-1] is not None else None,
+    }
+
+
 def evaluate_side(bars, fast, slow, pct_d, bearish: bool, p: dict) -> dict:
     """Run every enabled item for one side.
 
@@ -442,6 +601,13 @@ def evaluate_side(bars, fast, slow, pct_d, bearish: bool, p: dict) -> dict:
     price = closes[-1]
     lv = levels_mod.session_levels(bars)
     items: list[tuple[str, bool, str]] = []
+    # Readings that are measured and shown but do NOT decide anything.
+    # Empty in "gate" mode, where every item blocks.
+    context: list[tuple[str, str]] = []
+
+    if str(p.get("trigger_mode", "gate")) == "cross":
+        return _evaluate_cross(bars, closes, price, lv, fast, slow, pct_d,
+                               bearish, p)
 
     if p.get("step1_gap"):
         ok, d = check_gap(bars, lv, bearish, p)
@@ -468,33 +634,18 @@ def evaluate_side(bars, fast, slow, pct_d, bearish: bool, p: dict) -> dict:
             if int(p.get("vol_window", 2)) <= 1
             else "Volume expanded on or just before the signal bar", ok, d))
 
-    plan = None
     if p.get("step4_rr"):
         ok, d = check_rr(price, lv, bearish, p, bars=bars)
         items.append(("Reward clears the risk multiple", ok, d))
 
     # The plan numbers ride along whether or not the R:R item is enabled —
     # an alert without a target and a stop is not actionable.
-    cands = _targets(lv, price, bearish, p)
-    target = levels_mod.primary_target(cands)
-    ext = _stop_anchor(bars, lv, bearish, p)
-    if target and ext is not None:
-        buf = float(p.get("stop_buffer_pct", 0.15)) / 100.0
-        stop = ext * ((1 + buf) if bearish else (1 - buf))
-        risk = abs(price - stop)
-        plan = {
-            "target": round(target["price"], 2), "target_label": target["label"],
-            "gap_fill": bool(target.get("gap_fill")),
-            "stop": round(stop, 2),
-            "rr": round(abs(target["price"] - price) / risk, 2) if risk > 1e-6 else None,
-            "target_pct": round((target["price"] - price) / price * 100, 2),
-            "stop_pct": round((stop - price) / price * 100, 2),
-        }
+    plan = _build_plan(bars, price, lv, bearish, p)
 
     failed = [lbl for lbl, ok, _ in items if not ok]
     return {
         "ok": not failed, "side": "put" if bearish else "call",
-        "items": items, "failed": failed, "price": price,
+        "items": items, "context": context, "failed": failed, "price": price,
         "levels": lv, "plan": plan,
         "slow_k": round(slow[-1], 1), "slow_k_prev": round(slow[-2], 1),
         "fast_k": round(fast[-1], 1),
