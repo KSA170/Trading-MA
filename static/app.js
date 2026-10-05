@@ -114,6 +114,7 @@ const els = {
   selectionCount: $('#selection-count'),
   actionsMenuBtn: $('#actions-menu-btn'),
   actionsMenu: $('#actions-menu'),
+  fundAnalyseBtn: $('#fund-analyse-btn'),
   portfolioBuyBtn: $('#portfolio-buy-btn'),
   emailBtn: $('#email-btn'),
   shareBtn: $('#share-btn'),
@@ -1409,7 +1410,8 @@ function updateSelectionUI() {
     els.selectionCount.textContent = count === 1 ? '1 selected' : `${count} selected`;
   }
   [els.actionsMenuBtn, els.emailBtn, els.shareBtn, els.exportTvBtn, els.alertsAddBtn,
-   els.reportAddBtn, els.exportBtn, els.clearSelectionBtn, els.portfolioBuyBtn].forEach((b) => {
+   els.reportAddBtn, els.exportBtn, els.clearSelectionBtn, els.portfolioBuyBtn,
+   els.fundAnalyseBtn].forEach((b) => {
     if (b) b.disabled = count === 0;
   });
   // Close the actions menu when the selection empties out.
@@ -5408,7 +5410,7 @@ async function loadOptionsHistory(opts) {
 const WS = {
   stocks:    { btn: 'tab-btn-stock',     strip: 'subtabs-stocks',
                subs: ['screener', 'watchlist', 'momentum', 'setups', 'alerts',
-                      'calculators', 'checklist'] },
+                      'calculators', 'checklist', 'fundamentals'] },
   options:   { btn: 'tab-btn-options',   strip: 'subtabs-options',
                subs: ['screener'] },
   // No sub-tab strip — a single view, so `strip` resolves to
@@ -6852,3 +6854,269 @@ if (els.pfOpenBody) {
 if (els.pfRefreshBtn) els.pfRefreshBtn.addEventListener('click', loadPortfolio);
 wireCollapse(els.pfClosedToggle, els.pfClosedPanelBody, 'collapse_pf_closed');
 wireCollapse(els.pfSourceToggle, els.pfSourcePanelBody, 'collapse_pf_source');
+
+// --- fundamentals tab ------------------------------------------------------
+// Reads /api/fundamentals and renders one card per ticker. The scorecard is
+// shown as the rows that produced it rather than as a headline number: a
+// verdict whose working is hidden is a verdict nobody can argue with, and
+// these inputs are noisy enough that arguing with them is the point.
+
+const fundEls = {
+  input: $('#fund-tickers'),
+  runBtn: $('#fund-run-btn'),
+  aiWrap: $('#fund-ai-wrap'),
+  ai: $('#fund-ai'),
+  status: $('#fund-status'),
+  results: $('#fund-results'),
+};
+let _fundBusy = false;
+
+// Sign outside the currency symbol — "-$115.95B", not "$-115.95B", which
+// reads as a typo on a cash-flow line.
+function fundMoney(v) {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
+  const a = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  const units = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'K']];
+  for (const [d, s] of units) {
+    if (a >= d) return `${sign}$${(a / d).toFixed(2)}${s}`;
+  }
+  return `${sign}$${a.toFixed(0)}`;
+}
+function fundNum(v, digits = 1, suffix = '') {
+  return (v === null || v === undefined || !Number.isFinite(v))
+    ? '—' : `${v.toFixed(digits)}${suffix}`;
+}
+function fundScoreClass(s) {
+  if (s === null || s === undefined) return 'na';
+  if (s >= 2) return 'p2';
+  if (s >= 1) return 'p1';
+  if (s <= -2) return 'n2';
+  if (s <= -1) return 'n1';
+  return 'z';
+}
+
+// A statement rendered as periods across the top, line items down the side —
+// the shape the filing itself uses, so it can be read against the source.
+function fundTable(periods, rows) {
+  const cols = (periods || []).slice(0, 5);
+  if (!cols.length) return '';
+  const live = rows.filter((r) => (r.values || []).some(
+    (v) => v !== null && v !== undefined && Number.isFinite(v)));
+  if (!live.length) return '';
+  const head = cols.map((p) => `<th>${escapeHtml(p)}</th>`).join('');
+  const body = live.map((r) => {
+    const cells = cols.map((_, i) => {
+      const v = (r.values || [])[i];
+      const txt = r.pct ? fundNum(v, 1, '%') : fundMoney(v);
+      const cls = (r.signed && Number.isFinite(v)) ? (v >= 0 ? 'pos' : 'neg') : '';
+      return `<td class="${cls}">${txt}</td>`;
+    }).join('');
+    return `<tr><th scope="row">${escapeHtml(r.label)}</th>${cells}</tr>`;
+  }).join('');
+  // Wrapped in a scroll container rather than making the table itself
+  // display:block — the row groups escape that and overflow the card on a
+  // phone, which is exactly what it looked like.
+  return `<div class="fund-table-wrap"><table class="fund-table">`
+       + `<thead><tr><th></th>${head}</tr></thead>`
+       + `<tbody>${body}</tbody></table></div>`;
+}
+
+function fundScoreBlock(title, sc) {
+  if (!sc) return '';
+  const items = (sc.items || []).map((i) => `
+    <li class="fund-item ${fundScoreClass(i.score)}">
+      <span class="fund-chip">${i.score === null || i.score === undefined
+        ? '·' : (i.score > 0 ? '+' : '') + i.score}</span>
+      <span class="fund-item-body">
+        <b>${escapeHtml(i.label)}</b>
+        <i>${escapeHtml(i.detail || '')}</i>
+      </span>
+    </li>`).join('');
+  const d = sc.drivers || {};
+  const drivers = [
+    d.for ? `<div class="fund-driver pos">Strongest: ${escapeHtml(d.for.label)} — ${escapeHtml(d.for.detail || '')}</div>` : '',
+    d.against ? `<div class="fund-driver neg">Weakest: ${escapeHtml(d.against.label)} — ${escapeHtml(d.against.detail || '')}</div>` : '',
+  ].join('');
+  const score = (sc.score === null || sc.score === undefined)
+    ? '' : ` <span class="muted">(mean ${sc.score >= 0 ? '+' : ''}${sc.score.toFixed(2)} over ${sc.measured} measure${sc.measured === 1 ? '' : 's'})</span>`;
+  return `
+    <div class="fund-score">
+      <h4>${escapeHtml(title)}: <span class="fund-verdict ${fundScoreClass(
+        sc.score === null || sc.score === undefined ? null
+        : Math.round(sc.score))}">${escapeHtml(sc.verdict || '—')}</span>${score}</h4>
+      ${drivers}
+      <ul class="fund-items">${items}</ul>
+    </div>`;
+}
+
+function fundCatalystBlock(cat) {
+  if (!cat) return '';
+  const ev = (cat.events || []).map((e) => `
+    <li><b>${escapeHtml(e.date || '')}</b> — ${escapeHtml(e.label || '')}
+      ${e.detail ? `<i>${escapeHtml(e.detail)}</i>` : ''}</li>`).join('');
+  const sp = (cat.recent_surprises || []).filter(
+    (s) => s.surprise_pct !== null && s.surprise_pct !== undefined);
+  const surprises = sp.length ? `
+    <div class="fund-sub">EPS surprises: ${sp.map((s) =>
+      `<span class="${s.surprise_pct >= 0 ? 'pos' : 'neg'}">${escapeHtml(s.date)} ${
+        s.surprise_pct >= 0 ? '+' : ''}${s.surprise_pct.toFixed(1)}%</span>`).join(' · ')}</div>` : '';
+  const news = (cat.news || []).length ? `
+    <ul class="fund-news">${cat.news.slice(0, 5).map((n) =>
+      `<li>${n.link ? `<a href="${escapeHtml(n.link)}" target="_blank" rel="noopener">${escapeHtml(n.title)}</a>`
+                    : escapeHtml(n.title)}${n.publisher ? ` <i>${escapeHtml(n.publisher)}</i>` : ''}</li>`).join('')}</ul>`
+    : '<div class="fund-sub muted">No recent headlines retrieved.</div>';
+  if (!ev && !surprises && !(cat.news || []).length) return '';
+  return `
+    <div class="fund-block">
+      <h4>Upcoming catalysts</h4>
+      ${ev ? `<ul class="fund-events">${ev}</ul>`
+           : '<div class="fund-sub muted">No dated event in the calendar.</div>'}
+      ${surprises}
+      ${news}
+    </div>`;
+}
+
+function fundCard(r) {
+  if (r.error) {
+    return `<article class="fund-card err"><header><h3>${escapeHtml(r.ticker)}</h3></header>
+      <div class="fund-sub">${escapeHtml(r.error)}</div></article>`;
+  }
+  const c = r.company || {};
+  const rev = r.revenue || {}, opx = r.opex || {};
+  const cf = r.cashflow || {}, bal = r.balance || {};
+  const meta = [
+    c.sector, c.industry, c.country,
+    c.employees ? `${Number(c.employees).toLocaleString()} staff` : null,
+  ].filter(Boolean).map((x) => escapeHtml(x)).join(' · ');
+  const val = [
+    ['Market cap', fundMoney(c.market_cap)],
+    ['P/E (trailing)', fundNum(c.trailing_pe, 1)],
+    ['P/E (forward)', fundNum(c.forward_pe, 1)],
+    ['P/S', fundNum(c.price_to_sales, 2)],
+    ['52w range', `${fundNum(c.week52_low, 2)} – ${fundNum(c.week52_high, 2)}`],
+  ].map(([k, v]) => `<span><i>${k}</i><b>${v}</b></span>`).join('');
+
+  const incTable = fundTable(rev.periods, [
+    { label: 'Revenue', values: rev.revenue },
+    { label: 'Revenue change', values: rev.revenue_change_pct, pct: true, signed: true },
+    { label: 'Gross profit', values: rev.gross_profit },
+    { label: 'R&D', values: opx.research_development },
+    { label: 'SG&A', values: opx.sga },
+    { label: 'Operating expense', values: opx.operating_expense },
+    { label: 'Operating income', values: opx.operating_income, signed: true },
+    { label: 'Net income', values: opx.net_income, signed: true },
+  ]);
+  const qTable = fundTable(rev.quarterly_periods, [
+    { label: 'Revenue (quarterly)', values: rev.quarterly_revenue },
+  ]);
+  const cfTable = fundTable(cf.periods, [
+    { label: 'Operating cash flow', values: cf.operating_cash_flow, signed: true },
+    { label: 'Capital expenditure', values: cf.capital_expenditure },
+    { label: 'Free cash flow', values: cf.free_cash_flow, signed: true },
+  ]);
+  const bsTable = fundTable(bal.periods, [
+    { label: 'Cash', values: bal.cash },
+    { label: 'Total debt', values: bal.total_debt },
+    { label: 'Equity', values: bal.equity },
+    { label: 'Current assets', values: bal.current_assets },
+    { label: 'Current liabilities', values: bal.current_liabilities },
+  ]);
+
+  const narrative = r.narrative ? `
+    <div class="fund-block fund-narrative">
+      <h4>Written analysis <span class="muted">— generated, explains the scorecard rather than deciding it</span></h4>
+      ${r.narrative.split(/\n\s*\n/).map((p) => `<p>${escapeHtml(p)}</p>`).join('')}
+    </div>` : (r.ai && r.ai.status === 'error' ? `
+    <div class="fund-block"><div class="fund-sub muted">Written analysis unavailable (${escapeHtml(r.ai.detail || 'request failed')}). The scorecard above is unaffected.</div></div>` : '');
+
+  return `
+    <article class="fund-card">
+      <header>
+        <h3>${escapeHtml(r.ticker)} <span>${escapeHtml(c.name || '')}</span></h3>
+        <div class="fund-meta">${meta}</div>
+      </header>
+      <div class="fund-valuation">${val}</div>
+      ${c.summary ? `<details class="fund-summary"><summary>What the business does</summary><p>${escapeHtml(c.summary)}</p></details>` : ''}
+      <div class="fund-scores">
+        ${fundScoreBlock('Long term (fundamentals)', (r.scorecard || {}).long_term)}
+        ${fundScoreBlock('Short term (tape + events)', (r.scorecard || {}).short_term)}
+      </div>
+      ${narrative}
+      ${fundCatalystBlock(r.catalysts)}
+      ${incTable ? `<div class="fund-block"><h4>Revenue &amp; operating expenses</h4>${incTable}${qTable}</div>` : ''}
+      ${cfTable ? `<div class="fund-block"><h4>Cash flow</h4>${cfTable}</div>` : ''}
+      ${bsTable ? `<div class="fund-block"><h4>Balance sheet</h4>${bsTable}</div>` : ''}
+      <footer class="fund-foot muted">Figures as filed, via Yahoo Finance · ${escapeHtml(r.as_of || '')} · informational only, not financial advice</footer>
+    </article>`;
+}
+
+async function runFundamentals(tickers) {
+  if (_fundBusy) return;
+  const list = (tickers && tickers.length
+    ? tickers
+    : (fundEls.input ? fundEls.input.value : '').replace(/,/g, ' ').split(/\s+/))
+    .map((t) => String(t).trim().toUpperCase()).filter(Boolean);
+  if (!list.length) {
+    if (fundEls.status) fundEls.status.textContent = 'Enter at least one ticker.';
+    return;
+  }
+  _fundBusy = true;
+  if (fundEls.runBtn) fundEls.runBtn.disabled = true;
+  const wantAi = !!(fundEls.ai && fundEls.ai.checked);
+  if (fundEls.status) {
+    fundEls.status.textContent = `Analysing ${list.length} ticker${list.length === 1 ? '' : 's'}`
+      + (wantAi ? ' with narrative' : '') + '… (statements are fetched per ticker)';
+  }
+  try {
+    const res = await fetch('/api/fundamentals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tickers: list, narrative: wantAi }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (fundEls.aiWrap) fundEls.aiWrap.hidden = !data.ai_available;
+    const reports = data.reports || [];
+    const failed = reports.filter((r) => r.error).length;
+    if (fundEls.results) {
+      fundEls.results.innerHTML = reports.map(fundCard).join('');
+    }
+    if (fundEls.status) {
+      fundEls.status.textContent =
+        `${reports.length - failed} analysed`
+        + (failed ? `, ${failed} unavailable` : '')
+        + (data.truncated ? ` (capped at ${data.max_tickers})` : '');
+    }
+  } catch (err) {
+    if (fundEls.status) fundEls.status.textContent = `Failed: ${err.message}`;
+  } finally {
+    _fundBusy = false;
+    if (fundEls.runBtn) fundEls.runBtn.disabled = false;
+  }
+}
+
+if (fundEls.runBtn) fundEls.runBtn.addEventListener('click', () => runFundamentals());
+if (fundEls.input) {
+  fundEls.input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); runFundamentals(); }
+  });
+}
+// Whether the AI toggle is even offered is a server-side fact, so ask once.
+fetch('/api/fundamentals/status').then((r) => r.json()).then((s) => {
+  if (fundEls.aiWrap) fundEls.aiWrap.hidden = !(s && s.ai_available);
+}).catch(() => {});
+
+// Screener selection → this tab. Sends the tickers and switches to it, so
+// the analysis starts from the rows that were actually screened.
+function analyseSelectedFundamentals(rows) {
+  const list = (rows && rows.length ? rows : selectedRows()).map((r) => r.ticker);
+  if (!list.length) return;
+  if (fundEls.input) fundEls.input.value = list.join(' ');
+  goTo('stocks', 'fundamentals');
+  if (els.actionsMenu) els.actionsMenu.classList.add('hidden');
+  runFundamentals(list);
+}
+if (els.fundAnalyseBtn) {
+  els.fundAnalyseBtn.addEventListener('click', () => analyseSelectedFundamentals());
+}

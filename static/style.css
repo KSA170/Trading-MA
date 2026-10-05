@@ -1754,6 +1754,7 @@ button.hidden { display: none; }
 #tab-stock[data-active-tool="setups"]    [data-tool]:not([data-tool="setups"]),
 #tab-stock[data-active-tool="alerts"]    [data-tool]:not([data-tool="alerts"]),
 #tab-stock[data-active-tool="calculators"] [data-tool]:not([data-tool="calculators"]),
+#tab-stock[data-active-tool="fundamentals"] [data-tool]:not([data-tool="fundamentals"]),
 #tab-stock[data-active-tool="checklist"] [data-tool]:not([data-tool="checklist"]) {
   display: none !important;
 }
@@ -2996,3 +2997,133 @@ button.hidden { display: none; }
   font-weight: 600;
 }
 .calc-actual .calc-dir-title .calc-hit { color: var(--yellow); }
+
+/* --- fundamentals tab ----------------------------------------------------
+   One card per ticker. The scorecard is laid out as the rows that produced
+   it, not as a headline number: these inputs are noisy, and a verdict whose
+   working is hidden is one nobody can argue with. */
+.fund-panel { display: block; }
+.fund-head { margin-bottom: 14px; }
+.fund-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.fund-controls #fund-tickers {
+  flex: 1 1 320px;
+  min-width: 200px;
+  max-width: 560px;
+}
+.fund-results { display: flex; flex-direction: column; gap: 20px; }
+
+.fund-card {
+  min-width: 0;                 /* flex item: allow it to shrink to the column */
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 16px 18px;
+}
+.fund-card.err { opacity: 0.75; }
+.fund-card > header { margin-bottom: 10px; }
+.fund-card h3 { margin: 0; font-size: 18px; }
+.fund-card h3 span { font-weight: 400; color: var(--muted); font-size: 14px; }
+.fund-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+.fund-valuation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.fund-valuation span { display: flex; flex-direction: column; }
+.fund-valuation i { color: var(--muted); font-size: 11px; font-style: normal; }
+.fund-valuation b { font-size: 14px; }
+
+.fund-summary { margin-bottom: 12px; }
+.fund-summary summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.fund-summary p { margin: 8px 0 0; font-size: 13px; line-height: 1.55; }
+
+/* Two scorecards side by side on a wide screen, stacked on a narrow one. */
+.fund-scores {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.fund-score h4 { margin: 0 0 6px; font-size: 13px; }
+.fund-verdict { padding: 1px 7px; border-radius: 4px; font-weight: 700; }
+.fund-items { list-style: none; margin: 8px 0 0; padding: 0; }
+.fund-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.fund-chip {
+  flex: 0 0 26px;
+  text-align: center;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 0;
+  background: #30363d;
+}
+.fund-item-body { display: flex; flex-direction: column; min-width: 0; }
+.fund-item-body b { font-size: 12px; font-weight: 600; }
+.fund-item-body i { font-style: normal; color: var(--muted); font-size: 11px; }
+.fund-driver { font-size: 11px; margin: 2px 0; }
+.fund-driver.pos { color: #3fb950; }
+.fund-driver.neg { color: #f85149; }
+
+/* Score colours: the same green/red the rest of the app uses, with the
+   neutral band deliberately grey so a 0 does not read as mild approval. */
+.fund-chip, .fund-verdict { background: #30363d; color: var(--muted); }
+.p2 > .fund-chip, .fund-verdict.p2 { background: rgba(63,185,80,0.28); color: #3fb950; }
+.p1 > .fund-chip, .fund-verdict.p1 { background: rgba(63,185,80,0.16); color: #3fb950; }
+.n1 > .fund-chip, .fund-verdict.n1 { background: rgba(248,81,73,0.16); color: #f85149; }
+.n2 > .fund-chip, .fund-verdict.n2 { background: rgba(248,81,73,0.28); color: #f85149; }
+
+.fund-block { margin-top: 14px; }
+.fund-block h4 { margin: 0 0 6px; font-size: 13px; }
+.fund-block h4 .muted { font-weight: 400; font-size: 11px; }
+.fund-sub { font-size: 12px; margin: 4px 0; }
+.fund-narrative p { font-size: 13px; line-height: 1.6; margin: 0 0 8px; }
+.fund-events, .fund-news { list-style: none; margin: 4px 0; padding: 0; font-size: 12px; }
+.fund-events li, .fund-news li { padding: 2px 0; }
+.fund-events i, .fund-news i { color: var(--muted); font-style: normal; font-size: 11px; }
+.fund-sub .pos, .fund-table td.pos { color: #3fb950; }
+.fund-sub .neg, .fund-table td.neg { color: #f85149; }
+
+/* Statements keep the filing's own shape — periods across, lines down —
+   so a figure can be checked against the source without re-reading it. */
+/* The wrapper scrolls, not the table: a table set to display:block lets its
+   row groups escape the clip and overflow the card on a narrow screen. */
+.fund-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  margin-bottom: 10px;
+}
+.fund-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.fund-table th, .fund-table td {
+  padding: 4px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.fund-table thead th { color: var(--muted); font-weight: 600; font-size: 11px; }
+.fund-table th[scope="row"] { text-align: left; font-weight: 500; }
+.fund-foot { font-size: 11px; margin-top: 12px; }
+
+@media (max-width: 760px) {
+  .fund-card { padding: 12px; }
+  .fund-controls #fund-tickers { flex-basis: 100%; max-width: none; }
+}

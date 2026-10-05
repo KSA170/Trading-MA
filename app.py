@@ -419,6 +419,92 @@ def api_chart(ticker: str):
     return jsonify(payload)
 
 
+def _tech_for(ticker: str) -> dict | None:
+    """The screener's own latest technicals for a ticker, so the
+    fundamental report's short-term half says the same thing the screener
+    row says. Read from the enriched price cache rather than recomputed —
+    a second opinion that disagrees with the table is worse than none."""
+    try:
+        df = screener._cached_history(ticker, period="6mo")
+        if df is None or df.empty:
+            return None
+        last = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) > 1 else last
+
+        def g(col, row=last):
+            try:
+                v = float(row[col])
+                return v if v == v else None
+            except (KeyError, IndexError, TypeError, ValueError):
+                return None
+        return {
+            "price": g("Close"), "rsi14": g("rsi14"),
+            "sma10": g("sma10"), "sma20": g("sma20"), "sma40": g("sma40"),
+            "macd_hist": g("macd_hist"), "macd_hist_prev": g("macd_hist", prev),
+            "as_of": df.index[-1].strftime("%Y-%m-%d"),
+        }
+    except Exception as exc:
+        log.info("fundamentals: technicals unavailable for %s: %s", ticker, exc)
+        return None
+
+
+@app.route("/api/fundamentals/status")
+def api_fundamentals_status():
+    """Whether the optional narrative is available, so the UI only offers
+    the toggle when the server can actually honour it."""
+    import fundamentals
+    return jsonify({"ai_available": fundamentals.ai_enabled(),
+                    "max_tickers": fundamentals.MAX_TICKERS})
+
+
+@app.route("/api/fundamentals", methods=["POST"])
+def api_fundamentals():
+    """Fundamental analysis for up to fundamentals.MAX_TICKERS names.
+
+    Each ticker is independent: one that fails comes back with `error` set
+    rather than failing the batch, because a selection of ten should not be
+    lost to one delisted symbol. The optional AI narrative is requested
+    only when explicitly asked for AND enabled server-side."""
+    import fundamentals
+    body = request.get_json(silent=True) or {}
+    raw = body.get("tickers") or []
+    if isinstance(raw, str):
+        raw = [t for t in raw.replace(",", " ").split() if t]
+    tickers, seen = [], set()
+    for t in raw:
+        t = str(t).strip().upper()
+        if t and t not in seen:
+            seen.add(t)
+            tickers.append(t)
+    if not tickers:
+        return jsonify({"error": "no tickers given"}), 400
+    truncated = len(tickers) > fundamentals.MAX_TICKERS
+    tickers = tickers[:fundamentals.MAX_TICKERS]
+    want_ai = bool(body.get("narrative")) and fundamentals.ai_enabled()
+
+    reports = []
+    for t in tickers:
+        try:
+            rep = fundamentals.analyze(t, tech=_tech_for(t))
+        except Exception as exc:
+            log.warning("fundamentals failed for %s: %s", t, exc)
+            reports.append({"ticker": t, "error": str(exc)[:160]})
+            continue
+        if want_ai:
+            nar = fundamentals.narrate(rep)
+            rep["narrative"] = nar.get("text")
+            rep["ai"] = {"enabled": True, "status": nar.get("status"),
+                         "model": nar.get("model"),
+                         "detail": nar.get("detail")}
+        reports.append(rep)
+    return jsonify({
+        "reports": reports,
+        "ai_available": fundamentals.ai_enabled(),
+        "max_tickers": fundamentals.MAX_TICKERS,
+        "truncated": truncated,
+    })
+
+
 @app.route("/api/lists")
 def api_lists():
     return jsonify({
