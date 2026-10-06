@@ -41,6 +41,7 @@
     <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="alerts">Alerts</button>
     <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="calculators">Calculators</button>
     <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="checklist">Checklist</button>
+    <button type="button" class="subtab"        role="tab" aria-selected="false" data-sub="fundamentals">Fundamentals</button>
   </nav>
   <nav class="subtabs" id="subtabs-options" role="tablist" aria-label="Options tools" hidden>
     <button type="button" class="subtab active" role="tab" aria-selected="true"  data-sub="screener">Screener</button>
@@ -359,6 +360,7 @@
           <div id="actions-menu" class="actions-menu hidden">
             <button id="portfolio-buy-btn" type="button" disabled title="Buy the selected tickers into the paper portfolio at the close price shown here">Buy (paper portfolio)…</button>
             <button id="alerts-add-btn" type="button" disabled title="Add selected tickers to the realtime alert watchlist (Telegram)">Add to alerts</button>
+            <button id="fund-analyse-btn" type="button" disabled title="Run a fundamental analysis on the selected tickers — statements, cash flow, balance sheet, upcoming catalysts and a scorecard. Opens the Fundamentals tab.">Fundamental analysis</button>
             <button id="report-add-btn" type="button" disabled title="Track the selected tickers in the Stock Strategy Report — uses each row's latest close + as-of date as the entry, then forward-fills returns nightly.">Add to Strategy Report</button>
             <button id="export-tv-btn" type="button" disabled title="Download selected tickers as a TradingView-importable watchlist (.txt)">Export for TradingView</button>
             <button id="export-btn" type="button" disabled>Export to Excel</button>
@@ -885,6 +887,34 @@
         </div>
         <button type="button" class="btn" id="ck-reset">Reset for next trade</button>
       </div>
+    </section>
+
+    <section class="match-history fund-panel" data-tool="fundamentals">
+      <div class="fund-head">
+        <h2 class="calc-title">Fundamental analysis</h2>
+        <p class="muted calc-desc">
+          Reads the filed income statement, balance sheet and cash-flow
+          statement, plus the earnings calendar. Every score shows the number
+          behind it and what it was measured against; anything the filing
+          doesn't report is dropped rather than scored as average, so the
+          composite is an average of what was actually measurable. The
+          long-term read comes from the statements, the short-term read from
+          the same price data the screener uses — a balance sheet says
+          nothing about the next two weeks.
+        </p>
+      </div>
+      <div class="fund-controls">
+        <label class="muted" for="fund-tickers">Tickers</label>
+        <input id="fund-tickers" type="text" autocomplete="off"
+               placeholder="e.g. MSFT NVDA PACB — or select rows on the Screener and use Actions ▾" />
+        <button id="fund-run-btn" type="button" class="primary">Analyse</button>
+        <label class="inline-checkbox" id="fund-ai-wrap" hidden
+               title="Adds a written analysis on top of the scorecard. Requires ANTHROPIC_API_KEY and FUNDAMENTALS_AI on the server; the scorecard is identical with or without it, and the prose never changes the verdict.">
+          <input type="checkbox" id="fund-ai" /> AI narrative
+        </label>
+        <span id="fund-status" class="muted"></span>
+      </div>
+      <div id="fund-results" class="fund-results"></div>
     </section>
   </main>
 
