@@ -6,7 +6,7 @@ services:
     name: trading-ma
     runtime: python
     plan: free
-    branch: claude/stock-filter-builder-PrUrK
+    branch: main
     buildCommand: pip install -r requirements.txt
     # 1 worker keeps the in-memory price/screen caches consistent.
     # 4 threads lets the UI fetch chart data while a screen runs, without
