@@ -402,8 +402,15 @@ def check_cross(fast, slow, pct_d, closes, bearish, p):
     if now is None or prev is None:
         out.append(("RSI direction confirms", True, "RSI not warm — not blocking"))
     else:
-        ok = (now < prev) if bearish else (now > prev)
-        out.append((f"RSI is {'falling' if bearish else 'rising'}", ok,
+        # Unchanged counts as confirming. The item asks whether RSI is
+        # pointing AGAINST the trade, and two identical closes — routine on
+        # a 5m ETF bar — move Wilder's RSI by exactly zero. A strict `<`
+        # read that as "no": on 2026-10-06 QQQ closed 761.35 on both the
+        # 10:10 and 10:15 bars, RSI sat at 76.3 → 76.3, and a put whose
+        # band, cross and 2.76:1 reward all cleared was declined on a flat
+        # reading. RSI then fell 76.3 → 73.1 → 62.1 over the next two bars.
+        ok = (now <= prev) if bearish else (now >= prev)
+        out.append((f"RSI is not {'rising' if bearish else 'falling'}", ok,
                     f"RSI({int(p.get('rsi_length', 14))}) "
                     f"{prev:.1f} → {now:.1f} ({now - prev:+.1f})"))
 
