@@ -41,9 +41,18 @@ log = logging.getLogger("fundamentals")
 # Statements change quarterly; the profile barely moves. Six hours keeps a
 # working session instant without serving a stale quarter after a report.
 _CACHE_TTL = 6 * 3600
+# A report built without the company profile, or with statements missing,
+# is cached for minutes rather than hours: the gap is usually Yahoo
+# throttling us, and six hours of a degraded report would outlast the
+# throttle by a long way and make the next click look broken too.
+_PARTIAL_CACHE_TTL = 300
 _CACHE: dict[str, tuple[float, dict]] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 400
+
+# Yahoo's throttle clears in seconds, so one short wait recovers a run that
+# would otherwise report nothing. Matches options_scanner's one-shot retry.
+_RETRY_SEC = 2.0
 
 MAX_TICKERS = 15          # per request; each ticker is ~6 Yahoo calls
 
@@ -404,11 +413,13 @@ def _balance_block(bs, card, cash_block):
     s, lbl = _band(ratio, [-30, -5, 5, 20],
                    ["heavily levered", "net debt", "balanced",
                     "net cash", "strong net cash"])
+    # The label comes from the ratio to market cap, so it is absent
+    # whenever the profile is — print the figure alone rather than "— None".
     card.add("net_cash", "Net cash position", net_cash, s,
              (f"{_money(net_cash)} net "
               f"{'cash' if net_cash and net_cash >= 0 else 'debt'}"
               + (f" ({ratio:+.0f}% of market cap)" if ratio is not None else "")
-              + f" — {lbl}") if net_cash is not None
+              + (f" — {lbl}" if lbl else "")) if net_cash is not None
              else "cash and debt not both reported")
 
     current = _safe_div(cur_assets[0] if cur_assets else None,
@@ -602,6 +613,57 @@ def _short_term(tech, catalysts, card):
                  if days <= 21 else f"reports in {days} days", "days")
 
 
+def _looks_rate_limited(exc: BaseException) -> bool:
+    """Same test options_scanner uses — yfinance surfaces Yahoo's 429 as a
+    message rather than a typed exception, and the wording varies by
+    version, so match on what every variant has in common."""
+    m = str(exc).lower()
+    return ("too many" in m or "rate limit" in m or "429" in m
+            or "throttl" in m)
+
+
+def _has_rows(frame) -> bool:
+    """True when a statement frame actually carries data. yfinance returns
+    None, an empty DataFrame, or a frame with no columns depending on
+    which way the fetch failed, and `if frame:` raises on a DataFrame."""
+    if frame is None:
+        return False
+    try:
+        return not frame.empty
+    except Exception:
+        return bool(frame)
+
+
+def _fetch_info(tk, ticker: str) -> tuple[dict, str | None]:
+    """The company profile, best effort. Returns (info, note).
+
+    The profile comes from Yahoo's quoteSummary endpoint, which needs a
+    crumb and is throttled far harder than the chart and fundamentals
+    endpoints the rest of this app lives on. That is why the screener can
+    be fetching thousands of rows happily while this one call 429s. It
+    supplies the name, sector and market cap — presentation and a single
+    sub-score — so it must never decide whether a report exists.
+    """
+    for attempt in (0, 1):
+        try:
+            return (tk.info or {}), None
+        except Exception as exc:
+            limited = _looks_rate_limited(exc)
+            log.warning("fundamentals: profile fetch failed for %s (%s): %s",
+                        ticker, "rate-limited" if limited else type(exc).__name__,
+                        exc)
+            if limited and attempt == 0:
+                time.sleep(_RETRY_SEC)
+                continue
+            return {}, ("Yahoo is rate-limiting the company profile — "
+                        "name, sector and market cap are missing from this "
+                        "report; the filed statements below are unaffected"
+                        if limited else
+                        f"company profile unavailable ({type(exc).__name__}) — "
+                        "the filed statements below are unaffected")
+    return {}, "company profile unavailable"
+
+
 def analyze(ticker: str, tech: dict | None = None,
             use_cache: bool = True) -> dict:
     """Full fundamental analysis for one ticker. Never raises — an
@@ -624,24 +686,58 @@ def analyze(ticker: str, tech: dict | None = None,
     try:
         import yfinance as yf
         tk = yf.Ticker(ticker)
-        info = tk.info or {}
     except Exception as exc:
-        log.warning("fundamentals: info fetch failed for %s: %s", ticker, exc)
-        return {"ticker": ticker, "error": f"no data for {ticker}"}
-    if not info or not (info.get("longName") or info.get("shortName")):
-        return {"ticker": ticker, "error": f"no company profile for {ticker}"}
+        log.warning("fundamentals: could not construct a ticker for %s: %s",
+                    ticker, exc)
+        return {"ticker": ticker,
+                "error": f"could not reach Yahoo for {ticker} "
+                         f"({type(exc).__name__})"}
+
+    notes: list[str] = []
+    info, info_note = _fetch_info(tk, ticker)
+    if info_note:
+        notes.append(info_note)
+    # Record this before seeding `symbol`, which would otherwise make an
+    # empty profile look populated to the emptiness check further down.
+    have_profile = bool(info)
     info.setdefault("symbol", ticker)
 
     def _get(name):
-        try:
-            return getattr(tk, name)
-        except Exception as exc:
-            log.info("fundamentals: %s unavailable for %s: %s", name, ticker, exc)
-            return None
+        """One statement frame, with the same one-shot retry the profile
+        gets: a throttled run that returns nothing is the failure this is
+        here to avoid, and the statements are the whole report."""
+        for attempt in (0, 1):
+            try:
+                return getattr(tk, name)
+            except Exception as exc:
+                if _looks_rate_limited(exc) and attempt == 0:
+                    time.sleep(_RETRY_SEC)
+                    continue
+                log.info("fundamentals: %s unavailable for %s: %s",
+                         name, ticker, exc)
+                return None
+        return None
 
     inc, qinc = _get("income_stmt"), _get("quarterly_income_stmt")
     bs = _get("balance_sheet")
     cf, qcf = _get("cashflow"), _get("quarterly_cashflow")
+
+    # Only now is there enough to say whether a report exists. Nothing from
+    # the profile AND nothing from any statement means the fetch genuinely
+    # came back empty; anything less than that still has something worth
+    # rendering, and scoring already drops what it cannot measure.
+    statements = [inc, qinc, bs, cf, qcf]
+    if not have_profile and not any(_has_rows(f) for f in statements):
+        return {"ticker": ticker,
+                "error": (f"Yahoo returned nothing for {ticker} — "
+                          "it is rate-limiting this server. Try again in a "
+                          "minute."
+                          if info_note and "rate-limiting" in info_note else
+                          f"no data for {ticker} — the symbol may be "
+                          "delisted, or Yahoo has nothing filed for it")}
+    if not any(_has_rows(f) for f in statements):
+        notes.append("No filed statements came back, so the long-term "
+                     "scorecard has nothing to measure.")
 
     company = _company(info)
     long_card, short_card = _Card(), _Card()
@@ -684,11 +780,15 @@ def analyze(ticker: str, tech: dict | None = None,
             },
         },
         "narrative": None,
+        "notes": notes,
         "ai": {"enabled": ai_enabled(), "status": "off"},
     }
     if use_cache:
+        # A degraded report expires quickly so the next click refetches
+        # rather than replaying a throttled run for the rest of the day.
+        stamp = now if not notes else now - (_CACHE_TTL - _PARTIAL_CACHE_TTL)
         with _CACHE_LOCK:
-            _CACHE[ticker] = (now, out)
+            _CACHE[ticker] = (stamp, out)
             if len(_CACHE) > _CACHE_MAX:
                 for k in list(_CACHE.keys())[:_CACHE_MAX // 5]:
                     _CACHE.pop(k, None)
