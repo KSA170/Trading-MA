@@ -7023,6 +7023,13 @@ function fundCard(r) {
     { label: 'Current liabilities', values: bal.current_liabilities },
   ]);
 
+  // A report can be rendered with pieces missing — most often Yahoo
+  // throttling the profile endpoint while the statements come back fine.
+  // Say which piece is missing, so a blank field is never read as a zero.
+  const notes = (r.notes || []).length ? `
+    <div class="fund-block fund-notes">${r.notes.map((n) =>
+      `<div class="fund-sub muted">${escapeHtml(n)}</div>`).join('')}</div>` : '';
+
   const narrative = r.narrative ? `
     <div class="fund-block fund-narrative">
       <h4>Written analysis <span class="muted">— generated, explains the scorecard rather than deciding it</span></h4>
@@ -7036,6 +7043,7 @@ function fundCard(r) {
         <h3>${escapeHtml(r.ticker)} <span>${escapeHtml(c.name || '')}</span></h3>
         <div class="fund-meta">${meta}</div>
       </header>
+      ${notes}
       <div class="fund-valuation">${val}</div>
       ${c.summary ? `<details class="fund-summary"><summary>What the business does</summary><p>${escapeHtml(c.summary)}</p></details>` : ''}
       <div class="fund-scores">
